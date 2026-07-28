@@ -4,6 +4,7 @@
   --probe:#FFC53D; --probe-deep:#B8860B;
   --copper:#B0793C; --copper-soft:#C9A06B; --hv:#C43E1C;
   --panel:#FFFFFF; --line:#DEDACC; --ok:#3D7A46; --warn:#A05C12;
+  --vellum:#F6EFDC;
   --mono:'IBM Plex Mono',ui-monospace,'SF Mono',Consolas,monospace;
   --sans:'IBM Plex Sans',system-ui,-apple-system,sans-serif;
 }

@@ -12,14 +12,18 @@ const S = {
   nodes: [],   // {id, kind:'ic'|'external', label, x, y, w, h, data}
   edges: [],   // {id, source, target, nets:[{name,type,description}]}
   groups: [],  // {id, title, description, members:[nodeId,...]} — explicit groups only, UNGROUPED is implicit
+  groupPos: {}, // {[groupId]: {x,y}} — top-level sheet-symbol layout, keyed so it also covers the implicit UNGROUPED bucket
+  openGroup: null, // null = top-level view; groupId = drilled into that group (phase c)
   view: { tx:60, ty:40, k:1 },
-  sel: null,   // {type:'node'|'edge', id}
+  sel: null,   // {type:'node'|'edge'|'group'|'groupEdge', id}
   link: null,  // {fromId, x, y} while dragging a connection
   edgeSeq: 0
 };
 
 const NODE_W_IC = 176, NODE_H_IC = 64, NODE_W_EXT = 160, NODE_H_EXT = 46;
+const GROUP_W = 240, GROUP_H = 108;
 const UNGROUPED_ID = 'UNGROUPED';
+function isTopLevel(){ return S.openGroup == null; }
 const $ = id => document.getElementById(id);
 const svg = $('board'), viewport = $('viewport'),
       edgesG = $('edgesG'), nodesG = $('nodesG'), linkG = $('linkPreviewG');
@@ -125,41 +129,93 @@ function groupsWithUngrouped(){
     description:'Blocks not assigned to a functional group.', members:ungroupedIds }];
 }
 
+function nodeGroupIndex(){
+  const idx = new Map();
+  for (const g of groupsWithUngrouped()) for (const m of g.members) idx.set(m, g.id);
+  return idx;
+}
+
+// Derived (not persisted) group-to-group edges: aggregate every node-level edge
+// whose endpoints fall in different groups. Read-only at the top level.
+function computeGroupEdges(){
+  const idx = nodeGroupIndex();
+  const map = new Map();
+  for (const e of S.edges){
+    const gs = idx.get(e.source), gt = idx.get(e.target);
+    if (!gs || !gt || gs===gt) continue;
+    const key = gs+'→'+gt;
+    if (!map.has(key)) map.set(key, { source:gs, target:gt, nets:[] });
+    map.get(key).nets.push(...e.nets);
+  }
+  const list = [...map.values()].sort((a,b)=>(a.source+'|'+a.target).localeCompare(b.source+'|'+b.target));
+  list.forEach((g,i)=>{ g.nets.sort((a,b)=>a.name.localeCompare(b.name)); g.id='ge'+i; });
+  return list;
+}
+
+function visibleGroups(){
+  return groupsWithUngrouped().filter(g=>g.members.length);
+}
+
+function groupPosOf(id){
+  if (!S.groupPos[id]) S.groupPos[id] = { x:40, y:420 };
+  return S.groupPos[id];
+}
+
+function groupBlockRect(id){
+  const p = groupPosOf(id);
+  return { id, x:p.x, y:p.y, w:GROUP_W, h:GROUP_H };
+}
+
 /* ============================================================
    DETERMINISTIC AUTO-LAYOUT (longest-path layering, alpha order)
    ============================================================ */
-function autoLayout(){
-  const ids = S.nodes.map(n=>n.id).sort();
-  const indeg = new Map(ids.map(i=>[i,0]));
-  const adj = new Map(ids.map(i=>[i,[]]));
-  for (const e of S.edges){
+function layeredLayout(ids, edges, colw, rowh){
+  const sortedIds = [...ids].sort();
+  const indeg = new Map(sortedIds.map(i=>[i,0]));
+  const adj = new Map(sortedIds.map(i=>[i,[]]));
+  for (const e of edges){
     if (!adj.has(e.source)||!indeg.has(e.target)) continue;
     adj.get(e.source).push(e.target);
     indeg.set(e.target, indeg.get(e.target)+1);
   }
-  const rank = new Map(ids.map(i=>[i,0]));
+  const rank = new Map(sortedIds.map(i=>[i,0]));
   // longest path via repeated relaxation (deterministic, cycle-safe cap)
-  for (let pass=0; pass<ids.length; pass++){
+  for (let pass=0; pass<sortedIds.length; pass++){
     let changed=false;
-    for (const u of ids) for (const v of adj.get(u))
-      if (rank.get(v) < rank.get(u)+1 && rank.get(u)+1 < ids.length){ rank.set(v, rank.get(u)+1); changed=true; }
+    for (const u of sortedIds) for (const v of adj.get(u))
+      if (rank.get(v) < rank.get(u)+1 && rank.get(u)+1 < sortedIds.length){ rank.set(v, rank.get(u)+1); changed=true; }
     if (!changed) break;
   }
   const cols = new Map();
-  for (const id of ids){
+  for (const id of sortedIds){
     const r = rank.get(id);
     if (!cols.has(r)) cols.set(r,[]);
     cols.get(r).push(id);
   }
-  const COLW = 265, ROWH = 96;
+  const pos = new Map();
   const sortedRanks = [...cols.keys()].sort((a,b)=>a-b);
   for (const r of sortedRanks){
     const col = cols.get(r).sort();
     col.forEach((id, i)=>{
-      const n = S.nodes.find(n=>n.id===id);
-      n.x = 40 + r*COLW;
-      n.y = 40 + i*ROWH - ((col.length-1)*ROWH)/2 + 420;
+      pos.set(id, { x: 40 + r*colw, y: 40 + i*rowh - ((col.length-1)*rowh)/2 + 420 });
     });
+  }
+  return pos;
+}
+
+function autoLayout(){
+  const pos = layeredLayout(S.nodes.map(n=>n.id), S.edges, 265, 96);
+  for (const n of S.nodes){ const p=pos.get(n.id); n.x=p.x; n.y=p.y; }
+}
+
+// onlyMissing=true fills in positions only for groups that don't have one yet
+// (used when restoring a session, so manually-dragged group positions survive).
+function autoLayoutGroups(onlyMissing){
+  const groups = visibleGroups();
+  const pos = layeredLayout(groups.map(g=>g.id), computeGroupEdges(), 320, 170);
+  for (const [id,p] of pos){
+    if (onlyMissing && S.groupPos[id]) continue;
+    S.groupPos[id] = p;
   }
 }
 
@@ -171,24 +227,35 @@ function nodeById(id){ return S.nodes.find(n=>n.id===id); }
 function edgeIsHV(e){ return e.nets.some(n=>/HIGH_VOLTAGE/i.test(n.type||'')); }
 function edgeIsPower(e){ return e.nets.some(n=>/POWER|GROUND|HIGH_CURRENT/i.test(n.type||'')); }
 
-function edgePath(e){
-  const a = nodeById(e.source), b = nodeById(e.target);
+function blockEdgePath(a, b){
   if (!a||!b) return '';
   const x1 = a.x + a.w, y1 = a.y + a.h/2;
   const x2 = b.x,       y2 = b.y + b.h/2;
   const dx = Math.max(46, Math.abs(x2-x1)/2);
   return `M ${x1} ${y1} C ${x1+dx} ${y1}, ${x2-dx} ${y2}, ${x2} ${y2}`;
 }
+function edgePath(e){ return blockEdgePath(nodeById(e.source), nodeById(e.target)); }
+function midOf(a, b){ return { x:(a.x+a.w+b.x)/2, y:(a.y+a.h/2 + b.y+b.h/2)/2 }; }
 
 function render(){
   viewport.setAttribute('transform', `translate(${S.view.tx},${S.view.ty}) scale(${S.view.k})`);
 
+  if (isTopLevel()) renderTopLevel(); else renderFlatLevel();
+
+  renderLink();
+  renderInspector();
+  renderStatus();
+  $('projTitle').textContent = S.meta.title || 'Untitled system';
+}
+
+function renderFlatLevel(){
   edgesG.innerHTML = S.edges.map(e=>{
     const hv = edgeIsHV(e), pw = edgeIsPower(e);
     const selected = S.sel && S.sel.type==='edge' && S.sel.id===e.id;
     const stroke = hv ? 'var(--hv)' : 'var(--copper)';
     const w = pw ? 3.4 : 2;
-    const mid = midOfPath(e);
+    const a = nodeById(e.source), b = nodeById(e.target);
+    const mid = (a&&b) ? midOf(a,b) : null;
     return `<g class="edge" data-eid="${esc(e.id)}">
       <path d="${edgePath(e)}" fill="none" stroke="transparent" stroke-width="14" style="cursor:pointer"/>
       <path d="${edgePath(e)}" fill="none" stroke="${stroke}" stroke-width="${selected?w+1.6:w}"
@@ -225,17 +292,51 @@ function render(){
         fill="var(--copper-soft)" stroke="var(--copper)" stroke-width="1.5" style="cursor:crosshair"/>
     </g>`;
   }).join('');
-
-  renderLink();
-  renderInspector();
-  renderStatus();
-  $('projTitle').textContent = S.meta.title || 'Untitled system';
 }
 
-function midOfPath(e){
-  const a=nodeById(e.source), b=nodeById(e.target);
-  if(!a||!b) return null;
-  return { x:(a.x+a.w+b.x)/2, y:(a.y+a.h/2 + b.y+b.h/2)/2 };
+// Sheet-symbol style: vellum fill, ink border, mono title, member count.
+// Inter-group edges are derived by code from S.edges (see computeGroupEdges) —
+// read-only at this level, so group blocks carry no .port (no manual linking here).
+function renderTopLevel(){
+  const groups = visibleGroups();
+  const gEdges = computeGroupEdges();
+
+  edgesG.innerHTML = gEdges.map(e=>{
+    const hv = e.nets.some(n=>/HIGH_VOLTAGE/i.test(n.type||''));
+    const pw = e.nets.some(n=>/POWER|GROUND|HIGH_CURRENT/i.test(n.type||''));
+    const selected = S.sel && S.sel.type==='groupEdge' && S.sel.id===e.id;
+    const stroke = hv ? 'var(--hv)' : 'var(--copper)';
+    const w = pw ? 4 : 2.4;
+    const a = groupBlockRect(e.source), b = groupBlockRect(e.target);
+    const mid = midOf(a,b);
+    return `<g class="edge" data-eid="${esc(e.id)}">
+      <path d="${blockEdgePath(a,b)}" fill="none" stroke="transparent" stroke-width="16" style="cursor:pointer"/>
+      <path d="${blockEdgePath(a,b)}" fill="none" stroke="${stroke}" stroke-width="${selected?w+1.6:w}"
+        ${selected?'stroke-dasharray="none" filter="drop-shadow(0 0 3px var(--probe))"':''}
+        marker-end="url(#${hv?'arrowHv':'arrowCopper'})" style="pointer-events:none"/>
+      <g style="pointer-events:none">
+        <rect x="${mid.x-15}" y="${mid.y-10}" width="30" height="18" rx="9"
+          fill="${selected?'var(--probe)':'var(--paper)'}" stroke="${stroke}" stroke-width="1.4"/>
+        <text x="${mid.x}" y="${mid.y+4}" text-anchor="middle"
+          font-family="var(--mono)" font-size="10.5" font-weight="600" fill="var(--ink)">${e.nets.length}</text>
+      </g>
+    </g>`;
+  }).join('');
+
+  nodesG.innerHTML = groups.map(g=>{
+    const pos = groupPosOf(g.id);
+    const selected = S.sel && S.sel.type==='group' && S.sel.id===g.id;
+    const eyebrow = g.id===UNGROUPED_ID ? 'UNASSIGNED' : 'FUNCTIONAL GROUP';
+    return `<g class="node" data-nid="${esc(g.id)}" transform="translate(${pos.x},${pos.y})" style="cursor:move">
+      <rect x="-4" y="6" width="${GROUP_W+8}" height="${GROUP_H}" rx="6" fill="#00000018"/>
+      <rect width="${GROUP_W}" height="${GROUP_H}" rx="6" fill="var(--vellum)"
+        stroke="${selected?'var(--probe)':'var(--ink)'}" stroke-width="${selected?3:2}"/>
+      <line x1="14" y1="30" x2="${GROUP_W-14}" y2="30" stroke="var(--ink)" stroke-width="1" opacity=".18"/>
+      <text x="14" y="20" font-family="var(--mono)" font-size="9.5" letter-spacing=".1em" fill="var(--ink-soft)">${eyebrow}</text>
+      <text x="14" y="54" font-family="var(--mono)" font-size="15" font-weight="600" fill="var(--ink)">${esc(g.title.slice(0,26))}</text>
+      <text x="14" y="${GROUP_H-16}" font-family="var(--sans)" font-size="11.5" fill="var(--ink-soft)">${g.members.length} block${g.members.length===1?'':'s'}</text>
+    </g>`;
+  }).join('');
 }
 
 function renderLink(){
@@ -255,11 +356,43 @@ function renderInspector(){
   if (!S.sel){
     eye.textContent='System';
     title.textContent=S.meta.title||'Untitled system';
+    const groups = visibleGroups();
+    const ungrouped = groups.find(g=>g.id===UNGROUPED_ID);
     body.innerHTML = `
       <p>${esc((S.meta.description||'').slice(0,420))}${(S.meta.description||'').length>420?'…':''}</p>
       <div class="kv"><label>Blocks</label><div class="val">${S.nodes.filter(n=>n.kind==='ic').length} ICs · ${S.nodes.filter(n=>n.kind==='external').length} external</div></div>
       <div class="kv"><label>Connections</label><div class="val">${S.edges.length} edges · ${S.edges.reduce((s,e)=>s+e.nets.length,0)} nets</div></div>
-      <p style="margin-top:14px">Select a block or a connection to inspect it. Drag from a copper port to another block to create a connection. Press <b>Delete</b> to remove the selection.</p>`;
+      <div class="kv"><label>Groups</label><div class="val">${groups.length} shown${ungrouped&&ungrouped.members.length?` · ${ungrouped.members.length} ungrouped`:''}</div></div>
+      <p style="margin-top:14px">${isTopLevel()
+        ? 'System-level view — each block is a functional group, derived automatically from the underlying connections. Select a group or a connection to inspect it. Drag a group to reposition it.'
+        : 'Select a block or a connection to inspect it. Drag from a copper port to another block to create a connection. Press <b>Delete</b> to remove the selection.'}</p>`;
+    return;
+  }
+  if (S.sel.type==='group'){
+    const g = visibleGroups().find(x=>x.id===S.sel.id);
+    if (!g){ S.sel=null; renderInspector(); return; }
+    eye.textContent = g.id===UNGROUPED_ID ? 'Ungrouped blocks' : 'Functional group';
+    title.textContent = g.title;
+    body.innerHTML = `
+      <p>${esc(g.description||'')}</p>
+      <div class="kv"><label>Members (${g.members.length})</label>
+        <div class="val">${g.members.map(id=>{ const n=nodeById(id); return esc(n?n.label:id); }).join(', ')||'—'}</div></div>
+      <p style="margin-top:14px;color:var(--ink-soft)">Drill-down into a group isn't wired up yet — coming next. Group rename/description editing and moving members between groups will land later too.</p>`;
+    return;
+  }
+  if (S.sel.type==='groupEdge'){
+    const e = computeGroupEdges().find(x=>x.id===S.sel.id);
+    if (!e){ S.sel=null; renderInspector(); return; }
+    const gs = visibleGroups().find(g=>g.id===e.source), gt = visibleGroups().find(g=>g.id===e.target);
+    eye.textContent='Group connection (read-only)';
+    title.textContent = `${gs?gs.title:e.source} → ${gt?gt.title:e.target}`;
+    body.innerHTML = `
+      <p style="color:var(--ink-soft)">Derived from ${e.nets.length} underlying net${e.nets.length===1?'':'s'} between member blocks. Open a group to edit its individual connections.</p>
+      ${e.nets.map(n=>`
+        <div class="netcard ${/HIGH_VOLTAGE/i.test(n.type)?'hv':''}">
+          <div class="nettop"><span class="netname">${esc(n.name)}</span><span class="nettype">${esc(n.type)}</span></div>
+          ${n.description?`<div class="netdesc">${esc(n.description)}</div>`:''}
+        </div>`).join('')}`;
     return;
   }
   if (S.sel.type==='node'){
@@ -353,6 +486,13 @@ function toWorld(clientX, clientY){
 
 let drag = null; // {mode:'pan'|'node'|'link', ...}
 
+// Position accessor for whatever is currently draggable — flat-view nodes
+// or, at the top level, group sheet-symbol blocks (backed by S.groupPos).
+function blockXY(id){
+  if (isTopLevel()){ const p=groupPosOf(id); return { x:p.x, y:p.y }; }
+  const n = nodeById(id); return n ? { x:n.x, y:n.y } : { x:0, y:0 };
+}
+
 svg.addEventListener('pointerdown', ev=>{
   const port = ev.target.closest('.port');
   const nodeEl = ev.target.closest('.node');
@@ -368,13 +508,14 @@ svg.addEventListener('pointerdown', ev=>{
     return;
   }
   if (nodeEl){
-    const n = nodeById(nodeEl.dataset.nid);
+    const id = nodeEl.dataset.nid;
+    const pos = blockXY(id);
     const w = toWorld(ev.clientX, ev.clientY);
-    drag = { mode:'node', id:n.id, dx:w.x-n.x, dy:w.y-n.y, moved:false };
+    drag = { mode:'node', id, dx:w.x-pos.x, dy:w.y-pos.y, moved:false };
     return;
   }
   if (edgeEl){
-    S.sel = { type:'edge', id: edgeEl.dataset.eid };
+    S.sel = { type: isTopLevel()?'groupEdge':'edge', id: edgeEl.dataset.eid };
     render();
     return;
   }
@@ -393,9 +534,9 @@ svg.addEventListener('pointermove', ev=>{
   }
   const w = toWorld(ev.clientX, ev.clientY);
   if (drag.mode==='node'){
-    const n = nodeById(drag.id);
-    n.x = Math.round((w.x-drag.dx)/8)*8;
-    n.y = Math.round((w.y-drag.dy)/8)*8;
+    const nx = Math.round((w.x-drag.dx)/8)*8, ny = Math.round((w.y-drag.dy)/8)*8;
+    if (isTopLevel()){ const p=groupPosOf(drag.id); p.x=nx; p.y=ny; }
+    else { const n=nodeById(drag.id); n.x=nx; n.y=ny; }
     drag.moved=true;
     render();
     return;
@@ -413,7 +554,7 @@ svg.addEventListener('pointerup', ev=>{
     svg.classList.remove('panning');
   }
   if (drag.mode==='node' && !drag.moved){
-    S.sel={type:'node', id:drag.id}; render();
+    S.sel={type: isTopLevel()?'group':'node', id:drag.id}; render();
   }
   if (drag.mode==='link'){
     const el = document.elementFromPoint(ev.clientX, ev.clientY);
@@ -447,16 +588,22 @@ svg.addEventListener('wheel', ev=>{
 
 document.addEventListener('keydown', ev=>{
   if ((ev.key==='Delete'||ev.key==='Backspace') && S.sel && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)){
-    ev.preventDefault();
-    if (S.sel.type==='node') deleteNode(S.sel.id);
-    else { S.edges=S.edges.filter(x=>x.id!==S.sel.id); S.sel=null; render(); }
+    // Group / group-edge deletion is read-only at the top level for now (phase d).
+    if (S.sel.type==='node'){ ev.preventDefault(); deleteNode(S.sel.id); }
+    else if (S.sel.type==='edge'){ ev.preventDefault(); S.edges=S.edges.filter(x=>x.id!==S.sel.id); S.sel=null; render(); }
   }
 });
 
+function currentBlocksForBounds(){
+  if (isTopLevel()) return visibleGroups().map(g=>groupBlockRect(g.id));
+  return S.nodes;
+}
+
 function fitView(){
-  if (!S.nodes.length) return;
-  const minX=Math.min(...S.nodes.map(n=>n.x)), maxX=Math.max(...S.nodes.map(n=>n.x+n.w));
-  const minY=Math.min(...S.nodes.map(n=>n.y)), maxY=Math.max(...S.nodes.map(n=>n.y+n.h));
+  const blocks = currentBlocksForBounds();
+  if (!blocks.length) return;
+  const minX=Math.min(...blocks.map(n=>n.x)), maxX=Math.max(...blocks.map(n=>n.x+n.w));
+  const minY=Math.min(...blocks.map(n=>n.y)), maxY=Math.max(...blocks.map(n=>n.y+n.h));
   const r=svg.getBoundingClientRect(), pad=60;
   const k=Math.min(1.4, Math.min((r.width-2*pad)/(maxX-minX), (r.height-2*pad)/(maxY-minY)));
   S.view.k=Math.max(.25,k);
@@ -539,7 +686,9 @@ $('btnImport').onclick=()=>{
         const s=tolerantParse($('impSess').value);
         if (!s||!s.nodes||!s.edges) throw new Error('Not a session JSON (nodes/edges missing)');
         S.meta=s.meta||S.meta; S.nodes=s.nodes; S.edges=s.edges; S.groups=s.groups||[];
+        S.groupPos = s.groupPos || {}; S.openGroup = s.openGroup || null;
         S.edgeSeq = Math.max(0,...S.edges.map(e=>+String(e.id).replace(/^e/,'')||0))+1;
+        autoLayoutGroups(true); // fill in positions only for groups the session didn't have (preserves dragged layout)
         S.sel=null; render(); fitView();
       }
       closeModal(); toast('Imported');
@@ -624,7 +773,9 @@ function buildSessionJSON(){
   return { meta:S.meta,
     nodes:S.nodes.map(n=>({ ...n })),
     edges:S.edges.map(e=>({ ...e, nets:e.nets.map(x=>({ ...x })) })),
-    groups:S.groups.map(g=>({ ...g, members:[...g.members] })) };
+    groups:S.groups.map(g=>({ ...g, members:[...g.members] })),
+    groupPos:{ ...S.groupPos },
+    openGroup:S.openGroup };
 }
 
 /* ============================================================
@@ -634,8 +785,10 @@ function loadFromContract(input, contract, groups){
   S.meta = { id:input.id||null, title:input.title||'', description:input.description||'', key_references:input.key_references||[] };
   S.edgeSeq=0;
   const g = buildGraph(input, contract||{}, groups||[]);
-  S.nodes=g.nodes; S.edges=g.edges; S.groups=g.groups; S.sel=null;
+  S.nodes=g.nodes; S.edges=g.edges; S.groups=g.groups;
+  S.groupPos={}; S.openGroup=null; S.sel=null;
   autoLayout();
+  autoLayoutGroups();
   render(); fitView();
 }
 
@@ -644,7 +797,7 @@ function toast(msg){
   clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove('show'),2200);
 }
 
-$('btnLayout').onclick=()=>{ autoLayout(); render(); fitView(); };
+$('btnLayout').onclick=()=>{ if (isTopLevel()) autoLayoutGroups(); else autoLayout(); render(); fitView(); };
 $('btnFit').onclick=fitView;
 window.addEventListener('resize', ()=>render());
 
