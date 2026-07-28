@@ -1,0 +1,1268 @@
+[
+  {
+    "editor_fixture": {
+      "input": {
+        "id": "A_1",
+        "title": "Regulated Isolated Flyback HV Charger with Capacitive Actuator Output driven by HV optocouplers in Half-bridge configuration",
+        "description": "This architecture uses the rechargeable battery and 5 V USB charging front end to feed a protected low-voltage power rail, then drives an isolated high-frequency flyback high-voltage converter and a Diode-Capacitor-based Voltage Multiplier whose rectified secondary creates a HV bus with a fixed 14 kV output.After the HV Bus, two HV optical diode or optocoupler are implemented in a Half-bridge configuration with the channel output connected into the middle of the half-bridge,  such that it can be connected to the HV bus or shorted in the charge and discharge process respectively.Non additional high-voltage output capacitor is required and the only additional energy of the secondary HV Bus is provided by Diode-Capacitor-based Voltage Multipliers. A high-impedance sensing divider or isolated voltage feedback path is used by the controller to keep the bus stable at 14 kV. Charge rate is controlled by the PWM of the Low Voltage optocoupler inputs between 100% and 0% duty cycle. Additional voltage measurement feedback is required to monitor the charge of each output channel. Primary-side current limiting and cycle-by-cycle energy control so the 5 nF load can be charged at 2 Hz to 8 Hz while limiting current during arcing or short-circuit conditions. Discharge is handled by a normally enabled fail-safe bleed path plus the Low Side optocoupler to actively commanded high-voltage discharge path sized to reduce 14 kV on 5 nF to below 60 V within 1 s. The same PCB includes battery charge management, battery protection, thermal sensing, USB reverse-polarity and surge/ESD protection, a low-power controller, sealed user controls, and state indication. EMC is addressed with input filtering at the charging interface, shielding/guarding around the high-voltage node, spread-spectrum or fixed ultrasonic switching above audible range, and reinforced/double insulation between the case-accessible circuits and high-voltage region. This is the simplest single-channel architecture and minimizes interconnect complexity, but the flyback transformer and output rectifier stack must be designed carefully for 14 kV insulation stress.",
+        "key_references": [
+          "https://www.artimusrobotics.com/post/power-consumption-of-hasel-actuators",
+          "https://ieeexplore.ieee.org/iel7/8847244/9107390/10210012.pdf",
+          "https://incompliancemag.com/the-capacitive-discharge-test",
+          "https://advanced.onlinelibrary.wiley.com/doi/10.1002/admt.202101469"
+        ],
+        "ic_components": [
+          {
+            "ic_type": "USB single-cell Li-ion linear charger and power-path manager",
+            "description": "5 V USB input single-cell Li-ion/Li-poly charger with dynamic power-path management, input over-voltage protection, thermal regulation, charge termination, status outputs, and system rail support while charging.",
+            "manufacturer": "Texas Instruments",
+            "ic_part_number": "BQ24075",
+            "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/bq24075-q1.pdf",
+            "selection_rationale": "Approved manufacturer with highest preference. Fits 5 V USB rechargeable battery front end, provides robust production-grade charge management and power-path behavior so the system can run while charging. Input operating range and safety features align with protected low-voltage portable product architecture."
+          },
+          {
+            "ic_type": "1-cell Li-ion battery protector",
+            "description": "Secondary lithium-ion protector for cell over-voltage, under-voltage, and over-current/short-circuit protection with low quiescent current.",
+            "manufacturer": "Texas Instruments",
+            "ic_part_number": "BQ2970",
+            "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/bq2971.pdf",
+            "selection_rationale": "Approved high-preference manufacturer. Adds dedicated pack-level protection independent of charger and MCU, improving robustness against abuse and fault conditions expected in a fielded product."
+          },
+          {
+            "ic_type": "Buck-boost DC/DC converter",
+            "description": "High-efficiency buck-boost converter generating regulated system rail from single-cell battery across charge/discharge range with integrated switches and power-save operation.",
+            "manufacturer": "Texas Instruments",
+            "ic_part_number": "TPS63070",
+            "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/tps63070.pdf",
+            "selection_rationale": "Approved highest-preference source. A buck-boost rail is appropriate because battery voltage can be above or below the required regulated logic rail during operation. Supports professional power integrity and good efficiency versus purely linear regulation."
+          },
+          {
+            "ic_type": "Low-noise LDO regulator",
+            "description": "Ultra-low quiescent current LDO used to derive a clean analog rail for sensing, references, and precision measurements from the main system supply.",
+            "manufacturer": "Texas Instruments",
+            "ic_part_number": "TPS7A20",
+            "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/tps7a20.pdf",
+            "selection_rationale": "Adds a dedicated clean rail for feedback and ADC reference-sensitive circuitry, improving HV voltage regulation accuracy and noise immunity in a switching, high-EMI environment."
+          },
+          {
+            "ic_type": "Boost converter controller",
+            "description": "Compact boost converter to generate an auxiliary higher-than-battery rail where needed for controlled drive of discharge or protection circuitry on the low-voltage side.",
+            "manufacturer": "Texas Instruments",
+            "ic_part_number": "TPS61041",
+            "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/tps61040.pdf",
+            "selection_rationale": "Provides implementation margin for controlled active discharge interface circuitry and any low-side auxiliary biasing without burdening the main rail. Chosen from approved preferred manufacturer."
+          },
+          {
+            "ic_type": "Current-mode PWM controller",
+            "description": "Current-mode PWM controller with cycle-by-cycle current limiting, UVLO, and high-frequency operation suitable for isolated flyback energy control.",
+            "manufacturer": "Texas Instruments",
+            "ic_part_number": "UCC28C43",
+            "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/ucc38c40.pdf",
+            "selection_rationale": "Approved highest-preference source. Current-mode control directly supports the stated need for primary-side current limiting and cycle-by-cycle energy control. Can be configured for ultrasonic switching frequency and robust fault limiting. A controller approach is more appropriate than an integrated low-voltage flyback switch because the transformer and primary power stage are specialized for HV charging."
+          },
+          {
+            "ic_type": "Single low-side gate driver",
+            "description": "High-current low-side MOSFET gate driver for the external primary switch of the flyback stage, with fast rise/fall times and strong drive capability.",
+            "manufacturer": "Texas Instruments",
+            "ic_part_number": "UCC27517",
+            "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/ucc27517.pdf",
+            "selection_rationale": "A dedicated driver improves switching control, EMI management, and efficiency for the primary HV charger stage versus driving the power switch directly from the PWM controller. Selected from highest-preference approved manufacturer."
+          },
+          {
+            "ic_type": "Reinforced isolated precision amplifier",
+            "description": "Precision reinforced isolation amplifier for transferring scaled HV output feedback across the safety barrier to the low-voltage controller domain.",
+            "manufacturer": "Texas Instruments",
+            "ic_part_number": "AMC1311",
+            "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/amc1311.pdf",
+            "selection_rationale": "The design explicitly allows an isolated voltage feedback path and requires reinforced/double insulation between user-accessible circuits and HV region. This device provides a production-grade isolated analog channel for regulation and monitoring while maintaining safety isolation. TI is highest preference and offers reinforced isolation suitable for professional implementation."
+          },
+          {
+            "ic_type": "Reinforced isolated amplifier",
+            "description": "Reinforced isolated amplifier for accurate measurement of shunt-based primary current or fault-related analog signals while preserving barrier integrity.",
+            "manufacturer": "Texas Instruments",
+            "ic_part_number": "AMC3330",
+            "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/amc3330.pdf",
+            "selection_rationale": "Adds independent monitored current information beyond cycle-by-cycle limiting, enabling diagnostics and more reliable arc/short-circuit response. Chosen from approved high-preference manufacturer and aligned with reinforced isolation philosophy."
+          },
+          {
+            "ic_type": "Dual operational amplifier",
+            "description": "Dual op-amp for conditioning divider feedback, filtering, threshold generation, and analog interfacing for HV regulation and discharge confirmation.",
+            "manufacturer": "Texas Instruments",
+            "ic_part_number": "TLV9062",
+            "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/tlv9062.pdf",
+            "selection_rationale": "Provides robust analog front-end capability for precision filtering and comparator threshold support around HV sensing. Selected from preferred approved source with modern low-power rail-to-rail performance."
+          },
+          {
+            "ic_type": "Comparator",
+            "description": "Low-power comparator for hardware threshold supervision of scaled HV output or critical rails, enabling independent fault response outside firmware.",
+            "manufacturer": "Texas Instruments",
+            "ic_part_number": "TLV7011",
+            "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/tlv7011.pdf",
+            "selection_rationale": "Professional design should not rely solely on firmware for HV safety-critical thresholds. This comparator supports independent hardware interlock behavior for over-voltage or safe-to-touch confirmation logic."
+          },
+          {
+            "ic_type": "Precision voltage reference",
+            "description": "Low-drift precision voltage reference used for stable feedback scaling, ADC accuracy, and consistent HV setpoint control.",
+            "manufacturer": "Texas Instruments",
+            "ic_part_number": "REF3330",
+            "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/ref33.pdf",
+            "selection_rationale": "Improves regulation stability and absolute accuracy toward the better-than-10% HV target, especially over temperature and battery variation. Selected from approved highest-preference source."
+          },
+          {
+            "ic_type": "32-bit microcontroller",
+            "description": "Low-power microcontroller with ADC, timers, GPIO, communication interfaces, watchdog, and sufficient processing to manage charging profiles, voltage setpoints, user controls, state indication, and fault handling.",
+            "manufacturer": "Texas Instruments",
+            "ic_part_number": "MSPM0G3507",
+            "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/mspm0g3507.pdf",
+            "selection_rationale": "Approved highest-preference manufacturer. A modern MCU is required for command selection, sequencing, diagnostics, event logging, and future expansion. Integrated ADC/timers simplify closed-loop supervision and 2 Hz to 8 Hz cycle management."
+          },
+          {
+            "ic_type": "Window watchdog timer",
+            "description": "External watchdog timer to supervise MCU operation and force recovery on firmware lockup or timing faults.",
+            "manufacturer": "Texas Instruments",
+            "ic_part_number": "TPS3431",
+            "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/tps3431-q1.pdf",
+            "selection_rationale": "For a high-voltage portable product, independent supervision is good engineering practice and improves safety and reliability beyond the internal MCU watchdog alone."
+          },
+          {
+            "ic_type": "Digital temperature sensor",
+            "description": "High-accuracy digital temperature sensor for battery/board thermal monitoring and charger or HV converter derating logic.",
+            "manufacturer": "Texas Instruments",
+            "ic_part_number": "TMP117",
+            "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/tmp117.pdf",
+            "selection_rationale": "The design explicitly requires thermal sensing. A precision digital sensor simplifies calibration and supports protective derating and fault shutdown in a compact system."
+          },
+          {
+            "ic_type": "ESD protection array",
+            "description": "Low-capacitance multi-channel ESD protection array for USB power and low-speed control lines exposed at the product interface.",
+            "manufacturer": "Texas Instruments",
+            "ic_part_number": "TPD4E05U06",
+            "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/tpd4e05u06.pdf",
+            "selection_rationale": "The design explicitly calls for USB surge/ESD protection. This is a standard production-grade interface protection IC from the highest-preference approved vendor."
+          },
+          {
+            "ic_type": "eFuse / power protection IC",
+            "description": "Integrated eFuse with over-voltage protection, current limiting, inrush control, reverse current blocking, and fault reporting for the 5 V input path.",
+            "manufacturer": "Texas Instruments",
+            "ic_part_number": "TPS25940",
+            "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/tps25940.pdf",
+            "selection_rationale": "Provides a much more robust USB/front-end protection strategy than simple passive protection alone, addressing reverse-current/inrush/fault events and improving survivability in real use."
+          },
+          {
+            "ic_type": "Reinforced digital isolator",
+            "description": "Reinforced digital isolator for transferring control/status signals across the isolation barrier where direct MCU-domain connection to HV-side sensing or control logic is undesirable.",
+            "manufacturer": "Texas Instruments",
+            "ic_part_number": "ISO6741",
+            "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/iso6740.pdf",
+            "selection_rationale": "Supports a professional partitioned architecture with reinforced digital barrier communications, aiding diagnostics and safe signal transfer between accessible circuitry and HV domain."
+          },
+          {
+            "ic_type": "Dual Schmitt-trigger buffer",
+            "description": "Dual Schmitt-trigger buffer for sealed switch debounce, noisy external signal cleanup, and robust logic edge conditioning.",
+            "manufacturer": "Texas Instruments",
+            "ic_part_number": "SN74LVC2G17",
+            "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/sn74lvc2g17.pdf",
+            "selection_rationale": "Improves immunity to EMI and false triggering in a high-voltage switching environment, which is important for sealed user controls and reliable field operation."
+          },
+          {
+            "ic_type": "LED driver",
+            "description": "Programmable LED driver for multi-state visual indication independent of MCU GPIO drive limitations.",
+            "manufacturer": "Texas Instruments",
+            "ic_part_number": "LP5562",
+            "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/lp5562.pdf",
+            "selection_rationale": "Supports professional status indication with consistent brightness and reduced MCU loading, useful for charge/discharge/fault/status outputs in a production device."
+          },
+          {
+            "ic_type": "24-bit delta-sigma ADC",
+            "description": "Precision ADC for high-resolution measurement of scaled HV feedback, current sense, and temperature-related analog channels where MCU ADC performance is insufficient.",
+            "manufacturer": "Texas Instruments",
+            "ic_part_number": "ADS1220",
+            "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/ads1220.pdf",
+            "selection_rationale": "A dedicated precision ADC improves closed-loop accuracy margin, production calibration capability, and diagnostics for the HV charger beyond a minimal implementation. Particularly useful when using very high-impedance dividers and filtered sensing."
+          }
+        ]
+      },
+      "contract": {
+        "global_nets": [
+          {
+            "name": "USB_VBUS_IN",
+            "type": "POWER_DISTRIBUTION",
+            "source": "external block: USB-C receptacle / charging connector",
+            "consumers": [
+              "TPD4E05U06",
+              "TPS25940",
+              "external block: USB input EMI filter"
+            ],
+            "description": "Raw 5 V USB input from the connector after the EMI filter, protected by the ESD array and feeding the eFuse input."
+          },
+          {
+            "name": "VBUS_PROT_5V",
+            "type": "POWER_DISTRIBUTION",
+            "source": "TPS25940",
+            "consumers": [
+              "BQ24075"
+            ],
+            "description": "eFuse-protected, current-limited and reverse-blocked 5 V rail supplying the charger IN pin."
+          },
+          {
+            "name": "USB_DP_CTRL",
+            "type": "DIGITAL_LOGIC",
+            "source": "external block: USB-C receptacle / charging connector",
+            "consumers": [
+              "TPD4E05U06",
+              "MSPM0G3507"
+            ],
+            "description": "USB D+ / configuration line brought through the ESD array to the MCU for charger-type detection; unused if only power is required (leave as NO_CONNECT at MCU)."
+          },
+          {
+            "name": "USB_DM_CTRL",
+            "type": "DIGITAL_LOGIC",
+            "source": "external block: USB-C receptacle / charging connector",
+            "consumers": [
+              "TPD4E05U06",
+              "MSPM0G3507"
+            ],
+            "description": "USB D- / configuration line brought through the ESD array to the MCU for charger-type detection; unused if only power is required (leave as NO_CONNECT at MCU)."
+          },
+          {
+            "name": "EFUSE_EN",
+            "type": "CONTROL_SIGNAL",
+            "source": "MSPM0G3507",
+            "consumers": [
+              "TPS25940"
+            ],
+            "description": "Active-high enable of the eFuse (EN/UVLO); pulled high by default resistor so input power works before MCU boot, MCU drives high for normal operation and low to isolate the USB input."
+          },
+          {
+            "name": "EFUSE_FLT_N",
+            "type": "DIGITAL_LOGIC",
+            "source": "TPS25940",
+            "consumers": [
+              "MSPM0G3507"
+            ],
+            "description": "Active-low open-drain eFuse fault flag (over-voltage/over-current/thermal); pull-up owned by the MCU block."
+          },
+          {
+            "name": "EFUSE_IMON",
+            "type": "ANALOG_SIGNAL",
+            "source": "TPS25940",
+            "consumers": [
+              "MSPM0G3507"
+            ],
+            "description": "Analog current-monitor output of the eFuse proportional to USB input current, read by an MCU ADC channel."
+          },
+          {
+            "name": "VBAT",
+            "type": "POWER_DISTRIBUTION",
+            "source": "external block: Li-ion single cell battery",
+            "consumers": [
+              "BQ24075",
+              "BQ2970",
+              "TPS63070",
+              "TPS61041"
+            ],
+            "description": "Protected single-cell Li-ion positive terminal (cell + through the BQ2970/FET protection path), charger BAT pin and main converter input."
+          },
+          {
+            "name": "BAT_CELL_POS",
+            "type": "POWER_DISTRIBUTION",
+            "source": "external block: Li-ion single cell battery",
+            "consumers": [
+              "BQ2970"
+            ],
+            "description": "Raw cell positive terminal sensed by the protector before the protection FETs (protector VDD/sense node)."
+          },
+          {
+            "name": "BAT_CELL_NEG",
+            "type": "HIGH_CURRENT_PATH",
+            "source": "external block: Li-ion single cell battery",
+            "consumers": [
+              "BQ2970",
+              "external block: Battery protection back-to-back FET pair"
+            ],
+            "description": "Cell negative terminal routed through the back-to-back protection FETs; joins GND_LV only through the protection FET source and the single battery-return tie point at the charger power-path ground pin."
+          },
+          {
+            "name": "BAT_PROT_DOUT",
+            "type": "CONTROL_SIGNAL",
+            "source": "BQ2970",
+            "consumers": [
+              "external block: Battery protection back-to-back FET pair"
+            ],
+            "description": "Discharge-FET gate drive from the protector; active-high (high = discharge path enabled), pulled low on over-discharge/over-current fault."
+          },
+          {
+            "name": "BAT_PROT_COUT",
+            "type": "CONTROL_SIGNAL",
+            "source": "BQ2970",
+            "consumers": [
+              "external block: Battery protection back-to-back FET pair"
+            ],
+            "description": "Charge-FET gate drive from the protector; active-high (high = charge path enabled), pulled low on cell over-voltage fault."
+          },
+          {
+            "name": "BAT_PROT_VM",
+            "type": "SENSING_LINE",
+            "source": "external block: Battery protection back-to-back FET pair",
+            "consumers": [
+              "BQ2970"
+            ],
+            "description": "Protector VM/current-sense node at the drain of the FET pair used for over-current and charger-detect sensing."
+          },
+          {
+            "name": "BAT_NTC",
+            "type": "ANALOG_SIGNAL",
+            "source": "external block: Battery pack NTC thermistor",
+            "consumers": [
+              "BQ24075",
+              "MSPM0G3507"
+            ],
+            "description": "Battery pack thermistor divider node feeding the charger TS input and an MCU ADC channel for redundant pack temperature monitoring."
+          },
+          {
+            "name": "VSYS",
+            "type": "POWER_DISTRIBUTION",
+            "source": "BQ24075",
+            "consumers": [
+              "TPS63070",
+              "TPS61041",
+              "LP5562"
+            ],
+            "description": "Charger power-path system output rail (USB or battery sourced) feeding the buck-boost, the auxiliary boost and the LED driver."
+          },
+          {
+            "name": "CHG_EN1",
+            "type": "CONTROL_SIGNAL",
+            "source": "MSPM0G3507",
+            "consumers": [
+              "BQ24075"
+            ],
+            "description": "Charger input-current-limit select EN1; logic level set by MCU (EN1/EN2 code selects 100 mA / 500 mA / ILIM / standby) — driven per USB enumeration result."
+          },
+          {
+            "name": "CHG_EN2",
+            "type": "CONTROL_SIGNAL",
+            "source": "MSPM0G3507",
+            "consumers": [
+              "BQ24075"
+            ],
+            "description": "Charger input-current-limit select EN2; companion to CHG_EN1, both low selects the default 100 mA USB limit at power-up."
+          },
+          {
+            "name": "CHG_CE_N",
+            "type": "CONTROL_SIGNAL",
+            "source": "MSPM0G3507",
+            "consumers": [
+              "BQ24075"
+            ],
+            "description": "Active-low charge-enable (CE); driven low by MCU to allow charging, high to inhibit charging during thermal derating or fault."
+          },
+          {
+            "name": "CHG_STAT1_N",
+            "type": "DIGITAL_LOGIC",
+            "source": "BQ24075",
+            "consumers": [
+              "MSPM0G3507"
+            ],
+            "description": "Active-low open-drain charger status 1 (charging in progress); pull-up owned by the MCU block."
+          },
+          {
+            "name": "CHG_STAT2_N",
+            "type": "DIGITAL_LOGIC",
+            "source": "BQ24075",
+            "consumers": [
+              "MSPM0G3507"
+            ],
+            "description": "Active-low open-drain charger status 2 (charge done / fault code); pull-up owned by the MCU block."
+          },
+          {
+            "name": "CHG_PGOOD_N",
+            "type": "DIGITAL_LOGIC",
+            "source": "BQ24075",
+            "consumers": [
+              "MSPM0G3507"
+            ],
+            "description": "Active-low open-drain power-good flag indicating valid USB input present; pull-up owned by the MCU block."
+          },
+          {
+            "name": "VBAT_MON",
+            "type": "ANALOG_SIGNAL",
+            "source": "external block: Battery voltage divider network",
+            "consumers": [
+              "MSPM0G3507"
+            ],
+            "description": "Scaled battery voltage from the resistive divider to an MCU ADC channel for state-of-charge and cut-off supervision."
+          },
+          {
+            "name": "3V3_MAIN",
+            "type": "POWER_DISTRIBUTION",
+            "source": "TPS63070",
+            "consumers": [
+              "MSPM0G3507",
+              "TPS7A20",
+              "TPS3431",
+              "TMP117",
+              "SN74LVC2G17",
+              "LP5562",
+              "ISO6741",
+              "UCC28C43",
+              "UCC27517",
+              "AMC1311",
+              "AMC3330",
+              "ADS1220",
+              "TLV7011"
+            ],
+            "description": "Main regulated 3.3 V logic rail from the buck-boost, supplying all low-voltage digital, the LDO input and the low-voltage (primary/controller) side of the isolators."
+          },
+          {
+            "name": "BUCKBOOST_EN",
+            "type": "CONTROL_SIGNAL",
+            "source": "external block: Power-on / user control button assembly",
+            "consumers": [
+              "TPS63070"
+            ],
+            "description": "Active-high enable of the buck-boost converter; held high by the power-latch circuit (button + MCU keep-alive) for normal operation, low shuts the system down."
+          },
+          {
+            "name": "SYS_KEEP_ALIVE",
+            "type": "CONTROL_SIGNAL",
+            "source": "MSPM0G3507",
+            "consumers": [
+              "TPS63070"
+            ],
+            "description": "Active-high MCU keep-alive that latches BUCKBOOST_EN high after button release; MCU drives high during normal operation and low to perform a controlled power-off."
+          },
+          {
+            "name": "BUCKBOOST_PG",
+            "type": "DIGITAL_LOGIC",
+            "source": "TPS63070",
+            "consumers": [
+              "MSPM0G3507"
+            ],
+            "description": "Active-high open-drain power-good of the 3V3_MAIN rail; pull-up owned by the MCU block."
+          },
+          {
+            "name": "BUCKBOOST_PS_MODE",
+            "type": "CONTROL_SIGNAL",
+            "source": "MSPM0G3507",
+            "consumers": [
+              "TPS63070"
+            ],
+            "description": "Power-save mode select (PS/SYNC); driven low by MCU for power-save at light load, high to force PWM during HV charging bursts for low ripple."
+          },
+          {
+            "name": "3V3_ANA",
+            "type": "POWER_DISTRIBUTION",
+            "source": "TPS7A20",
+            "consumers": [
+              "REF3330",
+              "TLV9062",
+              "ADS1220",
+              "TLV7011",
+              "AMC1311",
+              "AMC3330"
+            ],
+            "description": "Low-noise 3.3 V analog rail from the LDO for the reference, precision ADC, op-amps, comparator and low-side bias of the isolated amplifiers."
+          },
+          {
+            "name": "LDO_EN",
+            "type": "CONTROL_SIGNAL",
+            "source": "MSPM0G3507",
+            "consumers": [
+              "TPS7A20"
+            ],
+            "description": "Active-high enable of the analog LDO; driven high by MCU for normal operation, low in deep-sleep to remove the analog rail."
+          },
+          {
+            "name": "VAUX_12V",
+            "type": "POWER_DISTRIBUTION",
+            "source": "TPS61041",
+            "consumers": [
+              "external block: LV optocoupler LED drive stage",
+              "UCC27517",
+              "external block: Active bleed / discharge control interface"
+            ],
+            "description": "Auxiliary boosted rail (~12 V) from the boost converter used for gate-driver bias and controlled drive of the HV half-bridge optocoupler input LEDs."
+          },
+          {
+            "name": "BOOST_AUX_EN",
+            "type": "CONTROL_SIGNAL",
+            "source": "MSPM0G3507",
+            "consumers": [
+              "TPS61041"
+            ],
+            "description": "Active-high shutdown/enable pin of the auxiliary boost; driven high by MCU to enable VAUX_12V before HV operation, low to disable."
+          },
+          {
+            "name": "VAUX_MON",
+            "type": "ANALOG_SIGNAL",
+            "source": "external block: Auxiliary rail divider network",
+            "consumers": [
+              "MSPM0G3507"
+            ],
+            "description": "Scaled VAUX_12V feedback to an MCU ADC channel for auxiliary rail supervision before enabling HV charge."
+          },
+          {
+            "name": "GND_LV",
+            "type": "GROUND",
+            "source": "external block: Li-ion single cell battery",
+            "consumers": [
+              "BQ24075",
+              "BQ2970",
+              "TPS63070",
+              "TPS7A20",
+              "TPS61041",
+              "TPS25940",
+              "TPD4E05U06",
+              "MSPM0G3507",
+              "TPS3431",
+              "TMP117",
+              "SN74LVC2G17",
+              "LP5562",
+              "ADS1220",
+              "REF3330",
+              "TLV9062",
+              "TLV7011",
+              "UCC28C43",
+              "UCC27517",
+              "AMC1311",
+              "AMC3330",
+              "ISO6741",
+              "external block: USB-C receptacle / charging connector"
+            ],
+            "description": "Single main low-voltage ground of the user-accessible domain; the USB connector shell/return and the battery return both tie to it at one point, the charger power-path ground pin (star point). Galvanically separated from GND_HV by the reinforced isolation barrier."
+          },
+          {
+            "name": "PGND_SW",
+            "type": "GROUND",
+            "source": "external block: Flyback primary power stage (MOSFET, shunt, snubber)",
+            "consumers": [
+              "UCC28C43",
+              "UCC27517",
+              "AMC3330",
+              "TPS63070"
+            ],
+            "description": "Primary-side switching power ground for the flyback MOSFET source/shunt return and gate-driver return; ties to GND_LV at a single point at the current-sense shunt low-side pad."
+          },
+          {
+            "name": "PWM_HV_ENABLE",
+            "type": "CONTROL_SIGNAL",
+            "source": "MSPM0G3507",
+            "consumers": [
+              "UCC28C43"
+            ],
+            "description": "Active-high HV converter run permission gated into the PWM controller (via its reference/shutdown network); MCU drives high to allow flyback switching, low forces the converter off (safe default at reset)."
+          },
+          {
+            "name": "PWM_GATE_CMD",
+            "type": "DIGITAL_LOGIC",
+            "source": "UCC28C43",
+            "consumers": [
+              "UCC27517"
+            ],
+            "description": "PWM controller OUT signal driving the gate-driver input; active-high pulse train at the ultrasonic switching frequency."
+          },
+          {
+            "name": "FLY_GATE",
+            "type": "SWITCHING_NODE",
+            "source": "UCC27517",
+            "consumers": [
+              "external block: Flyback primary power stage (MOSFET, shunt, snubber)"
+            ],
+            "description": "High-current gate drive to the flyback primary MOSFET; active-high turn-on referenced to PGND_SW."
+          },
+          {
+            "name": "FLY_PRI_DRAIN",
+            "type": "SWITCHING_NODE",
+            "source": "external block: Flyback primary power stage (MOSFET, shunt, snubber)",
+            "consumers": [
+              "external block: HV flyback transformer"
+            ],
+            "description": "Primary switching node between the flyback MOSFET drain and the transformer primary winding, with RCD snubber; high dv/dt noisy node."
+          },
+          {
+            "name": "FLY_PRI_VIN",
+            "type": "HIGH_CURRENT_PATH",
+            "source": "TPS63070",
+            "consumers": [
+              "external block: HV flyback transformer"
+            ],
+            "description": "Primary-side bulk supply feeding the flyback transformer primary winding (taken from the main regulated rail node with local bulk capacitance)."
+          },
+          {
+            "name": "PRI_ISENSE",
+            "type": "SENSING_LINE",
+            "source": "external block: Flyback primary power stage (MOSFET, shunt, snubber)",
+            "consumers": [
+              "UCC28C43",
+              "AMC3330"
+            ],
+            "description": "Primary current-shunt voltage used for cycle-by-cycle peak-current limiting at the PWM controller CS pin and for isolated/precision current measurement input of the isolated amplifier."
+          },
+          {
+            "name": "PRI_ISENSE_MEAS",
+            "type": "ANALOG_SIGNAL",
+            "source": "AMC3330",
+            "consumers": [
+              "TLV9062",
+              "ADS1220"
+            ],
+            "description": "Buffered output of the isolated current amplifier carrying scaled primary current for conditioning and precision digitization (arc/short-circuit diagnostics)."
+          },
+          {
+            "name": "COMP_FB_PRI",
+            "type": "FEEDBACK_PATH",
+            "source": "TLV9062",
+            "consumers": [
+              "UCC28C43"
+            ],
+            "description": "Conditioned error/compensation signal from the HV feedback conditioning op-amp into the PWM controller FB/COMP node, closing the 14 kV regulation loop on the primary side."
+          },
+          {
+            "name": "FLY_SEC_HV_AC",
+            "type": "HIGH_VOLTAGE_PATH",
+            "source": "external block: HV flyback transformer",
+            "consumers": [
+              "external block: Diode-capacitor voltage multiplier stack"
+            ],
+            "description": "Isolated high-voltage AC secondary winding output feeding the diode-capacitor multiplier input; reinforced insulation to all LV nets."
+          },
+          {
+            "name": "HV_BUS_14KV",
+            "type": "HIGH_VOLTAGE_PATH",
+            "source": "external block: Diode-capacitor voltage multiplier stack",
+            "consumers": [
+              "external block: HV half-bridge optocoupler high side",
+              "external block: HV sensing divider (high-impedance)",
+              "external block: Fail-safe bleed resistor chain"
+            ],
+            "description": "Regulated 14 kV DC high-voltage bus node; guarded/shielded, referenced to GND_HV only."
+          },
+          {
+            "name": "HV_CH_OUT",
+            "type": "HIGH_VOLTAGE_PATH",
+            "source": "external block: HV half-bridge optocoupler high side",
+            "consumers": [
+              "external block: HV output connector / 5 nF load interface",
+              "external block: HV half-bridge optocoupler low side",
+              "external block: HV channel sensing divider"
+            ],
+            "description": "Half-bridge midpoint high-voltage channel output driving the 5 nF load; connected to HV_BUS_14KV when the high-side HV optocoupler conducts and shorted to GND_HV when the low-side conducts."
+          },
+          {
+            "name": "GND_HV",
+            "type": "GROUND",
+            "source": "external block: Diode-capacitor voltage multiplier stack",
+            "consumers": [
+              "external block: HV flyback transformer",
+              "external block: HV half-bridge optocoupler low side",
+              "external block: HV sensing divider (high-impedance)",
+              "external block: HV channel sensing divider",
+              "external block: Fail-safe bleed resistor chain",
+              "external block: HV output connector / 5 nF load interface",
+              "AMC1311",
+              "ISO6741"
+            ],
+            "description": "High-voltage domain return / secondary ground; galvanically isolated from GND_LV by the reinforced barrier of the transformer, AMC1311, ISO6741 and the HV optocouplers — never tied to GND_LV on the PCB."
+          },
+          {
+            "name": "HV_SEC_BIAS",
+            "type": "POWER_DISTRIBUTION",
+            "source": "external block: HV flyback transformer",
+            "consumers": [
+              "AMC1311",
+              "ISO6741"
+            ],
+            "description": "Isolated low-voltage bias rail (auxiliary secondary winding + rectifier/regulator) referenced to GND_HV, powering the HV-side of the isolated amplifier and digital isolator."
+          },
+          {
+            "name": "HV_FB_DIV",
+            "type": "SENSING_LINE",
+            "source": "external block: HV sensing divider (high-impedance)",
+            "consumers": [
+              "AMC1311"
+            ],
+            "description": "Low-level scaled sense voltage of HV_BUS_14KV from the high-impedance guarded divider, referenced to GND_HV, into the isolated amplifier high-impedance input."
+          },
+          {
+            "name": "HV_CH_FB_DIV",
+            "type": "SENSING_LINE",
+            "source": "external block: HV channel sensing divider",
+            "consumers": [
+              "ISO6741",
+              "external block: HV-side channel monitor conditioning"
+            ],
+            "description": "Scaled channel-output (half-bridge midpoint) voltage measurement on the HV side, converted to a duty/PWM-encoded digital signal and transferred through the digital isolator to the MCU."
+          },
+          {
+            "name": "HV_FB_ISO",
+            "type": "FEEDBACK_PATH",
+            "source": "AMC1311",
+            "consumers": [
+              "TLV9062",
+              "ADS1220",
+              "TLV7011"
+            ],
+            "description": "Isolated, low-voltage-side differential/single-ended replica of the scaled HV bus voltage used for regulation conditioning, precision measurement and hardware over-voltage comparison."
+          },
+          {
+            "name": "HV_OV_FAULT_N",
+            "type": "DIGITAL_LOGIC",
+            "source": "TLV7011",
+            "consumers": [
+              "MSPM0G3507",
+              "UCC28C43",
+              "external block: HV enable interlock logic"
+            ],
+            "description": "Active-low open-drain hardware over-voltage / safe-to-touch interlock; low forces the PWM controller off and flags the MCU independently of firmware; pull-up owned by the MCU block."
+          },
+          {
+            "name": "VREF_3V0",
+            "type": "QUIET_REFERENCE",
+            "source": "REF3330",
+            "consumers": [
+              "ADS1220",
+              "TLV9062",
+              "TLV7011",
+              "MSPM0G3507"
+            ],
+            "description": "Precision 3.0 V reference for the ADC, comparator thresholds, HV setpoint scaling and MCU ADC reference."
+          },
+          {
+            "name": "SPI_SCLK",
+            "type": "DIGITAL_LOGIC",
+            "source": "MSPM0G3507",
+            "consumers": [
+              "ADS1220"
+            ],
+            "description": "SPI clock from the MCU master to the precision ADC."
+          },
+          {
+            "name": "SPI_MOSI",
+            "type": "DIGITAL_LOGIC",
+            "source": "MSPM0G3507",
+            "consumers": [
+              "ADS1220"
+            ],
+            "description": "SPI master-out data line from the MCU to the precision ADC (DIN)."
+          },
+          {
+            "name": "SPI_MISO",
+            "type": "DIGITAL_LOGIC",
+            "source": "ADS1220",
+            "consumers": [
+              "MSPM0G3507"
+            ],
+            "description": "SPI master-in data line from the precision ADC (DOUT/DRDY-shared) to the MCU."
+          },
+          {
+            "name": "SPI_CS_ADC_N",
+            "type": "CONTROL_SIGNAL",
+            "source": "MSPM0G3507",
+            "consumers": [
+              "ADS1220"
+            ],
+            "description": "Active-low chip select for the precision ADC; idles high, driven low by MCU during transfers."
+          },
+          {
+            "name": "ADC_DRDY_N",
+            "type": "DIGITAL_LOGIC",
+            "source": "ADS1220",
+            "consumers": [
+              "MSPM0G3507"
+            ],
+            "description": "Active-low data-ready interrupt from the precision ADC to an MCU interrupt-capable GPIO; pull-up owned by the MCU block."
+          },
+          {
+            "name": "I2C_SCL",
+            "type": "DIGITAL_LOGIC",
+            "source": "MSPM0G3507",
+            "consumers": [
+              "TMP117",
+              "LP5562"
+            ],
+            "description": "Shared I2C clock line for the temperature sensor and LED driver; single set of pull-up resistors owned by the MCU block."
+          },
+          {
+            "name": "I2C_SDA",
+            "type": "DIGITAL_LOGIC",
+            "source": "MSPM0G3507",
+            "consumers": [
+              "TMP117",
+              "LP5562"
+            ],
+            "description": "Shared bidirectional I2C data line for the temperature sensor and LED driver; single set of pull-up resistors owned by the MCU block."
+          },
+          {
+            "name": "TEMP_ALERT_N",
+            "type": "DIGITAL_LOGIC",
+            "source": "TMP117",
+            "consumers": [
+              "MSPM0G3507"
+            ],
+            "description": "Active-low open-drain temperature alert/limit output to an MCU interrupt GPIO; pull-up owned by the MCU block."
+          },
+          {
+            "name": "LED_DRV_EN",
+            "type": "CONTROL_SIGNAL",
+            "source": "MSPM0G3507",
+            "consumers": [
+              "LP5562"
+            ],
+            "description": "Active-high enable of the LED driver; MCU drives high to activate indication, low for shutdown/low-power."
+          },
+          {
+            "name": "LED_INT_N",
+            "type": "DIGITAL_LOGIC",
+            "source": "LP5562",
+            "consumers": [
+              "MSPM0G3507"
+            ],
+            "description": "Active-low open-drain interrupt/status output of the LED driver engine to the MCU; pull-up owned by the MCU block."
+          },
+          {
+            "name": "LED_STATUS_A",
+            "type": "CONTROL_SIGNAL",
+            "source": "LP5562",
+            "consumers": [
+              "external block: Status indicator LEDs"
+            ],
+            "description": "Constant-current sink output channel A driving the first status LED cathode (active-low sink)."
+          },
+          {
+            "name": "LED_STATUS_B",
+            "type": "CONTROL_SIGNAL",
+            "source": "LP5562",
+            "consumers": [
+              "external block: Status indicator LEDs"
+            ],
+            "description": "Constant-current sink output channel B driving the second status LED cathode (active-low sink)."
+          },
+          {
+            "name": "LED_STATUS_C",
+            "type": "CONTROL_SIGNAL",
+            "source": "LP5562",
+            "consumers": [
+              "external block: Status indicator LEDs"
+            ],
+            "description": "Constant-current sink output channel C driving the third status LED cathode (active-low sink)."
+          },
+          {
+            "name": "LED_STATUS_D",
+            "type": "CONTROL_SIGNAL",
+            "source": "LP5562",
+            "consumers": [
+              "external block: Status indicator LEDs"
+            ],
+            "description": "Constant-current sink output channel D driving the fourth status LED cathode (active-low sink)."
+          },
+          {
+            "name": "BTN_RAW_1",
+            "type": "DIGITAL_LOGIC",
+            "source": "external block: Power-on / user control button assembly",
+            "consumers": [
+              "SN74LVC2G17",
+              "TPD4E05U06"
+            ],
+            "description": "Raw sealed-switch contact 1 (power/trigger button), ESD protected and pulled to 3V3_MAIN by the MCU-block pull-up; active-low when pressed."
+          },
+          {
+            "name": "BTN_RAW_2",
+            "type": "DIGITAL_LOGIC",
+            "source": "external block: Power-on / user control button assembly",
+            "consumers": [
+              "SN74LVC2G17",
+              "TPD4E05U06"
+            ],
+            "description": "Raw sealed-switch contact 2 (mode/rate button), ESD protected and pulled to 3V3_MAIN by the MCU-block pull-up; active-low when pressed."
+          },
+          {
+            "name": "BTN_CLEAN_1",
+            "type": "DIGITAL_LOGIC",
+            "source": "SN74LVC2G17",
+            "consumers": [
+              "MSPM0G3507"
+            ],
+            "description": "Schmitt-buffered and debounced button 1 signal to an MCU interrupt-capable GPIO; active-low when pressed."
+          },
+          {
+            "name": "BTN_CLEAN_2",
+            "type": "DIGITAL_LOGIC",
+            "source": "SN74LVC2G17",
+            "consumers": [
+              "MSPM0G3507"
+            ],
+            "description": "Schmitt-buffered and debounced button 2 signal to an MCU GPIO; active-low when pressed."
+          },
+          {
+            "name": "WDT_WDI",
+            "type": "DIGITAL_LOGIC",
+            "source": "MSPM0G3507",
+            "consumers": [
+              "TPS3431"
+            ],
+            "description": "Watchdog input edge pulses from the MCU; must be toggled inside the timing window during normal operation to prevent a reset."
+          },
+          {
+            "name": "SYS_RESET_N",
+            "type": "CONTROL_SIGNAL",
+            "source": "TPS3431",
+            "consumers": [
+              "MSPM0G3507",
+              "ADS1220",
+              "external block: HV enable interlock logic"
+            ],
+            "description": "Active-low open-drain system reset from the watchdog/supervisor; low asserts reset and forces HV interlock off, released high for normal operation; pull-up owned by the MCU block."
+          },
+          {
+            "name": "WDT_EN",
+            "type": "CONTROL_SIGNAL",
+            "source": "MSPM0G3507",
+            "consumers": [
+              "TPS3431"
+            ],
+            "description": "Watchdog enable/window-select strap; strapped/driven to the level enabling window watchdog operation during normal run, allowed high-Z only during factory programming."
+          },
+          {
+            "name": "HV_CHARGE_PWM",
+            "type": "CONTROL_SIGNAL",
+            "source": "MSPM0G3507",
+            "consumers": [
+              "external block: LV optocoupler LED drive stage"
+            ],
+            "description": "MCU timer PWM (0-100% duty) controlling the LED drive of the high-side HV optocoupler, setting the 2-8 Hz charge rate of the 5 nF load; active-high (high = charge path conducting)."
+          },
+          {
+            "name": "HV_DISCHARGE_PWM",
+            "type": "CONTROL_SIGNAL",
+            "source": "MSPM0G3507",
+            "consumers": [
+              "external block: Active bleed / discharge control interface"
+            ],
+            "description": "MCU PWM/level command for the low-side HV optocoupler drive stage; active-high (high = commanded discharge path conducting, shorting the channel output to GND_HV)."
+          },
+          {
+            "name": "OPTO_HS_LED_DRV",
+            "type": "CONTROL_SIGNAL",
+            "source": "external block: LV optocoupler LED drive stage",
+            "consumers": [
+              "external block: HV half-bridge optocoupler high side"
+            ],
+            "description": "Current-driven LED input of the high-side HV optocoupler (referenced to GND_LV / VAUX_12V); crossing the isolation barrier optically to the HV half-bridge high side."
+          },
+          {
+            "name": "OPTO_LS_LED_DRV",
+            "type": "CONTROL_SIGNAL",
+            "source": "external block: Active bleed / discharge control interface",
+            "consumers": [
+              "external block: HV half-bridge optocoupler low side"
+            ],
+            "description": "Current-driven LED input of the low-side HV optocoupler (referenced to GND_LV / VAUX_12V); crossing the isolation barrier optically to the HV half-bridge low side for active discharge."
+          },
+          {
+            "name": "ISO_CH_MEAS",
+            "type": "DIGITAL_LOGIC",
+            "source": "ISO6741",
+            "consumers": [
+              "MSPM0G3507"
+            ],
+            "description": "Isolator LV-side output carrying the HV-side channel voltage measurement (PWM/duty encoded) to an MCU timer capture input."
+          },
+          {
+            "name": "ISO_HV_STATUS",
+            "type": "DIGITAL_LOGIC",
+            "source": "ISO6741",
+            "consumers": [
+              "MSPM0G3507"
+            ],
+            "description": "Isolator LV-side output carrying HV-domain status/fault flag (e.g. discharge complete / arc detect) to the MCU; active-low fault indication."
+          },
+          {
+            "name": "ISO_HV_CMD",
+            "type": "DIGITAL_LOGIC",
+            "source": "MSPM0G3507",
+            "consumers": [
+              "ISO6741"
+            ],
+            "description": "Isolator LV-side input carrying an MCU command/clock to the HV-side monitoring logic; active-high command, low at reset (safe state)."
+          },
+          {
+            "name": "ISO_HV_CMD_OUT",
+            "type": "DIGITAL_LOGIC",
+            "source": "ISO6741",
+            "consumers": [
+              "external block: HV-side channel monitor conditioning"
+            ],
+            "description": "HV-side reproduction of ISO_HV_CMD driving the HV-domain monitor logic, referenced to GND_HV/HV_SEC_BIAS."
+          },
+          {
+            "name": "ISO_HV_MEAS_IN",
+            "type": "DIGITAL_LOGIC",
+            "source": "external block: HV-side channel monitor conditioning",
+            "consumers": [
+              "ISO6741"
+            ],
+            "description": "HV-side digital (duty-encoded) channel measurement and status input to the isolator, referenced to GND_HV."
+          },
+          {
+            "name": "ISO_EN",
+            "type": "CONTROL_SIGNAL",
+            "source": "MSPM0G3507",
+            "consumers": [
+              "ISO6741"
+            ],
+            "description": "Active-high enable of the digital isolator LV-side outputs; driven high by MCU for normal operation, low forces outputs to default state."
+          },
+          {
+            "name": "SWD_SWCLK",
+            "type": "DIGITAL_LOGIC",
+            "source": "external block: SWD programming/debug header",
+            "consumers": [
+              "MSPM0G3507"
+            ],
+            "description": "Serial-wire debug clock from the programming header to the MCU."
+          },
+          {
+            "name": "SWD_SWDIO",
+            "type": "DIGITAL_LOGIC",
+            "source": "external block: SWD programming/debug header",
+            "consumers": [
+              "MSPM0G3507"
+            ],
+            "description": "Bidirectional serial-wire debug data between the programming header and the MCU."
+          },
+          {
+            "name": "MCU_NRST",
+            "type": "CONTROL_SIGNAL",
+            "source": "external block: SWD programming/debug header",
+            "consumers": [
+              "MSPM0G3507"
+            ],
+            "description": "Active-low MCU reset line shared with SYS_RESET_N network at the MCU NRST pin; held high for normal operation."
+          },
+          {
+            "name": "UART_TX_DEBUG",
+            "type": "DIGITAL_LOGIC",
+            "source": "MSPM0G3507",
+            "consumers": [
+              "external block: SWD programming/debug header"
+            ],
+            "description": "MCU UART transmit line for diagnostics/event log output on the service header."
+          },
+          {
+            "name": "UART_RX_DEBUG",
+            "type": "DIGITAL_LOGIC",
+            "source": "external block: SWD programming/debug header",
+            "consumers": [
+              "MSPM0G3507"
+            ],
+            "description": "MCU UART receive line for service commands from the debug header."
+          }
+        ],
+        "external_blocks": [
+          {
+            "name": "USB-C receptacle / charging connector",
+            "description": "Sealed 5 V USB charging input connector with shield."
+          },
+          {
+            "name": "USB input EMI filter",
+            "description": "Common-mode choke and X/Y filtering network on the USB input for conducted EMC compliance."
+          },
+          {
+            "name": "Li-ion single cell battery",
+            "description": "Rechargeable single-cell Li-ion/Li-poly cell providing system energy."
+          },
+          {
+            "name": "Battery protection back-to-back FET pair",
+            "description": "Dual N-channel FETs in series with the cell negative terminal, controlled by the protector IC."
+          },
+          {
+            "name": "Battery pack NTC thermistor",
+            "description": "Pack-mounted NTC for charger TS input and MCU thermal supervision."
+          },
+          {
+            "name": "Battery voltage divider network",
+            "description": "Resistive divider producing a scaled battery voltage for the MCU ADC."
+          },
+          {
+            "name": "Auxiliary rail divider network",
+            "description": "Resistive divider producing a scaled VAUX_12V voltage for the MCU ADC."
+          },
+          {
+            "name": "Flyback primary power stage (MOSFET, shunt, snubber)",
+            "description": "Primary switching MOSFET, current-sense shunt and RCD snubber of the isolated flyback converter."
+          },
+          {
+            "name": "HV flyback transformer",
+            "description": "Reinforced-insulation high-frequency flyback transformer with HV secondary and isolated auxiliary bias winding."
+          },
+          {
+            "name": "Diode-capacitor voltage multiplier stack",
+            "description": "Cascaded diode-capacitor multiplier rectifying the HV secondary to the 14 kV bus."
+          },
+          {
+            "name": "HV sensing divider (high-impedance)",
+            "description": "Guarded high-impedance resistor chain scaling the 14 kV bus for isolated feedback."
+          },
+          {
+            "name": "HV channel sensing divider",
+            "description": "Guarded high-impedance divider measuring the half-bridge midpoint channel voltage on the HV side."
+          },
+          {
+            "name": "HV-side channel monitor conditioning",
+            "description": "HV-domain conditioning/encoder circuitry converting channel divider voltage into a duty-encoded digital signal for the isolator."
+          },
+          {
+            "name": "HV half-bridge optocoupler high side",
+            "description": "High-voltage optically-coupled switch connecting HV_BUS_14KV to the channel output during charging."
+          },
+          {
+            "name": "HV half-bridge optocoupler low side",
+            "description": "High-voltage optically-coupled switch shorting the channel output to GND_HV during commanded discharge."
+          },
+          {
+            "name": "LV optocoupler LED drive stage",
+            "description": "Low-voltage current-limited LED drive circuit for the high-side HV optocoupler input, PWM controlled."
+          },
+          {
+            "name": "Active bleed / discharge control interface",
+            "description": "Low-voltage drive circuit for the low-side HV optocoupler input implementing commanded active discharge."
+          },
+          {
+            "name": "Fail-safe bleed resistor chain",
+            "description": "Normally-enabled high-voltage bleed resistor string permanently discharging the HV bus/channel for fail-safe operation."
+          },
+          {
+            "name": "HV output connector / 5 nF load interface",
+            "description": "Insulated high-voltage output terminal driving the 5 nF capacitive load."
+          },
+          {
+            "name": "HV enable interlock logic",
+            "description": "Discrete hardware AND/latch network combining reset and over-voltage interlock to inhibit HV generation."
+          },
+          {
+            "name": "Status indicator LEDs",
+            "description": "Multi-color status LEDs for charge, discharge, fault and ready indication."
+          },
+          {
+            "name": "Power-on / user control button assembly",
+            "description": "Sealed membrane/tactile user switches including the power-latch button."
+          },
+          {
+            "name": "SWD programming/debug header",
+            "description": "Service header providing SWD debug, reset and UART diagnostics access."
+          }
+        ]
+      },
+      "groups": [
+        {
+          "id": "USB_INPUT_PROTECTION",
+          "title": "USB Input Protection",
+          "description": "Charging interface with EMI filtering, ESD protection and eFuse-based over-voltage/over-current front end.",
+          "members": [
+            "TPD4E05U06",
+            "TPS25940",
+            "external block: USB input EMI filter",
+            "external block: USB-C receptacle / charging connector"
+          ]
+        },
+        {
+          "id": "BATTERY_AND_CHARGING",
+          "title": "Battery And Charging",
+          "description": "Li-ion cell, secondary pack protection, thermistor, charge management and power-path system rail generation.",
+          "members": [
+            "BQ2970",
+            "BQ24075",
+            "external block: Battery pack NTC thermistor",
+            "external block: Battery protection back-to-back FET pair",
+            "external block: Battery voltage divider network",
+            "external block: Li-ion single cell battery"
+          ]
+        },
+        {
+          "id": "LV_POWER_RAILS",
+          "title": "LV Power Rails",
+          "description": "Buck-boost main logic rail, low-noise analog LDO rail and auxiliary boosted rail for optocoupler and gate-driver bias.",
+          "members": [
+            "TPS61041",
+            "TPS63070",
+            "TPS7A20",
+            "external block: Auxiliary rail divider network"
+          ]
+        },
+        {
+          "id": "CONTROL_AND_SUPERVISION",
+          "title": "Control And Supervision",
+          "description": "MCU, external window watchdog, temperature sensor, button conditioning and debug/service interface.",
+          "members": [
+            "MSPM0G3507",
+            "SN74LVC2G17",
+            "TMP117",
+            "TPS3431",
+            "external block: Power-on / user control button assembly",
+            "external block: SWD programming/debug header"
+          ]
+        },
+        {
+          "id": "USER_INDICATION",
+          "title": "User Indication",
+          "description": "Programmable LED driver and status indicator LEDs for charge, discharge and fault states.",
+          "members": [
+            "LP5562",
+            "external block: Status indicator LEDs"
+          ]
+        },
+        {
+          "id": "ANALOG_SENSE_CHAIN",
+          "title": "Analog Sense Chain",
+          "description": "Low-voltage-side precision reference, feedback conditioning, hardware over-voltage comparison and 24-bit acquisition.",
+          "members": [
+            "ADS1220",
+            "REF3330",
+            "TLV7011",
+            "TLV9062",
+            "external block: HV enable interlock logic"
+          ]
+        },
+        {
+          "id": "FLYBACK_PRIMARY_STAGE",
+          "title": "Flyback Primary Stage",
+          "description": "Current-mode PWM control, gate driver, primary MOSFET/shunt and isolated primary current measurement of the HV converter.",
+          "members": [
+            "AMC3330",
+            "UCC27517",
+            "UCC28C43",
+            "external block: Flyback primary power stage (MOSFET, shunt, snubber)"
+          ]
+        },
+        {
+          "id": "ISOLATION_BARRIER",
+          "title": "Isolation Barrier Interface",
+          "description": "Reinforced isolated feedback amplifier, digital isolator, transformer and low-voltage optocoupler LED drive stages crossing the safety barrier.",
+          "members": [
+            "AMC1311",
+            "ISO6741",
+            "external block: Active bleed / discharge control interface",
+            "external block: HV flyback transformer",
+            "external block: LV optocoupler LED drive stage"
+          ]
+        },
+        {
+          "id": "HV_OUTPUT_STAGE",
+          "title": "HV Output Stage",
+          "description": "Secondary multiplier stack, 14 kV bus, HV optocoupler half-bridge, HV sensing dividers, bleed path and insulated output interface.",
+          "members": [
+            "external block: Diode-capacitor voltage multiplier stack",
+            "external block: Fail-safe bleed resistor chain",
+            "external block: HV channel sensing divider",
+            "external block: HV half-bridge optocoupler high side",
+            "external block: HV half-bridge optocoupler low side",
+            "external block: HV output connector / 5 nF load interface",
+            "external block: HV sensing divider (high-impedance)",
+            "external block: HV-side channel monitor conditioning"
+          ]
+        }
+      ]
+    }
+  }
+]

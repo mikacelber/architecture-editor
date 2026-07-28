@@ -1,0 +1,655 @@
+'use strict';
+/* ============================================================
+   EMBEDDED DEFAULT DATA (architect input + architect contract)
+   ============================================================ */
+const PRELOADED = {"input": {"id": "A_1", "title": "Regulated Isolated Flyback HV Charger with Capacitive Actuator Output driven by HV optocouplers in Half-bridge configuration", "description": "This architecture uses the rechargeable battery and 5 V USB charging front end to feed a protected low-voltage power rail, then drives an isolated high-frequency flyback high-voltage converter and a Diode-Capacitor-based Voltage Multiplier whose rectified secondary creates a HV bus with a fixed 14 kV output.After the HV Bus, two HV optical diode or optocoupler are implemented in a Half-bridge configuration with the channel output connected into the middle of the half-bridge,  such that it can be connected to the HV bus or shorted in the charge and discharge process respectively.Non additional high-voltage output capacitor is required and the only additional energy of the secondary HV Bus is provided by Diode-Capacitor-based Voltage Multipliers. A high-impedance sensing divider or isolated voltage feedback path is used by the controller to keep the bus stable at 14 kV. Charge rate is controlled by the PWM of the Low Voltage optocoupler inputs between 100% and 0% duty cycle. Additional voltage measurement feedback is required to monitor the charge of each output channel. Primary-side current limiting and cycle-by-cycle energy control so the 5 nF load can be charged at 2 Hz to 8 Hz while limiting current during arcing or short-circuit conditions. Discharge is handled by a normally enabled fail-safe bleed path plus the Low Side optocoupler to actively commanded high-voltage discharge path sized to reduce 14 kV on 5 nF to below 60 V within 1 s. The same PCB includes battery charge management, battery protection, thermal sensing, USB reverse-polarity and surge/ESD protection, a low-power controller, sealed user controls, and state indication. EMC is addressed with input filtering at the charging interface, shielding/guarding around the high-voltage node, spread-spectrum or fixed ultrasonic switching above audible range, and reinforced/double insulation between the case-accessible circuits and high-voltage region. This is the simplest single-channel architecture and minimizes interconnect complexity, but the flyback transformer and output rectifier stack must be designed carefully for 14 kV insulation stress.", "key_references": ["https://www.artimusrobotics.com/post/power-consumption-of-hasel-actuators", "https://ieeexplore.ieee.org/iel7/8847244/9107390/10210012.pdf", "https://incompliancemag.com/the-capacitive-discharge-test", "https://advanced.onlinelibrary.wiley.com/doi/10.1002/admt.202101469"], "ic_components": [{"ic_type": "USB single-cell Li-ion linear charger and power-path manager", "description": "5 V USB input single-cell Li-ion/Li-poly charger with dynamic power-path management, input over-voltage protection, thermal regulation, charge termination, status outputs, and system rail support while charging.", "manufacturer": "Texas Instruments", "ic_part_number": "BQ24075", "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/bq24075-q1.pdf", "selection_rationale": "Approved manufacturer with highest preference. Fits 5 V USB rechargeable battery front end, provides robust production-grade charge management and power-path behavior so the system can run while charging. Input operating range and safety features align with protected low-voltage portable product architecture."}, {"ic_type": "1-cell Li-ion battery protector", "description": "Secondary lithium-ion protector for cell over-voltage, under-voltage, and over-current/short-circuit protection with low quiescent current.", "manufacturer": "Texas Instruments", "ic_part_number": "BQ2970", "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/bq2971.pdf", "selection_rationale": "Approved high-preference manufacturer. Adds dedicated pack-level protection independent of charger and MCU, improving robustness against abuse and fault conditions expected in a fielded product."}, {"ic_type": "Buck-boost DC/DC converter", "description": "High-efficiency buck-boost converter generating regulated system rail from single-cell battery across charge/discharge range with integrated switches and power-save operation.", "manufacturer": "Texas Instruments", "ic_part_number": "TPS63070", "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/tps63070.pdf", "selection_rationale": "Approved highest-preference source. A buck-boost rail is appropriate because battery voltage can be above or below the required regulated logic rail during operation. Supports professional power integrity and good efficiency versus purely linear regulation."}, {"ic_type": "Low-noise LDO regulator", "description": "Ultra-low quiescent current LDO used to derive a clean analog rail for sensing, references, and precision measurements from the main system supply.", "manufacturer": "Texas Instruments", "ic_part_number": "TPS7A20", "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/tps7a20.pdf", "selection_rationale": "Adds a dedicated clean rail for feedback and ADC reference-sensitive circuitry, improving HV voltage regulation accuracy and noise immunity in a switching, high-EMI environment."}, {"ic_type": "Boost converter controller", "description": "Compact boost converter to generate an auxiliary higher-than-battery rail where needed for controlled drive of discharge or protection circuitry on the low-voltage side.", "manufacturer": "Texas Instruments", "ic_part_number": "TPS61041", "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/tps61040.pdf", "selection_rationale": "Provides implementation margin for controlled active discharge interface circuitry and any low-side auxiliary biasing without burdening the main rail. Chosen from approved preferred manufacturer."}, {"ic_type": "Current-mode PWM controller", "description": "Current-mode PWM controller with cycle-by-cycle current limiting, UVLO, and high-frequency operation suitable for isolated flyback energy control.", "manufacturer": "Texas Instruments", "ic_part_number": "UCC28C43", "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/ucc38c40.pdf", "selection_rationale": "Approved highest-preference source. Current-mode control directly supports the stated need for primary-side current limiting and cycle-by-cycle energy control. Can be configured for ultrasonic switching frequency and robust fault limiting. A controller approach is more appropriate than an integrated low-voltage flyback switch because the transformer and primary power stage are specialized for HV charging."}, {"ic_type": "Single low-side gate driver", "description": "High-current low-side MOSFET gate driver for the external primary switch of the flyback stage, with fast rise/fall times and strong drive capability.", "manufacturer": "Texas Instruments", "ic_part_number": "UCC27517", "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/ucc27517.pdf", "selection_rationale": "A dedicated driver improves switching control, EMI management, and efficiency for the primary HV charger stage versus driving the power switch directly from the PWM controller. Selected from highest-preference approved manufacturer."}, {"ic_type": "Reinforced isolated precision amplifier", "description": "Precision reinforced isolation amplifier for transferring scaled HV output feedback across the safety barrier to the low-voltage controller domain.", "manufacturer": "Texas Instruments", "ic_part_number": "AMC1311", "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/amc1311.pdf", "selection_rationale": "The design explicitly allows an isolated voltage feedback path and requires reinforced/double insulation between user-accessible circuits and HV region. This device provides a production-grade isolated analog channel for regulation and monitoring while maintaining safety isolation. TI is highest preference and offers reinforced isolation suitable for professional implementation."}, {"ic_type": "Reinforced isolated amplifier", "description": "Reinforced isolated amplifier for accurate measurement of shunt-based primary current or fault-related analog signals while preserving barrier integrity.", "manufacturer": "Texas Instruments", "ic_part_number": "AMC3330", "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/amc3330.pdf", "selection_rationale": "Adds independent monitored current information beyond cycle-by-cycle limiting, enabling diagnostics and more reliable arc/short-circuit response. Chosen from approved high-preference manufacturer and aligned with reinforced isolation philosophy."}, {"ic_type": "Dual operational amplifier", "description": "Dual op-amp for conditioning divider feedback, filtering, threshold generation, and analog interfacing for HV regulation and discharge confirmation.", "manufacturer": "Texas Instruments", "ic_part_number": "TLV9062", "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/tlv9062.pdf", "selection_rationale": "Provides robust analog front-end capability for precision filtering and comparator threshold support around HV sensing. Selected from preferred approved source with modern low-power rail-to-rail performance."}, {"ic_type": "Comparator", "description": "Low-power comparator for hardware threshold supervision of scaled HV output or critical rails, enabling independent fault response outside firmware.", "manufacturer": "Texas Instruments", "ic_part_number": "TLV7011", "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/tlv7011.pdf", "selection_rationale": "Professional design should not rely solely on firmware for HV safety-critical thresholds. This comparator supports independent hardware interlock behavior for over-voltage or safe-to-touch confirmation logic."}, {"ic_type": "Precision voltage reference", "description": "Low-drift precision voltage reference used for stable feedback scaling, ADC accuracy, and consistent HV setpoint control.", "manufacturer": "Texas Instruments", "ic_part_number": "REF3330", "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/ref33.pdf", "selection_rationale": "Improves regulation stability and absolute accuracy toward the better-than-10% HV target, especially over temperature and battery variation. Selected from approved highest-preference source."}, {"ic_type": "32-bit microcontroller", "description": "Low-power microcontroller with ADC, timers, GPIO, communication interfaces, watchdog, and sufficient processing to manage charging profiles, voltage setpoints, user controls, state indication, and fault handling.", "manufacturer": "Texas Instruments", "ic_part_number": "MSPM0G3507", "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/mspm0g3507.pdf", "selection_rationale": "Approved highest-preference manufacturer. A modern MCU is required for command selection, sequencing, diagnostics, event logging, and future expansion. Integrated ADC/timers simplify closed-loop supervision and 2 Hz to 8 Hz cycle management."}, {"ic_type": "Window watchdog timer", "description": "External watchdog timer to supervise MCU operation and force recovery on firmware lockup or timing faults.", "manufacturer": "Texas Instruments", "ic_part_number": "TPS3431", "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/tps3431-q1.pdf", "selection_rationale": "For a high-voltage portable product, independent supervision is good engineering practice and improves safety and reliability beyond the internal MCU watchdog alone."}, {"ic_type": "Digital temperature sensor", "description": "High-accuracy digital temperature sensor for battery/board thermal monitoring and charger or HV converter derating logic.", "manufacturer": "Texas Instruments", "ic_part_number": "TMP117", "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/tmp117.pdf", "selection_rationale": "The design explicitly requires thermal sensing. A precision digital sensor simplifies calibration and supports protective derating and fault shutdown in a compact system."}, {"ic_type": "ESD protection array", "description": "Low-capacitance multi-channel ESD protection array for USB power and low-speed control lines exposed at the product interface.", "manufacturer": "Texas Instruments", "ic_part_number": "TPD4E05U06", "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/tpd4e05u06.pdf", "selection_rationale": "The design explicitly calls for USB surge/ESD protection. This is a standard production-grade interface protection IC from the highest-preference approved vendor."}, {"ic_type": "eFuse / power protection IC", "description": "Integrated eFuse with over-voltage protection, current limiting, inrush control, reverse current blocking, and fault reporting for the 5 V input path.", "manufacturer": "Texas Instruments", "ic_part_number": "TPS25940", "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/tps25940.pdf", "selection_rationale": "Provides a much more robust USB/front-end protection strategy than simple passive protection alone, addressing reverse-current/inrush/fault events and improving survivability in real use."}, {"ic_type": "Reinforced digital isolator", "description": "Reinforced digital isolator for transferring control/status signals across the isolation barrier where direct MCU-domain connection to HV-side sensing or control logic is undesirable.", "manufacturer": "Texas Instruments", "ic_part_number": "ISO6741", "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/iso6740.pdf", "selection_rationale": "Supports a professional partitioned architecture with reinforced digital barrier communications, aiding diagnostics and safe signal transfer between accessible circuitry and HV domain."}, {"ic_type": "Dual Schmitt-trigger buffer", "description": "Dual Schmitt-trigger buffer for sealed switch debounce, noisy external signal cleanup, and robust logic edge conditioning.", "manufacturer": "Texas Instruments", "ic_part_number": "SN74LVC2G17", "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/sn74lvc2g17.pdf", "selection_rationale": "Improves immunity to EMI and false triggering in a high-voltage switching environment, which is important for sealed user controls and reliable field operation."}, {"ic_type": "LED driver", "description": "Programmable LED driver for multi-state visual indication independent of MCU GPIO drive limitations.", "manufacturer": "Texas Instruments", "ic_part_number": "LP5562", "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/lp5562.pdf", "selection_rationale": "Supports professional status indication with consistent brightness and reduced MCU loading, useful for charge/discharge/fault/status outputs in a production device."}, {"ic_type": "24-bit delta-sigma ADC", "description": "Precision ADC for high-resolution measurement of scaled HV feedback, current sense, and temperature-related analog channels where MCU ADC performance is insufficient.", "manufacturer": "Texas Instruments", "ic_part_number": "ADS1220", "DatasheetUrl": "https://www.ti.com/lit/ds/symlink/ads1220.pdf", "selection_rationale": "A dedicated precision ADC improves closed-loop accuracy margin, production calibration capability, and diagnostics for the HV charger beyond a minimal implementation. Particularly useful when using very high-impedance dividers and filtered sensing."}]}, "contract": {"global_nets": [{"name": "USB_5V_IN", "type": "POWER_DISTRIBUTION", "source": "external block: USB connector", "consumers": ["TPD4E05U06", "TPS25940"], "description": "Incoming 5 V from USB charging interface before protection and power-path control."}, {"name": "USB_GND", "type": "GROUND", "source": "external block: USB connector", "consumers": ["TPD4E05U06", "BQ24075", "TPS25940", "external block: user-accessible low-voltage domain"], "description": "Ground return for USB power and all non-isolated low-voltage circuitry."}, {"name": "USB_D_P", "type": "DIGITAL_LOGIC", "source": "external block: USB connector", "consumers": ["TPD4E05U06"], "description": "Protected USB D+ line present at external interface for ESD handling."}, {"name": "USB_D_N", "type": "DIGITAL_LOGIC", "source": "external block: USB connector", "consumers": ["TPD4E05U06"], "description": "Protected USB D- line present at external interface for ESD handling."}, {"name": "VIN_PROTECTED_5V", "type": "POWER_DISTRIBUTION", "source": "TPS25940", "consumers": ["BQ24075"], "description": "Protected 5 V input rail after eFuse used to power the battery charger/power-path IC."}, {"name": "EFUSE_FLT", "type": "DIGITAL_LOGIC", "source": "TPS25940", "consumers": ["MSPM0G3507"], "description": "Fault status indication from USB input eFuse to the MCU."}, {"name": "EFUSE_EN", "type": "CONTROL_SIGNAL", "source": "MSPM0G3507", "consumers": ["TPS25940"], "description": "MCU-controlled enable for the USB input eFuse/protection stage."}, {"name": "BAT_CELL_P", "type": "POWER_DISTRIBUTION", "source": "external block: single-cell Li-ion battery", "consumers": ["BQ2970"], "description": "Positive terminal of the rechargeable Li-ion cell into the protection IC."}, {"name": "BAT_CELL_N", "type": "GROUND", "source": "external block: single-cell Li-ion battery", "consumers": ["BQ2970"], "description": "Negative terminal of the rechargeable Li-ion cell into the protection IC."}, {"name": "PACK_BAT_P", "type": "POWER_DISTRIBUTION", "source": "BQ2970", "consumers": ["BQ24075", "TPS63070"], "description": "Protected battery pack positive rail feeding charger battery pin and system buck-boost input."}, {"name": "PACK_BAT_N", "type": "GROUND", "source": "BQ2970", "consumers": ["BQ24075", "TPS63070", "external block: user-accessible low-voltage domain"], "description": "Protected battery return tied to the low-voltage ground domain."}, {"name": "SYS_PWR", "type": "POWER_DISTRIBUTION", "source": "BQ24075", "consumers": ["TPS63070"], "description": "Charger/power-path managed system supply available while USB is present and battery is charging."}, {"name": "CHG_STATUS", "type": "DIGITAL_LOGIC", "source": "BQ24075", "consumers": ["MSPM0G3507"], "description": "Charge status output from the charger to the MCU."}, {"name": "PGOOD_CHARGER", "type": "DIGITAL_LOGIC", "source": "BQ24075", "consumers": ["MSPM0G3507"], "description": "Power-good or input-valid status from the charger front end to the MCU."}, {"name": "CHARGER_EN", "type": "CONTROL_SIGNAL", "source": "MSPM0G3507", "consumers": ["BQ24075"], "description": "MCU control to enable or disable battery charging."}, {"name": "CHARGER_USB_LIMIT_SEL", "type": "CONTROL_SIGNAL", "source": "MSPM0G3507", "consumers": ["BQ24075"], "description": "MCU-selected charger/input current operating mode or limit selection."}, {"name": "VSYS_3V3", "type": "POWER_DISTRIBUTION", "source": "TPS63070", "consumers": ["TPS7A20", "TPS61041", "MSPM0G3507", "TPS3431", "TMP117", "ISO6741", "SN74LVC2G17", "LP5562", "ADS1220", "UCC28C43", "UCC27517"], "description": "Main regulated low-voltage system rail distributed to digital, control, and primary-side analog ICs."}, {"name": "3V3_ANA", "type": "POWER_DISTRIBUTION", "source": "TPS7A20", "consumers": ["REF3330", "TLV9062", "TLV7011", "AMC3330", "ADS1220"], "description": "Low-noise analog rail for precision references, sensing, and measurement circuitry in the low-voltage domain."}, {"name": "GND_LV", "type": "GROUND", "source": "external block: user-accessible low-voltage domain", "consumers": ["BQ24075", "BQ2970", "TPS63070", "TPS7A20", "TPS61041", "UCC28C43", "UCC27517", "AMC3330", "TLV9062", "TLV7011", "REF3330", "MSPM0G3507", "TPS3431", "TMP117", "TPD4E05U06", "TPS25940", "ISO6741", "SN74LVC2G17", "LP5562", "ADS1220"], "description": "Primary low-voltage ground domain for user-accessible, battery, logic, and primary flyback control circuitry."}, {"name": "AUX_BOOST_V", "type": "POWER_DISTRIBUTION", "source": "TPS61041", "consumers": ["external block: low-voltage optocoupler LED drive circuitry", "external block: active discharge interface circuitry"], "description": "Auxiliary boosted rail used for low-voltage-side actuator or discharge drive headroom."}, {"name": "REF_3V0", "type": "QUIET_REFERENCE", "source": "REF3330", "consumers": ["ADS1220", "TLV9062", "TLV7011", "MSPM0G3507"], "description": "Precision 3.0 V reference distributed for ADC scaling, analog thresholds, and calibration-aware measurement."}, {"name": "I2C_SCL", "type": "DIGITAL_LOGIC", "source": "MSPM0G3507", "consumers": ["TMP117", "LP5562"], "description": "I2C clock from the MCU to low-speed digital peripherals."}, {"name": "I2C_SDA", "type": "DIGITAL_LOGIC", "source": "MSPM0G3507", "consumers": ["TMP117", "LP5562"], "description": "I2C bidirectional data line between the MCU and digital peripherals."}, {"name": "SPI_SCLK", "type": "DIGITAL_LOGIC", "source": "MSPM0G3507", "consumers": ["ADS1220"], "description": "SPI serial clock from MCU to the precision ADC."}, {"name": "SPI_MOSI", "type": "DIGITAL_LOGIC", "source": "MSPM0G3507", "consumers": ["ADS1220"], "description": "SPI controller-to-ADC data line."}, {"name": "SPI_MISO", "type": "DIGITAL_LOGIC", "source": "ADS1220", "consumers": ["MSPM0G3507"], "description": "SPI ADC-to-controller data line."}, {"name": "ADC_CS_N", "type": "CONTROL_SIGNAL", "source": "MSPM0G3507", "consumers": ["ADS1220"], "description": "Active-low chip select for the precision ADC."}, {"name": "ADC_DRDY_N", "type": "DIGITAL_LOGIC", "source": "ADS1220", "consumers": ["MSPM0G3507"], "description": "Data-ready or conversion-status interrupt from the precision ADC to the MCU."}, {"name": "TMP117_ALERT_N", "type": "DIGITAL_LOGIC", "source": "TMP117", "consumers": ["MSPM0G3507"], "description": "Temperature alert/interrupt output from the digital temperature sensor."}, {"name": "WDI", "type": "CONTROL_SIGNAL", "source": "MSPM0G3507", "consumers": ["TPS3431"], "description": "Watchdog service pulse from the MCU to the external watchdog timer."}, {"name": "WATCHDOG_RST_N", "type": "CONTROL_SIGNAL", "source": "TPS3431", "consumers": ["MSPM0G3507"], "description": "Independent watchdog reset output applied to the MCU."}, {"name": "MCU_RESET_IN_N", "type": "CONTROL_SIGNAL", "source": "external block: reset/programming header", "consumers": ["MSPM0G3507"], "description": "External reset/programming access into the MCU."}, {"name": "SWITCH_RAW_1", "type": "DIGITAL_LOGIC", "source": "external block: sealed user control 1", "consumers": ["SN74LVC2G17"], "description": "Raw user switch input before Schmitt cleanup."}, {"name": "SWITCH_RAW_2", "type": "DIGITAL_LOGIC", "source": "external block: sealed user control 2", "consumers": ["SN74LVC2G17"], "description": "Second raw user switch input before Schmitt cleanup."}, {"name": "SWITCH_CLEAN_1", "type": "DIGITAL_LOGIC", "source": "SN74LVC2G17", "consumers": ["MSPM0G3507"], "description": "Debounced and EMI-hardened user control signal to the MCU."}, {"name": "SWITCH_CLEAN_2", "type": "DIGITAL_LOGIC", "source": "SN74LVC2G17", "consumers": ["MSPM0G3507"], "description": "Second debounced and EMI-hardened user control signal to the MCU."}, {"name": "LED_EN", "type": "CONTROL_SIGNAL", "source": "MSPM0G3507", "consumers": ["LP5562"], "description": "MCU enable control for the LED driver."}, {"name": "LED_ENGINE_SYNC", "type": "CONTROL_SIGNAL", "source": "MSPM0G3507", "consumers": ["LP5562"], "description": "Optional synchronization or trigger control from MCU to programmable LED driver."}, {"name": "LED_CH1", "type": "POWER_DISTRIBUTION", "source": "LP5562", "consumers": ["external block: status LED 1"], "description": "Programmable current-drive output for status LED channel 1."}, {"name": "LED_CH2", "type": "POWER_DISTRIBUTION", "source": "LP5562", "consumers": ["external block: status LED 2"], "description": "Programmable current-drive output for status LED channel 2."}, {"name": "LED_CH3", "type": "POWER_DISTRIBUTION", "source": "LP5562", "consumers": ["external block: status LED 3"], "description": "Programmable current-drive output for status LED channel 3."}, {"name": "PWM_CTRL", "type": "CONTROL_SIGNAL", "source": "MSPM0G3507", "consumers": ["UCC28C43"], "description": "MCU supervisory PWM or run-level control input to the flyback PWM controller for charge-rate management."}, {"name": "HV_CHARGER_ENABLE", "type": "CONTROL_SIGNAL", "source": "MSPM0G3507", "consumers": ["UCC28C43"], "description": "MCU enable/disable command for the primary flyback high-voltage charging controller."}, {"name": "PRIMARY_GATE_DRIVE", "type": "CONTROL_SIGNAL", "source": "UCC28C43", "consumers": ["UCC27517"], "description": "PWM drive signal from the current-mode controller to the external MOSFET gate driver."}, {"name": "PRIMARY_MOSFET_GATE", "type": "CONTROL_SIGNAL", "source": "UCC27517", "consumers": ["external block: flyback primary power MOSFET"], "description": "High-current gate-drive output to the primary flyback switching MOSFET."}, {"name": "PRIMARY_SWITCH_NODE", "type": "SWITCHING_NODE", "source": "external block: flyback primary power MOSFET", "consumers": ["external block: flyback transformer primary"], "description": "High-dv/dt primary switching node between MOSFET and flyback transformer primary."}, {"name": "PRIMARY_CURRENT_SENSE", "type": "SENSING_LINE", "source": "external block: primary current shunt", "consumers": ["UCC28C43", "AMC3330"], "description": "Primary current sense signal used for cycle-by-cycle limiting and isolated measurement."}, {"name": "PRIMARY_CURRENT_FB", "type": "ANALOG_SIGNAL", "source": "AMC3330", "consumers": ["ADS1220", "MSPM0G3507", "TLV9062"], "description": "Conditioned low-voltage-domain representation of primary current for monitoring, logging, and fault control."}, {"name": "HV_GND_ISO", "type": "GROUND", "source": "external block: isolated high-voltage control domain", "consumers": ["AMC1311", "ISO6741", "external block: HV divider/sense network", "external block: HV-side optocoupler drivers"], "description": "Isolated secondary-side ground/reference domain associated with the high-voltage sensing and control partition."}, {"name": "HV_AUX_ISO", "type": "POWER_DISTRIBUTION", "source": "external block: isolated secondary bias supply", "consumers": ["AMC1311", "ISO6741", "external block: HV-side optocoupler drivers"], "description": "Isolated low-power supply rail for secondary-side sensing and digital isolator circuitry."}, {"name": "HV_BUS_SENSE_RAW", "type": "HIGH_VOLTAGE_PATH", "source": "external block: HV bus divider network", "consumers": ["AMC1311", "TLV7011", "TLV9062"], "description": "Scaled but still HV-domain-referenced bus voltage sense from the 14 kV bus divider."}, {"name": "HV_BUS_FB_ISO", "type": "FEEDBACK_PATH", "source": "AMC1311", "consumers": ["ADS1220", "MSPM0G3507", "TLV9062", "UCC28C43"], "description": "Isolated analog representation of the high-voltage bus used for regulation, telemetry, and fault handling."}, {"name": "HV_OVERVOLTAGE_HW", "type": "DIGITAL_LOGIC", "source": "TLV7011", "consumers": ["MSPM0G3507", "UCC28C43"], "description": "Independent hardware threshold indication for HV overvoltage or safe-state supervision."}, {"name": "HV_MONITOR_COND", "type": "ANALOG_SIGNAL", "source": "TLV9062", "consumers": ["ADS1220", "MSPM0G3507"], "description": "Filtered and conditioned analog monitor channel derived from HV feedback for precision measurement."}, {"name": "PRIMARY_CURRENT_COND", "type": "ANALOG_SIGNAL", "source": "TLV9062", "consumers": ["ADS1220", "MSPM0G3507"], "description": "Filtered and conditioned analog monitor channel for primary current diagnostics."}, {"name": "HV_STATUS_ISO", "type": "DIGITAL_LOGIC", "source": "ISO6741", "consumers": ["MSPM0G3507"], "description": "Isolated status return from the HV-side control/sense domain to the MCU."}, {"name": "HV_DISCHARGE_DONE_ISO", "type": "DIGITAL_LOGIC", "source": "ISO6741", "consumers": ["MSPM0G3507"], "description": "Isolated indication that the HV output has been discharged below a safe threshold."}, {"name": "HV_PWM_CMD_ISO", "type": "DIGITAL_LOGIC", "source": "MSPM0G3507", "consumers": ["ISO6741"], "description": "Digital control stream from MCU intended to cross the reinforced barrier for HV-side control functions."}, {"name": "HV_DISCHARGE_CMD_ISO", "type": "DIGITAL_LOGIC", "source": "MSPM0G3507", "consumers": ["ISO6741"], "description": "Isolated discharge command from MCU to the HV-side control domain."}, {"name": "HV_CHARGE_OPTO_LED_DRIVE", "type": "CONTROL_SIGNAL", "source": "external block: HV-side optocoupler driver circuitry", "consumers": ["external block: HV charge optocoupler input LED"], "description": "Drive path for the charge-side optocoupler input controlling connection of output node to the HV bus."}, {"name": "HV_DISCHARGE_OPTO_LED_DRIVE", "type": "CONTROL_SIGNAL", "source": "external block: HV-side optocoupler driver circuitry", "consumers": ["external block: HV discharge optocoupler input LED"], "description": "Drive path for the discharge-side optocoupler input controlling active short-to-return discharge."}, {"name": "HV_TRANSFORMER_SEC_AC", "type": "HIGH_VOLTAGE_PATH", "source": "external block: flyback transformer secondary", "consumers": ["external block: diode-capacitor voltage multiplier"], "description": "High-frequency secondary AC from flyback transformer into the HV multiplier stack."}, {"name": "HV_BUS_14KV", "type": "HIGH_VOLTAGE_PATH", "source": "external block: diode-capacitor voltage multiplier", "consumers": ["external block: HV charge optocoupler half-bridge", "external block: HV bleed path", "external block: HV divider/sense network"], "description": "Main rectified high-voltage bus at approximately 14 kV."}, {"name": "HV_RETURN", "type": "HIGH_VOLTAGE_PATH", "source": "external block: diode-capacitor voltage multiplier", "consumers": ["external block: HV discharge optocoupler half-bridge", "external block: HV bleed path", "external block: HV output connector", "external block: HV divider/sense network"], "description": "High-voltage return/reference node for the output stack and discharge path."}, {"name": "HV_OUTPUT_NODE", "type": "HIGH_VOLTAGE_PATH", "source": "external block: HV half-bridge channel midpoint", "consumers": ["external block: HV output connector", "external block: output-channel divider/sense network", "external block: load 5 nF"], "description": "Single-channel high-voltage output node switched between the HV bus and discharge return."}, {"name": "HV_OUTPUT_SENSE_RAW", "type": "HIGH_VOLTAGE_PATH", "source": "external block: output-channel divider/sense network", "consumers": ["TLV9062", "TLV7011"], "description": "Scaled HV-domain-referenced sense of the output channel voltage for charge confirmation and discharge verification."}, {"name": "HV_OUTPUT_MONITOR_COND", "type": "ANALOG_SIGNAL", "source": "TLV9062", "consumers": ["ADS1220", "MSPM0G3507"], "description": "Conditioned analog measurement of the output-channel voltage used for monitoring and control."}, {"name": "SAFE_TO_TOUCH_HW", "type": "DIGITAL_LOGIC", "source": "TLV7011", "consumers": ["MSPM0G3507", "ISO6741"], "description": "Independent hardware indication that the output voltage is below the safe threshold."}, {"name": "BATTERY_TEMP_SENSE", "type": "SENSING_LINE", "source": "external block: battery/board thermal sensor location", "consumers": ["TMP117"], "description": "Thermal sensing connection representing battery or board temperature measurement location."}, {"name": "SWDIO", "type": "DIGITAL_LOGIC", "source": "external block: programming/debug header", "consumers": ["MSPM0G3507"], "description": "Programming/debug data interface to the MCU."}, {"name": "SWCLK", "type": "DIGITAL_LOGIC", "source": "external block: programming/debug header", "consumers": ["MSPM0G3507"], "description": "Programming/debug clock interface to the MCU."}], "external_blocks": [{"name": "USB connector", "description": "User-accessible USB interface providing 5 V input and exposed data pins requiring ESD protection."}, {"name": "single-cell Li-ion battery", "description": "Rechargeable 1-cell lithium-ion energy storage element for portable operation."}, {"name": "user-accessible low-voltage domain", "description": "Common non-isolated chassis-accessible low-voltage circuitry and reference domain."}, {"name": "reset/programming header", "description": "External low-voltage service interface for reset and firmware access."}, {"name": "programming/debug header", "description": "SWD or equivalent debug/programming connector for MCU development and production test."}, {"name": "sealed user control 1", "description": "Primary sealed pushbutton or switch input for user command entry."}, {"name": "sealed user control 2", "description": "Secondary sealed pushbutton or switch input for user command entry."}, {"name": "status LED 1", "description": "External visual indicator driven by the LED driver."}, {"name": "status LED 2", "description": "External visual indicator driven by the LED driver."}, {"name": "status LED 3", "description": "External visual indicator driven by the LED driver."}, {"name": "flyback primary power MOSFET", "description": "External primary-side switching transistor driven by the gate driver for the HV flyback stage."}, {"name": "flyback transformer primary", "description": "Primary winding of the isolated flyback transformer."}, {"name": "flyback transformer secondary", "description": "Secondary winding of the isolated flyback transformer feeding the HV multiplier."}, {"name": "diode-capacitor voltage multiplier", "description": "High-voltage multiplier stack producing the approximately 14 kV bus from the flyback secondary."}, {"name": "primary current shunt", "description": "Primary-side current sense element for cycle-by-cycle control and monitoring."}, {"name": "isolated secondary bias supply", "description": "Auxiliary isolated low-power supply serving the HV-side sensing and digital isolation domain."}, {"name": "isolated high-voltage control domain", "description": "Secondary-side low-power control/reference domain separated by reinforced insulation from the user-accessible circuitry."}, {"name": "HV divider/sense network", "description": "High-impedance divider network scaling the 14 kV bus for isolated feedback and hardware supervision."}, {"name": "output-channel divider/sense network", "description": "High-impedance divider network scaling the channel output voltage for monitoring and discharge confirmation."}, {"name": "HV charge optocoupler half-bridge", "description": "High-voltage optical switching element connecting the output node to the HV bus during charging."}, {"name": "HV discharge optocoupler half-bridge", "description": "High-voltage optical switching element connecting the output node to the HV return during active discharge."}, {"name": "HV charge optocoupler input LED", "description": "Low-voltage/isolated-side LED input controlling the HV charge optical switch."}, {"name": "HV discharge optocoupler input LED", "description": "Low-voltage/isolated-side LED input controlling the HV discharge optical switch."}, {"name": "HV-side optocoupler drivers", "description": "Isolated-side drive circuitry that energizes the optical switch input LEDs according to commanded charge/discharge control."}, {"name": "HV bleed path", "description": "Normally enabled fail-safe high-voltage bleed/discharge network from output and/or bus toward return."}, {"name": "HV half-bridge channel midpoint", "description": "Node between the charge and discharge HV optical switches forming the single-channel output."}, {"name": "HV output connector", "description": "External high-voltage output interface carrying the channel output and HV return."}, {"name": "load 5 nF", "description": "Representative capacitive load connected to the high-voltage output channel."}, {"name": "low-voltage optocoupler LED drive circuitry", "description": "Auxiliary low-voltage circuitry using boosted bias where needed to modulate optical control inputs."}, {"name": "active discharge interface circuitry", "description": "Support circuitry on the low-voltage side for commanded active discharge control implementation."}, {"name": "battery/board thermal sensor location", "description": "Physical thermal measurement point monitored by the temperature sensor for derating and protection."}]}};
+
+/* ============================================================
+   STATE
+   ============================================================ */
+const S = {
+  meta: { id:null, title:'', description:'', key_references:[] },
+  nodes: [],   // {id, kind:'ic'|'external', label, x, y, w, h, data}
+  edges: [],   // {id, source, target, nets:[{name,type,description}]}
+  groups: [],  // {id, title, description, members:[nodeId,...]} — explicit groups only, UNGROUPED is implicit
+  view: { tx:60, ty:40, k:1 },
+  sel: null,   // {type:'node'|'edge', id}
+  link: null,  // {fromId, x, y} while dragging a connection
+  edgeSeq: 0
+};
+
+const NODE_W_IC = 176, NODE_H_IC = 64, NODE_W_EXT = 160, NODE_H_EXT = 46;
+const UNGROUPED_ID = 'UNGROUPED';
+const $ = id => document.getElementById(id);
+const svg = $('board'), viewport = $('viewport'),
+      edgesG = $('edgesG'), nodesG = $('nodesG'), linkG = $('linkPreviewG');
+
+/* ============================================================
+   TOLERANT JSON PARSING (fences, {output}, arrays)
+   ============================================================ */
+function tolerantParse(text){
+  if (typeof text !== 'string') return text;
+  let t = text.trim().replace(/^\uFEFF/, '').replace(/^```json\s*/i,'').replace(/```\s*$/,'').trim();
+  let d = JSON.parse(t);
+  if (Array.isArray(d)) d = d[0];
+  if (d && typeof d.output === 'string') return tolerantParse(d.output);
+  if (d && d.output && typeof d.output === 'object') return d.output;
+  if (d && typeof d === 'object'){
+    const keys = Object.keys(d);
+    if (keys.length === 1 && d[keys[0]] && typeof d[keys[0]] === 'object') return d[keys[0]];
+  }
+  return d;
+}
+
+/* ============================================================
+   GRAPH BUILD (deterministic) : input + contract -> nodes/edges
+   ============================================================ */
+function buildGraph(input, contract, rawGroups){
+  const nodes = [], edges = [];
+  const byId = new Map();
+
+  for (const ic of (input.ic_components||[])){
+    const n = { id: ic.ic_part_number, kind:'ic', label: ic.ic_part_number,
+      x:0, y:0, w:NODE_W_IC, h:NODE_H_IC, data: { ...ic } };
+    nodes.push(n); byId.set(n.id, n);
+  }
+  const extByName = new Map();
+  function extNode(name, description){
+    const key = name.trim();
+    if (extByName.has(key)) return extByName.get(key);
+    const n = { id:'EXT:'+key, kind:'external', label:key, x:0, y:0,
+      w:NODE_W_EXT, h:NODE_H_EXT, data:{ description: description||'' } };
+    nodes.push(n); byId.set(n.id, n); extByName.set(key, n);
+    return n;
+  }
+  for (const eb of (contract.external_blocks||[])) extNode(eb.name, eb.description);
+
+  function resolveRef(ref){
+    if (byId.has(ref)) return byId.get(ref);
+    const core = String(ref).replace(/^external block:\s*/i,'').trim();
+    if (extByName.has(core)) return extByName.get(core);
+    // case-insensitive external match
+    for (const [k,v] of extByName) if (k.toLowerCase()===core.toLowerCase()) return v;
+    // unknown reference: auto-create as external (lossless, deterministic)
+    return extNode(core, '(auto-created from contract reference)');
+  }
+
+  const edgeMap = new Map();
+  for (const net of (contract.global_nets||[])){
+    const src = resolveRef(net.source);
+    for (const cons of (net.consumers||[])){
+      const dst = resolveRef(cons);
+      if (!src || !dst || src.id===dst.id) continue;
+      const key = src.id+'\u2192'+dst.id;
+      if (!edgeMap.has(key)) edgeMap.set(key, { source:src.id, target:dst.id, nets:[] });
+      edgeMap.get(key).nets.push({ name:net.name, type:net.type||'NA', description:net.description||'' });
+    }
+  }
+  // Group members arrive as IC part numbers or "external block: <Name>" refs — resolveRef
+  // maps the latter to the "EXT:<Name>" node id (and auto-creates it if not already known,
+  // same as it does for net endpoints, so the import stays lossless).
+  const groups = [];
+  (rawGroups||[]).forEach((g,i)=>{
+    const members = [];
+    for (const ref of (g.members||[])){
+      const n = resolveRef(ref);
+      if (n && !members.includes(n.id)) members.push(n.id);
+    }
+    members.sort();
+    groups.push({ id:String(g.id||g.title||('GROUP_'+(i+1))), title:g.title||g.id||'Group',
+      description:g.description||'', members });
+  });
+  groups.sort((a,b)=>a.id.localeCompare(b.id));
+
+  nodes.sort((a,b)=>a.id.localeCompare(b.id));
+  const edgeList = [...edgeMap.values()]
+    .sort((a,b)=>(a.source+'|'+a.target).localeCompare(b.source+'|'+b.target));
+  edgeList.forEach(e=>{ e.nets.sort((a,b)=>a.name.localeCompare(b.name)); e.id='e'+(S.edgeSeq++); edges.push(e); });
+
+  return { nodes, edges, groups };
+}
+
+/* ============================================================
+   GROUPS (explicit groups + implicit UNGROUPED bucket)
+   ============================================================ */
+function groupsWithUngrouped(){
+  const covered = new Set(S.groups.flatMap(g=>g.members));
+  const ungroupedIds = S.nodes.map(n=>n.id).filter(id=>!covered.has(id)).sort();
+  const existing = S.groups.find(g=>g.id===UNGROUPED_ID);
+  if (existing){
+    return S.groups.map(g=>g===existing
+      ? { ...g, members:[...new Set([...g.members, ...ungroupedIds])].sort() }
+      : g);
+  }
+  return [...S.groups, { id:UNGROUPED_ID, title:'Ungrouped',
+    description:'Blocks not assigned to a functional group.', members:ungroupedIds }];
+}
+
+/* ============================================================
+   DETERMINISTIC AUTO-LAYOUT (longest-path layering, alpha order)
+   ============================================================ */
+function autoLayout(){
+  const ids = S.nodes.map(n=>n.id).sort();
+  const indeg = new Map(ids.map(i=>[i,0]));
+  const adj = new Map(ids.map(i=>[i,[]]));
+  for (const e of S.edges){
+    if (!adj.has(e.source)||!indeg.has(e.target)) continue;
+    adj.get(e.source).push(e.target);
+    indeg.set(e.target, indeg.get(e.target)+1);
+  }
+  const rank = new Map(ids.map(i=>[i,0]));
+  // longest path via repeated relaxation (deterministic, cycle-safe cap)
+  for (let pass=0; pass<ids.length; pass++){
+    let changed=false;
+    for (const u of ids) for (const v of adj.get(u))
+      if (rank.get(v) < rank.get(u)+1 && rank.get(u)+1 < ids.length){ rank.set(v, rank.get(u)+1); changed=true; }
+    if (!changed) break;
+  }
+  const cols = new Map();
+  for (const id of ids){
+    const r = rank.get(id);
+    if (!cols.has(r)) cols.set(r,[]);
+    cols.get(r).push(id);
+  }
+  const COLW = 265, ROWH = 96;
+  const sortedRanks = [...cols.keys()].sort((a,b)=>a-b);
+  for (const r of sortedRanks){
+    const col = cols.get(r).sort();
+    col.forEach((id, i)=>{
+      const n = S.nodes.find(n=>n.id===id);
+      n.x = 40 + r*COLW;
+      n.y = 40 + i*ROWH - ((col.length-1)*ROWH)/2 + 420;
+    });
+  }
+}
+
+/* ============================================================
+   RENDER
+   ============================================================ */
+function esc(s){ return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function nodeById(id){ return S.nodes.find(n=>n.id===id); }
+function edgeIsHV(e){ return e.nets.some(n=>/HIGH_VOLTAGE/i.test(n.type||'')); }
+function edgeIsPower(e){ return e.nets.some(n=>/POWER|GROUND|HIGH_CURRENT/i.test(n.type||'')); }
+
+function edgePath(e){
+  const a = nodeById(e.source), b = nodeById(e.target);
+  if (!a||!b) return '';
+  const x1 = a.x + a.w, y1 = a.y + a.h/2;
+  const x2 = b.x,       y2 = b.y + b.h/2;
+  const dx = Math.max(46, Math.abs(x2-x1)/2);
+  return `M ${x1} ${y1} C ${x1+dx} ${y1}, ${x2-dx} ${y2}, ${x2} ${y2}`;
+}
+
+function render(){
+  viewport.setAttribute('transform', `translate(${S.view.tx},${S.view.ty}) scale(${S.view.k})`);
+
+  edgesG.innerHTML = S.edges.map(e=>{
+    const hv = edgeIsHV(e), pw = edgeIsPower(e);
+    const selected = S.sel && S.sel.type==='edge' && S.sel.id===e.id;
+    const stroke = hv ? 'var(--hv)' : 'var(--copper)';
+    const w = pw ? 3.4 : 2;
+    const mid = midOfPath(e);
+    return `<g class="edge" data-eid="${esc(e.id)}">
+      <path d="${edgePath(e)}" fill="none" stroke="transparent" stroke-width="14" style="cursor:pointer"/>
+      <path d="${edgePath(e)}" fill="none" stroke="${stroke}" stroke-width="${selected?w+1.6:w}"
+        ${selected?'stroke-dasharray="none" filter="drop-shadow(0 0 3px var(--probe))"':''}
+        marker-end="url(#${hv?'arrowHv':'arrowCopper'})" style="pointer-events:none"/>
+      ${mid?`<g style="pointer-events:none">
+        <rect x="${mid.x-13}" y="${mid.y-9}" width="26" height="16" rx="8"
+          fill="${selected?'var(--probe)':'var(--paper)'}" stroke="${stroke}" stroke-width="1.2"/>
+        <text x="${mid.x}" y="${mid.y+3.5}" text-anchor="middle"
+          font-family="var(--mono)" font-size="9.5" fill="var(--ink)">${e.nets.length}</text></g>`:''}
+    </g>`;
+  }).join('');
+
+  nodesG.innerHTML = S.nodes.map(n=>{
+    const selected = S.sel && S.sel.type==='node' && S.sel.id===n.id;
+    if (n.kind==='ic'){
+      return `<g class="node" data-nid="${esc(n.id)}" transform="translate(${n.x},${n.y})" style="cursor:move">
+        <rect x="-3" y="4" width="${n.w+6}" height="${n.h}" rx="5" fill="#00000018"/>
+        <rect width="${n.w}" height="${n.h}" rx="5" fill="var(--epoxy)"
+          stroke="${selected?'var(--probe)':'var(--epoxy-edge)'}" stroke-width="${selected?2.5:1.4}"/>
+        <circle cx="13" cy="13" r="3.6" fill="var(--silk)"/>
+        <text x="26" y="26" font-family="var(--mono)" font-size="13.5" font-weight="600" fill="var(--silk)">${esc(n.label)}</text>
+        <text x="26" y="44" font-family="var(--sans)" font-size="10" fill="#B9BEC4">${esc((n.data.ic_type||'').slice(0,30))}</text>
+        <circle class="port" data-port="${esc(n.id)}" cx="${n.w}" cy="${n.h/2}" r="6.5"
+          fill="var(--copper-soft)" stroke="var(--copper)" stroke-width="1.6" style="cursor:crosshair"/>
+      </g>`;
+    }
+    return `<g class="node" data-nid="${esc(n.id)}" transform="translate(${n.x},${n.y})" style="cursor:move">
+      <rect width="${n.w}" height="${n.h}" rx="4" fill="var(--paper)"
+        stroke="${selected?'var(--probe)':'var(--ink-soft)'}" stroke-width="${selected?2.5:1.4}" stroke-dasharray="${selected?'none':'5 4'}"/>
+      <text x="12" y="20" font-family="var(--mono)" font-size="10" letter-spacing=".08em" fill="var(--ink-soft)">EXTERNAL</text>
+      <text x="12" y="36" font-family="var(--sans)" font-size="11.5" font-weight="500" fill="var(--ink)">${esc(n.label.slice(0,26))}</text>
+      <circle class="port" data-port="${esc(n.id)}" cx="${n.w}" cy="${n.h/2}" r="6"
+        fill="var(--copper-soft)" stroke="var(--copper)" stroke-width="1.5" style="cursor:crosshair"/>
+    </g>`;
+  }).join('');
+
+  renderLink();
+  renderInspector();
+  renderStatus();
+  $('projTitle').textContent = S.meta.title || 'Untitled system';
+}
+
+function midOfPath(e){
+  const a=nodeById(e.source), b=nodeById(e.target);
+  if(!a||!b) return null;
+  return { x:(a.x+a.w+b.x)/2, y:(a.y+a.h/2 + b.y+b.h/2)/2 };
+}
+
+function renderLink(){
+  if (!S.link){ linkG.innerHTML=''; return; }
+  const a = nodeById(S.link.fromId);
+  linkG.innerHTML = `<path d="M ${a.x+a.w} ${a.y+a.h/2} L ${S.link.x} ${S.link.y}"
+    fill="none" stroke="var(--probe-deep)" stroke-width="2" stroke-dasharray="6 5"/>`;
+}
+
+/* ============================================================
+   INSPECTOR
+   ============================================================ */
+const NET_TYPES = ['POWER_DISTRIBUTION','GROUND','DIGITAL_LOGIC','ANALOG_SIGNAL','CONTROL_SIGNAL','FEEDBACK_PATH','SENSING_LINE','SWITCHING_NODE','HIGH_VOLTAGE_PATH','HIGH_CURRENT_PATH','QUIET_REFERENCE','NOISY_NODE','NO_CONNECT','NA'];
+
+function renderInspector(){
+  const eye=$('insEyebrow'), title=$('insTitle'), body=$('insBody');
+  if (!S.sel){
+    eye.textContent='System';
+    title.textContent=S.meta.title||'Untitled system';
+    body.innerHTML = `
+      <p>${esc((S.meta.description||'').slice(0,420))}${(S.meta.description||'').length>420?'…':''}</p>
+      <div class="kv"><label>Blocks</label><div class="val">${S.nodes.filter(n=>n.kind==='ic').length} ICs · ${S.nodes.filter(n=>n.kind==='external').length} external</div></div>
+      <div class="kv"><label>Connections</label><div class="val">${S.edges.length} edges · ${S.edges.reduce((s,e)=>s+e.nets.length,0)} nets</div></div>
+      <p style="margin-top:14px">Select a block or a connection to inspect it. Drag from a copper port to another block to create a connection. Press <b>Delete</b> to remove the selection.</p>`;
+    return;
+  }
+  if (S.sel.type==='node'){
+    const n = nodeById(S.sel.id);
+    if (!n){ S.sel=null; renderInspector(); return; }
+    eye.textContent = n.kind==='ic' ? 'Integrated circuit' : 'External block';
+    title.textContent = n.label;
+    if (n.kind==='ic'){
+      body.innerHTML = `
+        <div class="kv"><label>Type</label><div class="val">${esc(n.data.ic_type||'')}</div></div>
+        <div class="kv"><label>Manufacturer</label><div class="val">${esc(n.data.manufacturer||'—')}</div></div>
+        <div class="kv"><label>Function</label><div class="val">${esc(n.data.description||'')}</div></div>
+        <div class="kv"><label>Selection rationale</label><div class="val">${esc(n.data.selection_rationale||'')}</div></div>
+        <div class="kv"><label>Datasheet</label><div class="val">${n.data.DatasheetUrl?`<a href="${esc(n.data.DatasheetUrl)}" target="_blank" rel="noopener">${esc(n.data.DatasheetUrl)}</a>`:'—'}</div></div>
+        <div class="btnrow"><button class="danger" id="btnDelNode">Delete IC and its connections</button></div>`;
+    } else {
+      body.innerHTML = `
+        <div class="kv"><label>Description</label><div class="val">${esc(n.data.description||'')}</div></div>
+        <div class="btnrow"><button class="danger" id="btnDelNode">Delete block and its connections</button></div>`;
+    }
+    const del=$('btnDelNode'); if (del) del.onclick=()=>deleteNode(n.id);
+    return;
+  }
+  // edge
+  const e = S.edges.find(x=>x.id===S.sel.id);
+  if (!e){ S.sel=null; renderInspector(); return; }
+  eye.textContent='Connection';
+  title.textContent = `${nodeById(e.source)?.label||'?'} → ${nodeById(e.target)?.label||'?'}`;
+  body.innerHTML = `
+    ${e.nets.length?'':'<p style="color:var(--warn)">This connection has no nets yet — add at least one, or it will be dropped on export.</p>'}
+    ${e.nets.map((n,i)=>`
+      <div class="netcard ${/HIGH_VOLTAGE/i.test(n.type)?'hv':''}">
+        <div class="nettop">
+          <span class="netname">${esc(n.name)}</span>
+          <span class="nettype">${esc(n.type)}</span>
+          <button class="x" data-delnet="${i}" title="Remove net">✕</button>
+        </div>
+        ${n.description?`<div class="netdesc">${esc(n.description)}</div>`:''}
+      </div>`).join('')}
+    <div class="addnet">
+      <div class="kv"><label>Net name</label><input type="text" id="newNetName" placeholder="MY_NEW_NET"></div>
+      <div class="row">
+        <div class="kv"><label>Type</label><select id="newNetType">${NET_TYPES.map(t=>`<option>${t}</option>`).join('')}</select></div>
+      </div>
+      <div class="kv"><label>Description</label><textarea id="newNetDesc" placeholder="One line: purpose, polarity/tie point if applicable"></textarea></div>
+      <button id="btnAddNet">Add net</button>
+    </div>
+    <div class="btnrow"><button class="danger" id="btnDelEdge">Delete connection</button></div>`;
+  body.querySelectorAll('[data-delnet]').forEach(b=>b.onclick=()=>{ e.nets.splice(+b.dataset.delnet,1); render(); });
+  $('btnAddNet').onclick=()=>{
+    const name = $('newNetName').value.trim().toUpperCase().replace(/[^A-Z0-9]+/g,'_').replace(/^_|_$/g,'');
+    if (!name){ toast('Net name required'); return; }
+    e.nets.push({ name, type:$('newNetType').value, description:$('newNetDesc').value.trim() });
+    e.nets.sort((a,b)=>a.name.localeCompare(b.name));
+    render();
+  };
+  $('btnDelEdge').onclick=()=>{ S.edges=S.edges.filter(x=>x.id!==e.id); S.sel=null; render(); };
+}
+
+function deleteNode(id){
+  S.nodes = S.nodes.filter(n=>n.id!==id);
+  S.edges = S.edges.filter(e=>e.source!==id && e.target!==id);
+  S.groups.forEach(g=>{ g.members = g.members.filter(m=>m!==id); });
+  S.sel=null; render();
+}
+
+/* ============================================================
+   STATUS BAR (live validation)
+   ============================================================ */
+function renderStatus(){
+  const isolated = S.nodes.filter(n => !S.edges.some(e=>e.source===n.id||e.target===n.id));
+  const emptyEdges = S.edges.filter(e=>e.nets.length===0);
+  const ungrouped = groupsWithUngrouped().find(g=>g.id===UNGROUPED_ID);
+  const bits = [];
+  bits.push(`<span class="chip"><span class="dot" style="background:var(--copper)"></span>${S.nodes.length} blocks · ${S.edges.length} connections</span>`);
+  bits.push(isolated.length
+    ? `<span class="chip warn"><span class="dot"></span>${isolated.length} unconnected block${isolated.length>1?'s':''}: ${esc(isolated.slice(0,3).map(n=>n.label).join(', '))}${isolated.length>3?'…':''}</span>`
+    : `<span class="chip ok"><span class="dot"></span>all blocks connected</span>`);
+  if (emptyEdges.length) bits.push(`<span class="chip warn"><span class="dot"></span>${emptyEdges.length} connection${emptyEdges.length>1?'s':''} without nets</span>`);
+  if (ungrouped && ungrouped.members.length) bits.push(`<span class="chip warn"><span class="dot"></span>${ungrouped.members.length} ungrouped block${ungrouped.members.length>1?'s':''}</span>`);
+  $('statusBar').innerHTML = bits.join('');
+}
+
+/* ============================================================
+   POINTER INTERACTIONS (pan / zoom / drag / link / select)
+   ============================================================ */
+function toWorld(clientX, clientY){
+  const r = svg.getBoundingClientRect();
+  return { x:(clientX-r.left-S.view.tx)/S.view.k, y:(clientY-r.top-S.view.ty)/S.view.k };
+}
+
+let drag = null; // {mode:'pan'|'node'|'link', ...}
+
+svg.addEventListener('pointerdown', ev=>{
+  const port = ev.target.closest('.port');
+  const nodeEl = ev.target.closest('.node');
+  const edgeEl = ev.target.closest('.edge');
+  svg.setPointerCapture(ev.pointerId);
+
+  if (port){
+    const w = toWorld(ev.clientX, ev.clientY);
+    S.link = { fromId: port.dataset.port, x:w.x, y:w.y };
+    drag = { mode:'link' };
+    svg.classList.add('linking');
+    renderLink();
+    return;
+  }
+  if (nodeEl){
+    const n = nodeById(nodeEl.dataset.nid);
+    const w = toWorld(ev.clientX, ev.clientY);
+    drag = { mode:'node', id:n.id, dx:w.x-n.x, dy:w.y-n.y, moved:false };
+    return;
+  }
+  if (edgeEl){
+    S.sel = { type:'edge', id: edgeEl.dataset.eid };
+    render();
+    return;
+  }
+  drag = { mode:'pan', sx:ev.clientX, sy:ev.clientY, tx:S.view.tx, ty:S.view.ty, moved:false };
+  svg.classList.add('panning');
+});
+
+svg.addEventListener('pointermove', ev=>{
+  if (!drag) return;
+  if (drag.mode==='pan'){
+    const dx=ev.clientX-drag.sx, dy=ev.clientY-drag.sy;
+    if (Math.abs(dx)+Math.abs(dy)>3) drag.moved=true;
+    S.view.tx=drag.tx+dx; S.view.ty=drag.ty+dy;
+    viewport.setAttribute('transform', `translate(${S.view.tx},${S.view.ty}) scale(${S.view.k})`);
+    return;
+  }
+  const w = toWorld(ev.clientX, ev.clientY);
+  if (drag.mode==='node'){
+    const n = nodeById(drag.id);
+    n.x = Math.round((w.x-drag.dx)/8)*8;
+    n.y = Math.round((w.y-drag.dy)/8)*8;
+    drag.moved=true;
+    render();
+    return;
+  }
+  if (drag.mode==='link'){
+    S.link.x=w.x; S.link.y=w.y;
+    renderLink();
+  }
+});
+
+svg.addEventListener('pointerup', ev=>{
+  if (!drag) return;
+  if (drag.mode==='pan'){
+    if (!drag.moved){ S.sel=null; render(); }
+    svg.classList.remove('panning');
+  }
+  if (drag.mode==='node' && !drag.moved){
+    S.sel={type:'node', id:drag.id}; render();
+  }
+  if (drag.mode==='link'){
+    const el = document.elementFromPoint(ev.clientX, ev.clientY);
+    const nodeEl = el && el.closest ? el.closest('.node') : null;
+    const toId = nodeEl ? nodeEl.dataset.nid : null;
+    const fromId = S.link.fromId;
+    S.link=null; svg.classList.remove('linking'); renderLink();
+    if (toId && toId!==fromId){
+      let e = S.edges.find(x=>x.source===fromId && x.target===toId);
+      if (!e){
+        e = { id:'e'+(S.edgeSeq++), source:fromId, target:toId, nets:[] };
+        S.edges.push(e);
+      }
+      S.sel={type:'edge', id:e.id};
+    }
+    render();
+  }
+  drag=null;
+});
+
+svg.addEventListener('wheel', ev=>{
+  ev.preventDefault();
+  const r = svg.getBoundingClientRect();
+  const mx=ev.clientX-r.left, my=ev.clientY-r.top;
+  const k0=S.view.k, k1=Math.min(2.4, Math.max(.25, k0*(ev.deltaY<0?1.12:0.89)));
+  S.view.tx = mx-(mx-S.view.tx)*(k1/k0);
+  S.view.ty = my-(my-S.view.ty)*(k1/k0);
+  S.view.k=k1;
+  viewport.setAttribute('transform', `translate(${S.view.tx},${S.view.ty}) scale(${S.view.k})`);
+},{passive:false});
+
+document.addEventListener('keydown', ev=>{
+  if ((ev.key==='Delete'||ev.key==='Backspace') && S.sel && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)){
+    ev.preventDefault();
+    if (S.sel.type==='node') deleteNode(S.sel.id);
+    else { S.edges=S.edges.filter(x=>x.id!==S.sel.id); S.sel=null; render(); }
+  }
+});
+
+function fitView(){
+  if (!S.nodes.length) return;
+  const minX=Math.min(...S.nodes.map(n=>n.x)), maxX=Math.max(...S.nodes.map(n=>n.x+n.w));
+  const minY=Math.min(...S.nodes.map(n=>n.y)), maxY=Math.max(...S.nodes.map(n=>n.y+n.h));
+  const r=svg.getBoundingClientRect(), pad=60;
+  const k=Math.min(1.4, Math.min((r.width-2*pad)/(maxX-minX), (r.height-2*pad)/(maxY-minY)));
+  S.view.k=Math.max(.25,k);
+  S.view.tx=(r.width-(maxX-minX)*S.view.k)/2 - minX*S.view.k;
+  S.view.ty=(r.height-(maxY-minY)*S.view.k)/2 - minY*S.view.k;
+  render();
+}
+
+/* ============================================================
+   MODALS: Add IC / Import / Export
+   ============================================================ */
+function openModal(title, bodyHTML, footHTML){
+  $('modalTitle').textContent=title;
+  $('modalBody').innerHTML=bodyHTML;
+  $('modalFoot').innerHTML=footHTML;
+  $('modalOverlay').classList.add('open');
+}
+function closeModal(){ $('modalOverlay').classList.remove('open'); }
+$('modalClose').onclick=closeModal;
+$('modalOverlay').addEventListener('pointerdown',ev=>{ if(ev.target===$('modalOverlay')) closeModal(); });
+
+$('btnAddIC').onclick=()=>{
+  openModal('Add IC block', `
+    <div class="kv"><label>Part number *</label><input type="text" id="fPN" placeholder="TPS7A21"></div>
+    <div class="kv"><label>IC type *</label><input type="text" id="fType" placeholder="Low-noise LDO regulator"></div>
+    <div class="kv"><label>Manufacturer</label><input type="text" id="fMan" placeholder="TEXAS INSTRUMENTS"></div>
+    <div class="kv"><label>Function in this system *</label><textarea id="fDesc"></textarea></div>
+    <div class="kv"><label>Selection rationale</label><textarea id="fRat"></textarea></div>
+    <div class="kv"><label>Datasheet URL</label><input type="text" id="fUrl" placeholder="https://www.ti.com/lit/ds/symlink/....pdf"></div>
+    <p class="hint">The new block appears at the center of the view. Drag from its copper port to wire it, then add the nets on each connection.</p>
+  `, `<button id="mCancel">Cancel</button><button class="primary" id="mOk">Add IC</button>`);
+  $('mCancel').onclick=closeModal;
+  $('mOk').onclick=()=>{
+    const pn=$('fPN').value.trim();
+    if (!pn || !$('fType').value.trim() || !$('fDesc').value.trim()){ toast('Part number, type and function are required'); return; }
+    if (nodeById(pn)){ toast('A block with this part number already exists'); return; }
+    const r=svg.getBoundingClientRect();
+    const c=toWorld(r.left+r.width/2, r.top+r.height/2);
+    S.nodes.push({ id:pn, kind:'ic', label:pn, x:Math.round(c.x/8)*8-NODE_W_IC/2, y:Math.round(c.y/8)*8-NODE_H_IC/2,
+      w:NODE_W_IC, h:NODE_H_IC,
+      data:{ ic_part_number:pn, ic_type:$('fType').value.trim(), manufacturer:$('fMan').value.trim(),
+             description:$('fDesc').value.trim(), selection_rationale:$('fRat').value.trim(),
+             DatasheetUrl:$('fUrl').value.trim() } });
+    closeModal(); S.sel={type:'node',id:pn}; render();
+  };
+};
+
+$('btnImport').onclick=()=>{
+  openModal('Import', `
+    <div class="tabs"><button class="on" id="tabA">System JSON</button><button id="tabB">Saved session</button></div>
+    <div id="paneA">
+      <p class="hint">Paste the combined system JSON from your n8n pipeline: <span style="font-family:var(--mono)">{"input":…, "contract":…, "groups":…}</span>. Markdown fences and <span style="font-family:var(--mono)">{"output": "..."}</span> wrappers are handled automatically. A bare legacy input JSON (just <span style="font-family:var(--mono)">ic_components</span>, no contract) is also accepted.</p>
+      <div class="kv"><label>System JSON (input + contract + groups)</label><textarea id="impSys"></textarea></div>
+    </div>
+    <div id="paneB" style="display:none">
+      <p class="hint">Paste a session JSON previously saved from Export → Save session (keeps positions and edits).</p>
+      <div class="kv"><label>Session JSON</label><textarea id="impSess"></textarea></div>
+    </div>
+  `, `<button id="mCancel">Cancel</button><button class="primary" id="mOk">Import</button>`);
+  let mode='A';
+  $('tabA').onclick=()=>{ mode='A'; $('tabA').classList.add('on'); $('tabB').classList.remove('on'); $('paneA').style.display=''; $('paneB').style.display='none'; };
+  $('tabB').onclick=()=>{ mode='B'; $('tabB').classList.add('on'); $('tabA').classList.remove('on'); $('paneB').style.display=''; $('paneA').style.display='none'; };
+  $('mCancel').onclick=closeModal;
+  $('mOk').onclick=()=>{
+    try{
+      if (mode==='A'){
+        const raw = tolerantParse($('impSys').value);
+        if (!raw || typeof raw!=='object') throw new Error('Not valid JSON');
+        let inp, con, groups;
+        if (raw.ic_components){
+          // legacy: bare architect INPUT pasted alone, no contract
+          inp = raw; con = { global_nets:[], external_blocks:[] }; groups = [];
+        } else if (raw.input && raw.input.ic_components){
+          inp = raw.input; con = raw.contract || { global_nets:[], external_blocks:[] }; groups = raw.groups || [];
+        } else {
+          throw new Error('Expected {input, contract, groups} (or a legacy input JSON with ic_components)');
+        }
+        loadFromContract(inp, con, groups);
+      } else {
+        const s=tolerantParse($('impSess').value);
+        if (!s||!s.nodes||!s.edges) throw new Error('Not a session JSON (nodes/edges missing)');
+        S.meta=s.meta||S.meta; S.nodes=s.nodes; S.edges=s.edges; S.groups=s.groups||[];
+        S.edgeSeq = Math.max(0,...S.edges.map(e=>+String(e.id).replace(/^e/,'')||0))+1;
+        S.sel=null; render(); fitView();
+      }
+      closeModal(); toast('Imported');
+    }catch(err){ toast('Import failed: '+err.message); }
+  };
+};
+
+$('btnExport').onclick=()=>{
+  const pipeline = buildPipelineJSON();
+  const session = buildSessionJSON();
+  const emptyEdges = S.edges.filter(e=>e.nets.length===0).length;
+  openModal('Export', `
+    ${emptyEdges?`<p class="hint" style="color:var(--warn)">Note: ${emptyEdges} connection(s) without nets will be omitted from the contract.</p>`:''}
+    <div class="tabs"><button class="on" id="tabP">Pipeline input</button><button id="tabS">Save session</button></div>
+    <div id="paneP">
+      <p class="hint">Feed this JSON to <b>Prepare Blocks</b> (it carries <span style="font-family:var(--mono)">global_contract_override</span>, so the Architect agent is skipped).</p>
+      <pre class="out" id="outP"></pre>
+    </div>
+    <div id="paneS" style="display:none">
+      <p class="hint">Keeps node positions and all edits — re-import later via Import → Saved session.</p>
+      <pre class="out" id="outS"></pre>
+    </div>
+  `, `<button id="mCopy">Copy</button><button class="primary" id="mDl">Download</button>`);
+  const pTxt=JSON.stringify([pipeline],null,2), sTxt=JSON.stringify(session,null,2);
+  $('outP').textContent=pTxt; $('outS').textContent=sTxt;
+  let mode='P';
+  $('tabP').onclick=()=>{ mode='P'; $('tabP').classList.add('on'); $('tabS').classList.remove('on'); $('paneP').style.display=''; $('paneS').style.display='none'; };
+  $('tabS').onclick=()=>{ mode='S'; $('tabS').classList.add('on'); $('tabP').classList.remove('on'); $('paneS').style.display=''; $('paneP').style.display='none'; };
+  $('mCopy').onclick=()=>{ navigator.clipboard.writeText(mode==='P'?pTxt:sTxt).then(()=>toast('Copied')); };
+  $('mDl').onclick=()=>{
+    const blob=new Blob([mode==='P'?pTxt:sTxt],{type:'application/json'});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download= mode==='P' ? 'pipeline_input.json' : 'architecture_session.json';
+    a.click(); URL.revokeObjectURL(a.href);
+  };
+};
+
+/* ============================================================
+   EXPORT BUILDERS (deterministic: everything sorted)
+   ============================================================ */
+function buildPipelineJSON(){
+  const ic_components = S.nodes.filter(n=>n.kind==='ic')
+    .sort((a,b)=>a.id.localeCompare(b.id))
+    .map(n=>({ ic_type:n.data.ic_type||'', description:n.data.description||'',
+      manufacturer:n.data.manufacturer||'', ic_part_number:n.data.ic_part_number||n.id,
+      DatasheetUrl:n.data.DatasheetUrl||'', selection_rationale:n.data.selection_rationale||'' }));
+
+  const refOf = n => n.kind==='external' ? 'external block: '+n.label : n.id;
+  const netMap = new Map();
+  const sortedEdges=[...S.edges].sort((a,b)=>(a.source+'|'+a.target).localeCompare(b.source+'|'+b.target));
+  for (const e of sortedEdges){
+    const src=nodeById(e.source), dst=nodeById(e.target);
+    if (!src||!dst) continue;
+    for (const net of e.nets){
+      if (!netMap.has(net.name))
+        netMap.set(net.name, { name:net.name, type:net.type||'NA', source:refOf(src), consumers:[], description:net.description||'' });
+      const rec=netMap.get(net.name);
+      const c=refOf(dst);
+      if (!rec.consumers.includes(c)) rec.consumers.push(c);
+      if (!rec.description && net.description) rec.description=net.description;
+    }
+  }
+  const global_nets=[...netMap.values()].sort((a,b)=>a.name.localeCompare(b.name));
+  global_nets.forEach(n=>n.consumers.sort());
+  const external_blocks = S.nodes.filter(n=>n.kind==='external')
+    .sort((a,b)=>a.label.localeCompare(b.label))
+    .map(n=>({ name:n.label, description:n.data.description||'' }));
+
+  const groups = [...S.groups].sort((a,b)=>a.id.localeCompare(b.id)).map(g=>({
+    id:g.id, title:g.title, description:g.description,
+    members:g.members.map(id=>{ const n=nodeById(id); return n?refOf(n):null; })
+      .filter(Boolean).sort() }));
+
+  return { id:S.meta.id, title:S.meta.title, description:S.meta.description,
+    key_references:S.meta.key_references, ic_components,
+    global_contract_override: JSON.stringify({ global_nets, external_blocks }, null, 2),
+    groups };
+}
+
+function buildSessionJSON(){
+  return { meta:S.meta,
+    nodes:S.nodes.map(n=>({ ...n })),
+    edges:S.edges.map(e=>({ ...e, nets:e.nets.map(x=>({ ...x })) })),
+    groups:S.groups.map(g=>({ ...g, members:[...g.members] })) };
+}
+
+/* ============================================================
+   LOAD / BOOT
+   ============================================================ */
+function loadFromContract(input, contract, groups){
+  S.meta = { id:input.id||null, title:input.title||'', description:input.description||'', key_references:input.key_references||[] };
+  S.edgeSeq=0;
+  const g = buildGraph(input, contract||{}, groups||[]);
+  S.nodes=g.nodes; S.edges=g.edges; S.groups=g.groups; S.sel=null;
+  autoLayout();
+  render(); fitView();
+}
+
+function toast(msg){
+  const t=$('toast'); t.textContent=msg; t.classList.add('show');
+  clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove('show'),2200);
+}
+
+$('btnLayout').onclick=()=>{ autoLayout(); render(); fitView(); };
+$('btnFit').onclick=fitView;
+window.addEventListener('resize', ()=>render());
+
+if (PRELOADED && PRELOADED.input && PRELOADED.contract){
+  loadFromContract(PRELOADED.input, PRELOADED.contract, PRELOADED.groups);
+} else {
+  render();
+}
