@@ -7,15 +7,23 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="styles.css">
+<script>
+  // Set before first paint to avoid a flash of the wrong theme; no persistence (session-only),
+  // just an initial guess from the OS preference that the header toggle can override.
+  document.documentElement.dataset.theme =
+    window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+</script>
 </head>
 <body>
 
 <header>
+  <img src="nexodesign_logo.jpg" alt="NX Design" class="brand-logo">
   <div class="brand">
     <span class="eyebrow">Block architecture · pipeline stage 0</span>
     <h1 id="projTitle">Untitled system</h1>
   </div>
   <div class="spacer"></div>
+  <button id="btnTheme" title="Toggle light/dark theme">Dark</button>
   <button id="btnLayout" title="Recompute deterministic layout">Auto-layout</button>
   <button id="btnFit" title="Fit diagram to view">Fit view</button>
   <button id="btnAddIC">Add IC</button>
@@ -33,7 +41,7 @@
         </pattern>
         <pattern id="gridLg" width="80" height="80" patternUnits="userSpaceOnUse">
           <rect width="80" height="80" fill="url(#gridSm)"/>
-          <path d="M80 0H0V80" fill="none" stroke="#DBD7C8" stroke-width="1.4"/>
+          <path d="M80 0H0V80" fill="none" stroke="var(--grid-major)" stroke-width="1.4"/>
         </pattern>
         <marker id="arrowCopper" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
           <path d="M0 0.6 L7.4 4 L0 7.4 Z" fill="var(--copper)"/>

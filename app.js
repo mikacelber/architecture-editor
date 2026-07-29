@@ -21,7 +21,9 @@ const S = {
 };
 
 const NODE_W_IC = 176, NODE_H_IC = 64, NODE_W_EXT = 160, NODE_H_EXT = 46;
-const GROUP_W = 240, GROUP_H = 108;
+// Sheet-symbol group blocks grow in Y to list every member's name — width stays fixed.
+const GROUP_W = 240, GROUP_HEAD_H = 70, GROUP_MEMBER_ROW_H = 14, GROUP_FOOT_PAD = 14;
+function groupBlockHeight(g){ return GROUP_HEAD_H + (g ? g.members.length : 0)*GROUP_MEMBER_ROW_H + GROUP_FOOT_PAD; }
 const UNGROUPED_ID = 'UNGROUPED';
 function isTopLevel(){ return S.openGroup == null; }
 const $ = id => document.getElementById(id);
@@ -174,13 +176,16 @@ function groupPosOf(id){
 
 function groupBlockRect(id){
   const p = groupPosOf(id);
-  return { id, x:p.x, y:p.y, w:GROUP_W, h:GROUP_H };
+  const g = groupsWithUngrouped().find(x=>x.id===id);
+  return { id, x:p.x, y:p.y, w:GROUP_W, h:groupBlockHeight(g) };
 }
 
 /* ============================================================
    DETERMINISTIC AUTO-LAYOUT (longest-path layering, alpha order)
    ============================================================ */
-function layeredLayout(ids, edges, colw, rowh){
+// heightFn(id) lets each column stack boxes by their real height instead of a
+// fixed slot — needed because group blocks now grow with their member count.
+function layeredLayout(ids, edges, colw, gap, heightFn){
   const sortedIds = [...ids].sort();
   const indeg = new Map(sortedIds.map(i=>[i,0]));
   const adj = new Map(sortedIds.map(i=>[i,[]]));
@@ -207,12 +212,18 @@ function layeredLayout(ids, edges, colw, rowh){
   const sortedRanks = [...cols.keys()].sort((a,b)=>a-b);
   for (const r of sortedRanks){
     const col = cols.get(r).sort();
-    col.forEach((id, i)=>{
-      pos.set(id, { x: 40 + r*colw, y: 40 + i*rowh - ((col.length-1)*rowh)/2 + 420 });
+    const heights = col.map(heightFn);
+    const totalH = heights.reduce((s,h)=>s+h,0) + gap*Math.max(0,col.length-1);
+    let cursorY = 420 - totalH/2;
+    col.forEach((id,i)=>{
+      pos.set(id, { x: 40 + r*colw, y: cursorY });
+      cursorY += heights[i] + gap;
     });
   }
   return pos;
 }
+
+function nodeHeight(id){ const n=nodeById(id); return n ? n.h : NODE_H_IC; }
 
 // Lays out one group's members using only that group's internal edges — a local
 // diagram scoped to the group, not the whole system (each node belongs to exactly
@@ -222,7 +233,7 @@ function autoLayoutGroupMembers(groupId){
   if (!g || !g.members.length) return;
   const memberSet = new Set(g.members);
   const internalEdges = S.edges.filter(e=>memberSet.has(e.source) && memberSet.has(e.target));
-  const pos = layeredLayout(g.members, internalEdges, 265, 96);
+  const pos = layeredLayout(g.members, internalEdges, 265, 32, nodeHeight);
   for (const id of g.members){ const n=nodeById(id); if (n){ const p=pos.get(id); n.x=p.x; n.y=p.y; } }
 }
 
@@ -234,7 +245,8 @@ function autoLayoutAllGroupMembers(){
 // (used when restoring a session, so manually-dragged group positions survive).
 function autoLayoutGroups(onlyMissing){
   const groups = visibleGroups();
-  const pos = layeredLayout(groups.map(g=>g.id), computeGroupEdges(), 320, 170);
+  const pos = layeredLayout(groups.map(g=>g.id), computeGroupEdges(), 340, 40,
+    id=>groupBlockHeight(groups.find(g=>g.id===id)));
   for (const [id,p] of pos){
     if (onlyMissing && S.groupPos[id]) continue;
     S.groupPos[id] = p;
@@ -249,12 +261,14 @@ function nodeById(id){ return S.nodes.find(n=>n.id===id); }
 function edgeIsHV(e){ return e.nets.some(n=>/HIGH_VOLTAGE/i.test(n.type||'')); }
 function edgeIsPower(e){ return e.nets.some(n=>/POWER|GROUND|HIGH_CURRENT/i.test(n.type||'')); }
 
+// Orthogonal (horizontal/vertical) elbow routing, schematic-style (LTSpice/Altium)
+// instead of a curve: out horizontally, turn once, in horizontally.
 function blockEdgePath(a, b){
   if (!a||!b) return '';
   const x1 = a.x + a.w, y1 = a.y + a.h/2;
   const x2 = b.x,       y2 = b.y + b.h/2;
-  const dx = Math.max(46, Math.abs(x2-x1)/2);
-  return `M ${x1} ${y1} C ${x1+dx} ${y1}, ${x2-dx} ${y2}, ${x2} ${y2}`;
+  const midX = (x1+x2)/2;
+  return `M ${x1} ${y1} L ${midX} ${y1} L ${midX} ${y2} L ${x2} ${y2}`;
 }
 function edgePath(e){ return blockEdgePath(nodeById(e.source), nodeById(e.target)); }
 function midOf(a, b){ return { x:(a.x+a.w+b.x)/2, y:(a.y+a.h/2 + b.y+b.h/2)/2 }; }
@@ -418,16 +432,25 @@ function renderTopLevel(){
 
   nodesG.innerHTML = groups.map(g=>{
     const pos = groupPosOf(g.id);
+    const h = groupBlockHeight(g);
     const selected = S.sel && S.sel.type==='group' && S.sel.id===g.id;
     const eyebrow = g.id===UNGROUPED_ID ? 'UNASSIGNED' : 'FUNCTIONAL GROUP';
+    const memberLines = g.members.map((id,i)=>{
+      const n = nodeById(id);
+      const label = n ? n.label : id;
+      const font = n && n.kind==='ic' ? 'var(--mono)' : 'var(--sans)';
+      const style = n && n.kind==='ic' ? '' : ' font-style="italic"';
+      return `<text x="14" y="${GROUP_HEAD_H+16+i*GROUP_MEMBER_ROW_H}" font-family="${font}" font-size="10"${style} fill="var(--ink-soft)">${esc(label.slice(0,32))}</text>`;
+    }).join('');
     return `<g class="node" data-nid="${esc(g.id)}" transform="translate(${pos.x},${pos.y})" style="cursor:move">
-      <rect x="-4" y="6" width="${GROUP_W+8}" height="${GROUP_H}" rx="6" fill="#00000018"/>
-      <rect width="${GROUP_W}" height="${GROUP_H}" rx="6" fill="var(--vellum)"
+      <rect x="-4" y="6" width="${GROUP_W+8}" height="${h}" rx="6" fill="#00000018"/>
+      <rect width="${GROUP_W}" height="${h}" rx="6" fill="var(--vellum)"
         stroke="${selected?'var(--probe)':'var(--ink)'}" stroke-width="${selected?3:2}"/>
       <line x1="14" y1="30" x2="${GROUP_W-14}" y2="30" stroke="var(--ink)" stroke-width="1" opacity=".18"/>
       <text x="14" y="20" font-family="var(--mono)" font-size="9.5" letter-spacing=".1em" fill="var(--ink-soft)">${eyebrow}</text>
       <text x="14" y="54" font-family="var(--mono)" font-size="15" font-weight="600" fill="var(--ink)">${esc(g.title.slice(0,26))}</text>
-      <text x="14" y="${GROUP_H-16}" font-family="var(--sans)" font-size="11.5" fill="var(--ink-soft)">${g.members.length} block${g.members.length===1?'':'s'}</text>
+      <text x="14" y="${GROUP_HEAD_H}" font-family="var(--sans)" font-size="11" font-weight="600" fill="var(--ink-soft)">${g.members.length} block${g.members.length===1?'':'s'}</text>
+      ${memberLines}
     </g>`;
   }).join('');
 }
@@ -481,14 +504,21 @@ function renderInspector(){
     title.textContent=S.meta.title||'Untitled system';
     const groups = visibleGroups();
     const ungrouped = groups.find(g=>g.id===UNGROUPED_ID);
+    const descTruncated = (S.meta.description||'').length > 420;
     body.innerHTML = `
-      <p>${esc((S.meta.description||'').slice(0,420))}${(S.meta.description||'').length>420?'…':''}</p>
+      <p>${esc((S.meta.description||'').slice(0,420))}${descTruncated?'… ':''}${descTruncated?'<button class="linklike" id="btnFullDesc">Read full description</button>':''}</p>
       <div class="kv"><label>Blocks</label><div class="val">${S.nodes.filter(n=>n.kind==='ic').length} ICs · ${S.nodes.filter(n=>n.kind==='external').length} external</div></div>
       <div class="kv"><label>Connections</label><div class="val">${S.edges.length} edges · ${S.edges.reduce((s,e)=>s+e.nets.length,0)} nets</div></div>
       <div class="kv"><label>Groups</label><div class="val">${groups.length} shown${ungrouped&&ungrouped.members.length?` · ${ungrouped.members.length} ungrouped`:''}</div></div>
       <p style="margin-top:14px">${isTopLevel()
         ? 'System-level view — each block is a functional group, derived automatically from the underlying connections. Select a group or a connection to inspect it, or double-click a group to open it. Drag a group to reposition it.'
         : 'Select a block or a connection to inspect it. Drag from a copper port to another block to create a connection. Press <b>Delete</b> to remove the selection. Click "System" above to return to the top level.'}</p>`;
+    if (descTruncated) $('btnFullDesc').onclick = () => {
+      openModal(S.meta.title||'System description',
+        `<p style="white-space:pre-wrap;line-height:1.6">${esc(S.meta.description)}</p>`,
+        `<button class="primary" id="mCancel">Close</button>`);
+      $('mCancel').onclick = closeModal;
+    };
     return;
   }
   if (S.sel.type==='group'){
@@ -1007,6 +1037,19 @@ function toast(msg){
 $('btnLayout').onclick=()=>{ if (isTopLevel()) autoLayoutGroups(); else autoLayoutGroupMembers(S.openGroup); render(); fitView(); };
 $('btnFit').onclick=fitView;
 window.addEventListener('resize', ()=>render());
+
+// Theme is session-only (no localStorage) — index.html seeds the initial value from
+// prefers-color-scheme before first paint; this button just flips it at runtime.
+function updateThemeButton(){
+  const isDark = document.documentElement.dataset.theme==='dark';
+  $('btnTheme').textContent = isDark ? 'Light' : 'Dark';
+  $('btnTheme').title = isDark ? 'Switch to light theme' : 'Switch to dark theme';
+}
+$('btnTheme').onclick=()=>{
+  document.documentElement.dataset.theme = document.documentElement.dataset.theme==='dark' ? 'light' : 'dark';
+  updateThemeButton();
+};
+updateThemeButton();
 
 if (PRELOADED && PRELOADED.input && PRELOADED.contract){
   loadFromContract(PRELOADED.input, PRELOADED.contract, PRELOADED.groups);
