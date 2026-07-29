@@ -203,9 +203,20 @@ function layeredLayout(ids, edges, colw, rowh){
   return pos;
 }
 
-function autoLayout(){
-  const pos = layeredLayout(S.nodes.map(n=>n.id), S.edges, 265, 96);
-  for (const n of S.nodes){ const p=pos.get(n.id); n.x=p.x; n.y=p.y; }
+// Lays out one group's members using only that group's internal edges — a local
+// diagram scoped to the group, not the whole system (each node belongs to exactly
+// one group, so reusing n.x/n.y per node here never conflicts across groups).
+function autoLayoutGroupMembers(groupId){
+  const g = groupsWithUngrouped().find(x=>x.id===groupId);
+  if (!g || !g.members.length) return;
+  const memberSet = new Set(g.members);
+  const internalEdges = S.edges.filter(e=>memberSet.has(e.source) && memberSet.has(e.target));
+  const pos = layeredLayout(g.members, internalEdges, 265, 96);
+  for (const id of g.members){ const n=nodeById(id); if (n){ const p=pos.get(id); n.x=p.x; n.y=p.y; } }
+}
+
+function autoLayoutAllGroupMembers(){
+  for (const g of groupsWithUngrouped()) autoLayoutGroupMembers(g.id);
 }
 
 // onlyMissing=true fills in positions only for groups that don't have one yet
@@ -240,16 +251,55 @@ function midOf(a, b){ return { x:(a.x+a.w+b.x)/2, y:(a.y+a.h/2 + b.y+b.h/2)/2 };
 function render(){
   viewport.setAttribute('transform', `translate(${S.view.tx},${S.view.ty}) scale(${S.view.k})`);
 
-  if (isTopLevel()) renderTopLevel(); else renderFlatLevel();
+  if (isTopLevel()) renderTopLevel(); else renderDrillDown();
 
   renderLink();
+  renderBreadcrumb();
   renderInspector();
   renderStatus();
   $('projTitle').textContent = S.meta.title || 'Untitled system';
 }
 
-function renderFlatLevel(){
-  edgesG.innerHTML = S.edges.map(e=>{
+// Boundary-crossing edges for the currently open group, keyed by the neighboring
+// group so multiple node-level edges to/from the same group collapse into one
+// portal stub. Reuses computeGroupEdges() — same aggregation as the top level.
+function openGroupPortals(){
+  if (isTopLevel()) return { incoming:[], outgoing:[] };
+  const incoming = computeGroupEdges().filter(e=>e.target===S.openGroup)
+    .sort((a,b)=>a.source.localeCompare(b.source));
+  const outgoing = computeGroupEdges().filter(e=>e.source===S.openGroup)
+    .sort((a,b)=>a.target.localeCompare(b.target));
+  return { incoming, outgoing };
+}
+
+const PORTAL_W = 156, PORTAL_H = 52, PORTAL_GAP = 70, PORTAL_MARGIN = 90;
+
+function portalRect(i, count, dir, memberBounds){
+  const y = (memberBounds.minY+memberBounds.maxY)/2 - ((count-1)*PORTAL_GAP)/2 + i*PORTAL_GAP - PORTAL_H/2;
+  const x = dir==='in' ? memberBounds.minX - PORTAL_MARGIN - PORTAL_W : memberBounds.maxX + PORTAL_MARGIN;
+  return { x, y, w:PORTAL_W, h:PORTAL_H };
+}
+
+function memberBounds(members){
+  return {
+    minX: Math.min(...members.map(n=>n.x)), maxX: Math.max(...members.map(n=>n.x+n.w)),
+    minY: Math.min(...members.map(n=>n.y)), maxY: Math.max(...members.map(n=>n.y+n.h))
+  };
+}
+
+// Drill-down: only the open group's member nodes and their internal edges, plus
+// left/right portal stubs for edges that cross the group boundary (read-only —
+// open the OTHER group to edit those). All existing node/edge editing below is
+// untouched from the pre-groups flat view, just scoped to this member set.
+function renderDrillDown(){
+  const g = groupsWithUngrouped().find(x=>x.id===S.openGroup);
+  const memberSet = new Set(g ? g.members : []);
+  const members = S.nodes.filter(n=>memberSet.has(n.id));
+  const edges = S.edges.filter(e=>memberSet.has(e.source) && memberSet.has(e.target));
+  const bounds = members.length ? memberBounds(members) : { minX:0,maxX:0,minY:0,maxY:0 };
+  const { incoming, outgoing } = openGroupPortals();
+
+  const edgeMarkup = edges.map(e=>{
     const hv = edgeIsHV(e), pw = edgeIsPower(e);
     const selected = S.sel && S.sel.type==='edge' && S.sel.id===e.id;
     const stroke = hv ? 'var(--hv)' : 'var(--copper)';
@@ -269,7 +319,14 @@ function renderFlatLevel(){
     </g>`;
   }).join('');
 
-  nodesG.innerHTML = S.nodes.map(n=>{
+  const portalMarkup = [
+    ...incoming.map((item,i)=>portalMarkupFor(item,'in',i,incoming.length,bounds)),
+    ...outgoing.map((item,i)=>portalMarkupFor(item,'out',i,outgoing.length,bounds))
+  ].join('');
+
+  edgesG.innerHTML = edgeMarkup + portalMarkup;
+
+  nodesG.innerHTML = members.map(n=>{
     const selected = S.sel && S.sel.type==='node' && S.sel.id===n.id;
     if (n.kind==='ic'){
       return `<g class="node" data-nid="${esc(n.id)}" transform="translate(${n.x},${n.y})" style="cursor:move">
@@ -292,6 +349,31 @@ function renderFlatLevel(){
         fill="var(--copper-soft)" stroke="var(--copper)" stroke-width="1.5" style="cursor:crosshair"/>
     </g>`;
   }).join('');
+}
+
+function portalMarkupFor(item, dir, i, count, bounds){
+  const r = portalRect(i, count, dir, bounds);
+  const otherId = dir==='in' ? item.source : item.target;
+  const other = groupsWithUngrouped().find(g=>g.id===otherId);
+  const label = other ? other.title : otherId;
+  const hv = item.nets.some(n=>/HIGH_VOLTAGE/i.test(n.type||''));
+  const stroke = hv ? 'var(--hv)' : 'var(--copper)';
+  const selected = S.sel && S.sel.type==='portal' && S.sel.id===(dir+':'+otherId);
+  const stubY = r.y + r.h/2;
+  // dir='in': stub sits left of the members, arrow points right into the group.
+  // dir='out': stub sits right of the members, arrow points right away from it.
+  const stubLineX1 = dir==='in' ? r.x + r.w : bounds.maxX;
+  const stubLineX2 = dir==='in' ? bounds.minX : r.x;
+  return `<g class="portal" data-portal="${esc(dir+':'+otherId)}" style="cursor:pointer">
+    <path d="M ${stubLineX1} ${stubY} L ${stubLineX2} ${stubY}" fill="none" stroke="${stroke}"
+      stroke-width="2" stroke-dasharray="5 4" marker-end="url(#${hv?'arrowHv':'arrowCopper'})"/>
+    <rect x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" rx="6" fill="var(--vellum)"
+      stroke="${selected?'var(--probe)':'var(--ink-soft)'}" stroke-width="${selected?2.5:1.5}" stroke-dasharray="4 3"/>
+    <text x="${r.x+10}" y="${r.y+18}" font-family="var(--mono)" font-size="9" letter-spacing=".08em" fill="var(--ink-soft)">${dir==='in'?'FROM':'TO'}</text>
+    <text x="${r.x+10}" y="${r.y+36}" font-family="var(--mono)" font-size="12" font-weight="600" fill="var(--ink)">${esc(label.slice(0,17))}</text>
+    <circle cx="${r.x+r.w-16}" cy="${r.y+r.h/2}" r="9" fill="var(--paper)" stroke="${stroke}" stroke-width="1.2"/>
+    <text x="${r.x+r.w-16}" y="${r.y+r.h/2+3.5}" text-anchor="middle" font-family="var(--mono)" font-size="9.5" fill="var(--ink)">${item.nets.length}</text>
+  </g>`;
 }
 
 // Sheet-symbol style: vellum fill, ink border, mono title, member count.
@@ -346,6 +428,30 @@ function renderLink(){
     fill="none" stroke="var(--probe-deep)" stroke-width="2" stroke-dasharray="6 5"/>`;
 }
 
+function renderBreadcrumb(){
+  const el = $('breadcrumb');
+  if (isTopLevel()){ el.innerHTML = `<span class="crumb-current">System</span>`; return; }
+  const g = groupsWithUngrouped().find(x=>x.id===S.openGroup);
+  el.innerHTML = `<button class="crumb-link" id="crumbSystem">System</button><span class="crumb-sep">/</span><span class="crumb-current">${esc(g?g.title:S.openGroup)}</span>`;
+  $('crumbSystem').onclick = closeGroupView;
+}
+
+function openGroupView(groupId){
+  const g = groupsWithUngrouped().find(x=>x.id===groupId);
+  if (!g || !g.members.length) return;
+  S.openGroup = groupId;
+  S.sel = null;
+  render();
+  fitView();
+}
+
+function closeGroupView(){
+  S.openGroup = null;
+  S.sel = null;
+  render();
+  fitView();
+}
+
 /* ============================================================
    INSPECTOR
    ============================================================ */
@@ -364,8 +470,8 @@ function renderInspector(){
       <div class="kv"><label>Connections</label><div class="val">${S.edges.length} edges · ${S.edges.reduce((s,e)=>s+e.nets.length,0)} nets</div></div>
       <div class="kv"><label>Groups</label><div class="val">${groups.length} shown${ungrouped&&ungrouped.members.length?` · ${ungrouped.members.length} ungrouped`:''}</div></div>
       <p style="margin-top:14px">${isTopLevel()
-        ? 'System-level view — each block is a functional group, derived automatically from the underlying connections. Select a group or a connection to inspect it. Drag a group to reposition it.'
-        : 'Select a block or a connection to inspect it. Drag from a copper port to another block to create a connection. Press <b>Delete</b> to remove the selection.'}</p>`;
+        ? 'System-level view — each block is a functional group, derived automatically from the underlying connections. Select a group or a connection to inspect it, or double-click a group to open it. Drag a group to reposition it.'
+        : 'Select a block or a connection to inspect it. Drag from a copper port to another block to create a connection. Press <b>Delete</b> to remove the selection. Click "System" above to return to the top level.'}</p>`;
     return;
   }
   if (S.sel.type==='group'){
@@ -377,7 +483,9 @@ function renderInspector(){
       <p>${esc(g.description||'')}</p>
       <div class="kv"><label>Members (${g.members.length})</label>
         <div class="val">${g.members.map(id=>{ const n=nodeById(id); return esc(n?n.label:id); }).join(', ')||'—'}</div></div>
-      <p style="margin-top:14px;color:var(--ink-soft)">Drill-down into a group isn't wired up yet — coming next. Group rename/description editing and moving members between groups will land later too.</p>`;
+      <div class="btnrow"><button class="primary" id="btnOpenGroup">Open group</button></div>
+      <p style="margin-top:14px;color:var(--ink-soft)">Double-click the block also opens it. Renaming a group and moving members between groups aren't available yet.</p>`;
+    $('btnOpenGroup').onclick=()=>openGroupView(g.id);
     return;
   }
   if (S.sel.type==='groupEdge'){
@@ -393,6 +501,28 @@ function renderInspector(){
           <div class="nettop"><span class="netname">${esc(n.name)}</span><span class="nettype">${esc(n.type)}</span></div>
           ${n.description?`<div class="netdesc">${esc(n.description)}</div>`:''}
         </div>`).join('')}`;
+    return;
+  }
+  if (S.sel.type==='portal'){
+    const [dir, otherId] = S.sel.id.split(/:(.+)/);
+    const { incoming, outgoing } = openGroupPortals();
+    const e = (dir==='in'?incoming:outgoing).find(x=>(dir==='in'?x.source:x.target)===otherId);
+    if (!e){ S.sel=null; renderInspector(); return; }
+    const other = groupsWithUngrouped().find(g=>g.id===otherId);
+    const here = groupsWithUngrouped().find(g=>g.id===S.openGroup);
+    eye.textContent='Portal (read-only)';
+    title.textContent = dir==='in'
+      ? `${other?other.title:otherId} → ${here?here.title:S.openGroup}`
+      : `${here?here.title:S.openGroup} → ${other?other.title:otherId}`;
+    body.innerHTML = `
+      <p style="color:var(--ink-soft)">This connection leaves the open group. Derived from ${e.nets.length} underlying net${e.nets.length===1?'':'s'}. Open "${esc(other?other.title:otherId)}" to edit it from that side.</p>
+      ${e.nets.map(n=>`
+        <div class="netcard ${/HIGH_VOLTAGE/i.test(n.type)?'hv':''}">
+          <div class="nettop"><span class="netname">${esc(n.name)}</span><span class="nettype">${esc(n.type)}</span></div>
+          ${n.description?`<div class="netdesc">${esc(n.description)}</div>`:''}
+        </div>`).join('')}
+      ${other&&other.members.length?`<div class="btnrow"><button id="btnOpenOther">Open "${esc(other.title)}"</button></div>`:''}`;
+    const btn = $('btnOpenOther'); if (btn) btn.onclick=()=>openGroupView(otherId);
     return;
   }
   if (S.sel.type==='node'){
@@ -495,6 +625,7 @@ function blockXY(id){
 
 svg.addEventListener('pointerdown', ev=>{
   const port = ev.target.closest('.port');
+  const portalEl = ev.target.closest('.portal');
   const nodeEl = ev.target.closest('.node');
   const edgeEl = ev.target.closest('.edge');
   svg.setPointerCapture(ev.pointerId);
@@ -505,6 +636,11 @@ svg.addEventListener('pointerdown', ev=>{
     drag = { mode:'link' };
     svg.classList.add('linking');
     renderLink();
+    return;
+  }
+  if (portalEl){
+    S.sel = { type:'portal', id: portalEl.dataset.portal };
+    render();
     return;
   }
   if (nodeEl){
@@ -521,6 +657,13 @@ svg.addEventListener('pointerdown', ev=>{
   }
   drag = { mode:'pan', sx:ev.clientX, sy:ev.clientY, tx:S.view.tx, ty:S.view.ty, moved:false };
   svg.classList.add('panning');
+});
+
+svg.addEventListener('dblclick', ev=>{
+  if (!isTopLevel()) return;
+  const nodeEl = ev.target.closest('.node');
+  if (!nodeEl) return;
+  openGroupView(nodeEl.dataset.nid);
 });
 
 svg.addEventListener('pointermove', ev=>{
@@ -596,7 +739,17 @@ document.addEventListener('keydown', ev=>{
 
 function currentBlocksForBounds(){
   if (isTopLevel()) return visibleGroups().map(g=>groupBlockRect(g.id));
-  return S.nodes;
+  const g = groupsWithUngrouped().find(x=>x.id===S.openGroup);
+  const memberSet = new Set(g ? g.members : []);
+  const members = S.nodes.filter(n=>memberSet.has(n.id));
+  if (!members.length) return members;
+  const bounds = memberBounds(members);
+  const { incoming, outgoing } = openGroupPortals();
+  const portals = [
+    ...incoming.map((item,i)=>portalRect(i, incoming.length, 'in', bounds)),
+    ...outgoing.map((item,i)=>portalRect(i, outgoing.length, 'out', bounds))
+  ];
+  return [...members, ...portals];
 }
 
 function fitView(){
@@ -626,6 +779,8 @@ $('modalClose').onclick=closeModal;
 $('modalOverlay').addEventListener('pointerdown',ev=>{ if(ev.target===$('modalOverlay')) closeModal(); });
 
 $('btnAddIC').onclick=()=>{
+  const openGroup = !isTopLevel() && S.openGroup!==UNGROUPED_ID
+    ? S.groups.find(g=>g.id===S.openGroup) : null;
   openModal('Add IC block', `
     <div class="kv"><label>Part number *</label><input type="text" id="fPN" placeholder="TPS7A21"></div>
     <div class="kv"><label>IC type *</label><input type="text" id="fType" placeholder="Low-noise LDO regulator"></div>
@@ -633,7 +788,9 @@ $('btnAddIC').onclick=()=>{
     <div class="kv"><label>Function in this system *</label><textarea id="fDesc"></textarea></div>
     <div class="kv"><label>Selection rationale</label><textarea id="fRat"></textarea></div>
     <div class="kv"><label>Datasheet URL</label><input type="text" id="fUrl" placeholder="https://www.ti.com/lit/ds/symlink/....pdf"></div>
-    <p class="hint">The new block appears at the center of the view. Drag from its copper port to wire it, then add the nets on each connection.</p>
+    <p class="hint">The new block appears at the center of the view. ${openGroup
+      ? `It will join the open group "${esc(openGroup.title)}".`
+      : 'It will be ungrouped — open a group first if it belongs in one.'} Drag from its copper port to wire it, then add the nets on each connection.</p>
   `, `<button id="mCancel">Cancel</button><button class="primary" id="mOk">Add IC</button>`);
   $('mCancel').onclick=closeModal;
   $('mOk').onclick=()=>{
@@ -647,6 +804,7 @@ $('btnAddIC').onclick=()=>{
       data:{ ic_part_number:pn, ic_type:$('fType').value.trim(), manufacturer:$('fMan').value.trim(),
              description:$('fDesc').value.trim(), selection_rationale:$('fRat').value.trim(),
              DatasheetUrl:$('fUrl').value.trim() } });
+    if (openGroup){ openGroup.members.push(pn); openGroup.members.sort(); }
     closeModal(); S.sel={type:'node',id:pn}; render();
   };
 };
@@ -787,7 +945,7 @@ function loadFromContract(input, contract, groups){
   const g = buildGraph(input, contract||{}, groups||[]);
   S.nodes=g.nodes; S.edges=g.edges; S.groups=g.groups;
   S.groupPos={}; S.openGroup=null; S.sel=null;
-  autoLayout();
+  autoLayoutAllGroupMembers();
   autoLayoutGroups();
   render(); fitView();
 }
@@ -797,7 +955,7 @@ function toast(msg){
   clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove('show'),2200);
 }
 
-$('btnLayout').onclick=()=>{ if (isTopLevel()) autoLayoutGroups(); else autoLayout(); render(); fitView(); };
+$('btnLayout').onclick=()=>{ if (isTopLevel()) autoLayoutGroups(); else autoLayoutGroupMembers(S.openGroup); render(); fitView(); };
 $('btnFit').onclick=fitView;
 window.addEventListener('resize', ()=>render());
 
