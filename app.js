@@ -10,12 +10,13 @@ const PRELOADED = {"input": {"id": "A_1", "title": "Regulated Isolated Flyback H
 const S = {
   meta: { id:null, title:'', description:'', key_references:[] },
   nodes: [],   // {id, kind:'ic'|'external', label, x, y, w, h, data}
-  edges: [],   // {id, source, target, nets:[{name,type,description}]}
+  edges: [],   // {id, source, target, nets:[{name,type,description}], route?:{x,y}} — route is a manual elbow override
   groups: [],  // {id, title, description, members:[nodeId,...]} — explicit groups only, UNGROUPED is implicit
   groupPos: {}, // {[groupId]: {x,y}} — top-level sheet-symbol layout, keyed so it also covers the implicit UNGROUPED bucket
+  groupEdgeRoutes: {}, // {[srcId+'→'+tgtId]: {x,y}} — manual routing for derived (non-persisted) group edges
   openGroup: null, // null = top-level view; groupId = drilled into that group (phase c)
   view: { tx:60, ty:40, k:1 },
-  sel: null,   // {type:'node'|'edge'|'group'|'groupEdge', id}
+  sel: null,   // {type:'node'|'edge'|'group'|'groupEdge'|'portal', id}
   link: null,  // {fromId, x, y} while dragging a connection
   edgeSeq: 0
 };
@@ -180,6 +181,15 @@ function groupBlockRect(id){
   return { id, x:p.x, y:p.y, w:GROUP_W, h:groupBlockHeight(g) };
 }
 
+// Group-level edges are recomputed from scratch every render (computeGroupEdges),
+// so their manual routing can't live on the edge object itself — it's keyed by
+// the stable source/target group ids instead, same idea as S.groupPos.
+function groupEdgeRouteKey(src,tgt){ return src+'→'+tgt; }
+function groupEdgeRouteOf(src,tgt){ return S.groupEdgeRoutes[groupEdgeRouteKey(src,tgt)]; }
+function setGroupEdgeRoute(src,tgt,route){
+  S.groupEdgeRoutes[groupEdgeRouteKey(src,tgt)] = { ...groupEdgeRouteOf(src,tgt), ...route };
+}
+
 /* ============================================================
    DETERMINISTIC AUTO-LAYOUT (longest-path layering, alpha order)
    ============================================================ */
@@ -262,16 +272,26 @@ function edgeIsHV(e){ return e.nets.some(n=>/HIGH_VOLTAGE/i.test(n.type||'')); }
 function edgeIsPower(e){ return e.nets.some(n=>/POWER|GROUND|HIGH_CURRENT/i.test(n.type||'')); }
 
 // Orthogonal (horizontal/vertical) elbow routing, schematic-style (LTSpice/Altium)
-// instead of a curve: out horizontally, turn once, in horizontally.
-function blockEdgePath(a, b){
-  if (!a||!b) return '';
+// instead of a curve. Default shape is a 3-segment "Z": out horizontally, one
+// vertical jog, in horizontally — that's what you get with route=null (bendY
+// defaults to y2, which collapses the trailing vertical stub to zero length).
+// A manual route={x,y} moves the jog: x re-positions the vertical segment
+// (drag it sideways only), y re-positions the horizontal plateau it connects
+// to (drag it up/down only) — same rule for both node-level and group-level
+// edges, since they share this geometry.
+function elbowGeometry(a, b, route){
   const x1 = a.x + a.w, y1 = a.y + a.h/2;
   const x2 = b.x,       y2 = b.y + b.h/2;
-  const midX = (x1+x2)/2;
-  return `M ${x1} ${y1} L ${midX} ${y1} L ${midX} ${y2} L ${x2} ${y2}`;
+  const bendX = (route && route.x!=null) ? route.x : (x1+x2)/2;
+  const bendY = (route && route.y!=null) ? route.y : y2;
+  return { x1, y1, x2, y2, bendX, bendY };
 }
-function edgePath(e){ return blockEdgePath(nodeById(e.source), nodeById(e.target)); }
-function midOf(a, b){ return { x:(a.x+a.w+b.x)/2, y:(a.y+a.h/2 + b.y+b.h/2)/2 }; }
+function elbowPathD(g){
+  return `M ${g.x1} ${g.y1} L ${g.bendX} ${g.y1} L ${g.bendX} ${g.bendY} L ${g.x2} ${g.bendY} L ${g.x2} ${g.y2}`;
+}
+function elbowBadgePos(g){ return { x:g.bendX, y:(g.y1+g.bendY)/2 }; }
+
+function edgePath(e){ return elbowPathD(elbowGeometry(nodeById(e.source), nodeById(e.target), e.route)); }
 
 function render(){
   viewport.setAttribute('transform', `translate(${S.view.tx},${S.view.ty}) scale(${S.view.k})`);
@@ -330,17 +350,24 @@ function renderDrillDown(){
     const stroke = hv ? 'var(--hv)' : 'var(--copper)';
     const w = pw ? 3.4 : 2;
     const a = nodeById(e.source), b = nodeById(e.target);
-    const mid = (a&&b) ? midOf(a,b) : null;
+    if (!a||!b) return '';
+    const geo = elbowGeometry(a, b, e.route);
+    const mid = elbowBadgePos(geo);
     return `<g class="edge" data-eid="${esc(e.id)}">
-      <path d="${edgePath(e)}" fill="none" stroke="transparent" stroke-width="14" style="cursor:pointer"/>
-      <path d="${edgePath(e)}" fill="none" stroke="${stroke}" stroke-width="${selected?w+1.6:w}"
+      <path d="${elbowPathD(geo)}" fill="none" stroke="transparent" stroke-width="14" style="cursor:pointer"/>
+      <path d="${elbowPathD(geo)}" fill="none" stroke="${stroke}" stroke-width="${selected?w+1.6:w}"
         ${selected?'stroke-dasharray="none" filter="drop-shadow(0 0 3px var(--probe))"':''}
         marker-end="url(#${hv?'arrowHv':'arrowCopper'})" style="pointer-events:none"/>
-      ${mid?`<g style="pointer-events:none">
+      <path class="seg-v" data-eid="${esc(e.id)}" d="M ${geo.bendX} ${geo.y1} L ${geo.bendX} ${geo.bendY}"
+        fill="none" stroke="transparent" stroke-width="12" style="cursor:ew-resize"/>
+      <path class="seg-h" data-eid="${esc(e.id)}" d="M ${geo.bendX} ${geo.bendY} L ${geo.x2} ${geo.bendY}"
+        fill="none" stroke="transparent" stroke-width="12" style="cursor:ns-resize"/>
+      <g style="pointer-events:none">
         <rect x="${mid.x-13}" y="${mid.y-9}" width="26" height="16" rx="8"
           fill="${selected?'var(--probe)':'var(--paper)'}" stroke="${stroke}" stroke-width="1.2"/>
         <text x="${mid.x}" y="${mid.y+3.5}" text-anchor="middle"
-          font-family="var(--mono)" font-size="9.5" fill="var(--ink)">${e.nets.length}</text></g>`:''}
+          font-family="var(--mono)" font-size="9.5" fill="var(--ink)">${e.nets.length}</text>
+      </g>
     </g>`;
   }).join('');
 
@@ -415,12 +442,17 @@ function renderTopLevel(){
     const stroke = hv ? 'var(--hv)' : 'var(--copper)';
     const w = pw ? 4 : 2.4;
     const a = groupBlockRect(e.source), b = groupBlockRect(e.target);
-    const mid = midOf(a,b);
+    const geo = elbowGeometry(a, b, groupEdgeRouteOf(e.source,e.target));
+    const mid = elbowBadgePos(geo);
     return `<g class="edge" data-eid="${esc(e.id)}">
-      <path d="${blockEdgePath(a,b)}" fill="none" stroke="transparent" stroke-width="16" style="cursor:pointer"/>
-      <path d="${blockEdgePath(a,b)}" fill="none" stroke="${stroke}" stroke-width="${selected?w+1.6:w}"
+      <path d="${elbowPathD(geo)}" fill="none" stroke="transparent" stroke-width="16" style="cursor:pointer"/>
+      <path d="${elbowPathD(geo)}" fill="none" stroke="${stroke}" stroke-width="${selected?w+1.6:w}"
         ${selected?'stroke-dasharray="none" filter="drop-shadow(0 0 3px var(--probe))"':''}
         marker-end="url(#${hv?'arrowHv':'arrowCopper'})" style="pointer-events:none"/>
+      <path class="seg-v" data-eid="${esc(e.id)}" data-src="${esc(e.source)}" data-tgt="${esc(e.target)}"
+        d="M ${geo.bendX} ${geo.y1} L ${geo.bendX} ${geo.bendY}" fill="none" stroke="transparent" stroke-width="14" style="cursor:ew-resize"/>
+      <path class="seg-h" data-eid="${esc(e.id)}" data-src="${esc(e.source)}" data-tgt="${esc(e.target)}"
+        d="M ${geo.bendX} ${geo.bendY} L ${geo.x2} ${geo.bendY}" fill="none" stroke="transparent" stroke-width="14" style="cursor:ns-resize"/>
       <g style="pointer-events:none">
         <rect x="${mid.x-15}" y="${mid.y-10}" width="30" height="18" rx="9"
           fill="${selected?'var(--probe)':'var(--paper)'}" stroke="${stroke}" stroke-width="1.4"/>
@@ -559,6 +591,7 @@ function renderInspector(){
       $('btnDelGroup').onclick=()=>{
         S.groups=S.groups.filter(x=>x.id!==g.id);
         delete S.groupPos[g.id];
+        Object.keys(S.groupEdgeRoutes).forEach(k=>{ if (k.startsWith(g.id+'→')||k.endsWith('→'+g.id)) delete S.groupEdgeRoutes[k]; });
         S.sel=null; render(); fitView();
       };
     }
@@ -571,15 +604,18 @@ function renderInspector(){
     const e = computeGroupEdges().find(x=>x.id===S.sel.id);
     if (!e){ S.sel=null; renderInspector(); return; }
     const gs = visibleGroups().find(g=>g.id===e.source), gt = visibleGroups().find(g=>g.id===e.target);
+    const hasRoute = !!groupEdgeRouteOf(e.source,e.target);
     eye.textContent='Group connection (read-only)';
     title.textContent = `${gs?gs.title:e.source} → ${gt?gt.title:e.target}`;
     body.innerHTML = `
-      <p style="color:var(--ink-soft)">Derived from ${e.nets.length} underlying net${e.nets.length===1?'':'s'} between member blocks. Open a group to edit its individual connections.</p>
+      <p style="color:var(--ink-soft)">Derived from ${e.nets.length} underlying net${e.nets.length===1?'':'s'} between member blocks. Open a group to edit its individual connections. Drag the connector's vertical segment sideways or its horizontal segment up/down to reroute it.</p>
       ${e.nets.map(n=>`
         <div class="netcard ${/HIGH_VOLTAGE/i.test(n.type)?'hv':''}">
           <div class="nettop"><span class="netname">${esc(n.name)}</span><span class="nettype">${esc(n.type)}</span></div>
           ${n.description?`<div class="netdesc">${esc(n.description)}</div>`:''}
-        </div>`).join('')}`;
+        </div>`).join('')}
+      ${hasRoute?'<div class="btnrow"><button id="btnResetRoute">Reset routing</button></div>':''}`;
+    const rb=$('btnResetRoute'); if (rb) rb.onclick=()=>{ delete S.groupEdgeRoutes[groupEdgeRouteKey(e.source,e.target)]; render(); };
     return;
   }
   if (S.sel.type==='portal'){
@@ -649,7 +685,11 @@ function renderInspector(){
       <div class="kv"><label>Description</label><textarea id="newNetDesc" placeholder="One line: purpose, polarity/tie point if applicable"></textarea></div>
       <button id="btnAddNet">Add net</button>
     </div>
-    <div class="btnrow"><button class="danger" id="btnDelEdge">Delete connection</button></div>`;
+    <p class="hint">Drag the connector's vertical segment sideways or its horizontal segment up/down to reroute it.</p>
+    <div class="btnrow">
+      ${e.route?'<button id="btnResetRoute">Reset routing</button>':''}
+      <button class="danger" id="btnDelEdge">Delete connection</button>
+    </div>`;
   body.querySelectorAll('[data-delnet]').forEach(b=>b.onclick=()=>{ e.nets.splice(+b.dataset.delnet,1); render(); });
   $('btnAddNet').onclick=()=>{
     const name = $('newNetName').value.trim().toUpperCase().replace(/[^A-Z0-9]+/g,'_').replace(/^_|_$/g,'');
@@ -658,6 +698,7 @@ function renderInspector(){
     e.nets.sort((a,b)=>a.name.localeCompare(b.name));
     render();
   };
+  const rb=$('btnResetRoute'); if (rb) rb.onclick=()=>{ delete e.route; render(); };
   $('btnDelEdge').onclick=()=>{ S.edges=S.edges.filter(x=>x.id!==e.id); S.sel=null; render(); };
 }
 
@@ -703,12 +744,23 @@ function blockXY(id){
 }
 
 svg.addEventListener('pointerdown', ev=>{
+  const segV = ev.target.closest('.seg-v');
+  const segH = ev.target.closest('.seg-h');
   const port = ev.target.closest('.port');
   const portalEl = ev.target.closest('.portal');
   const nodeEl = ev.target.closest('.node');
   const edgeEl = ev.target.closest('.edge');
   svg.setPointerCapture(ev.pointerId);
 
+  if (segV || segH){
+    const el = segV || segH;
+    const topLevel = isTopLevel();
+    S.sel = { type: topLevel?'groupEdge':'edge', id: el.dataset.eid };
+    drag = { mode: segV?'routeV':'routeH', eid: el.dataset.eid,
+      topLevel, src: el.dataset.src, tgt: el.dataset.tgt };
+    render();
+    return;
+  }
   if (port){
     const w = toWorld(ev.clientX, ev.clientY);
     S.link = { fromId: port.dataset.port, x:w.x, y:w.y };
@@ -760,6 +812,16 @@ svg.addEventListener('pointermove', ev=>{
     if (isTopLevel()){ const p=groupPosOf(drag.id); p.x=nx; p.y=ny; }
     else { const n=nodeById(drag.id); n.x=nx; n.y=ny; }
     drag.moved=true;
+    render();
+    return;
+  }
+  if (drag.mode==='routeV' || drag.mode==='routeH'){
+    // Vertical segment only moves in X; horizontal segment only moves in Y.
+    const patch = drag.mode==='routeV'
+      ? { x: Math.round(w.x/8)*8 }
+      : { y: Math.round(w.y/8)*8 };
+    if (drag.topLevel) setGroupEdgeRoute(drag.src, drag.tgt, patch);
+    else { const e=S.edges.find(x=>x.id===drag.eid); if (e) e.route = { ...e.route, ...patch }; }
     render();
     return;
   }
@@ -923,7 +985,7 @@ $('btnImport').onclick=()=>{
         const s=tolerantParse($('impSess').value);
         if (!s||!s.nodes||!s.edges) throw new Error('Not a session JSON (nodes/edges missing)');
         S.meta=s.meta||S.meta; S.nodes=s.nodes; S.edges=s.edges; S.groups=s.groups||[];
-        S.groupPos = s.groupPos || {}; S.openGroup = s.openGroup || null;
+        S.groupPos = s.groupPos || {}; S.groupEdgeRoutes = s.groupEdgeRoutes || {}; S.openGroup = s.openGroup || null;
         S.edgeSeq = Math.max(0,...S.edges.map(e=>+String(e.id).replace(/^e/,'')||0))+1;
         autoLayoutGroups(true); // fill in positions only for groups the session didn't have (preserves dragged layout)
         S.sel=null; render(); fitView();
@@ -1009,9 +1071,10 @@ function buildPipelineJSON(){
 function buildSessionJSON(){
   return { meta:S.meta,
     nodes:S.nodes.map(n=>({ ...n })),
-    edges:S.edges.map(e=>({ ...e, nets:e.nets.map(x=>({ ...x })) })),
+    edges:S.edges.map(e=>({ ...e, nets:e.nets.map(x=>({ ...x })), route:e.route?{...e.route}:undefined })),
     groups:S.groups.map(g=>({ ...g, members:[...g.members] })),
     groupPos:{ ...S.groupPos },
+    groupEdgeRoutes:{ ...S.groupEdgeRoutes },
     openGroup:S.openGroup };
 }
 
@@ -1023,7 +1086,7 @@ function loadFromContract(input, contract, groups){
   S.edgeSeq=0;
   const g = buildGraph(input, contract||{}, groups||[]);
   S.nodes=g.nodes; S.edges=g.edges; S.groups=g.groups;
-  S.groupPos={}; S.openGroup=null; S.sel=null;
+  S.groupPos={}; S.groupEdgeRoutes={}; S.openGroup=null; S.sel=null;
   autoLayoutAllGroupMembers();
   autoLayoutGroups();
   render(); fitView();
