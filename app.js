@@ -89,7 +89,11 @@ function buildGraph(input, contract, rawGroups){
       if (!src || !dst || src.id===dst.id) continue;
       const key = src.id+'\u2192'+dst.id;
       if (!edgeMap.has(key)) edgeMap.set(key, { source:src.id, target:dst.id, nets:[] });
-      edgeMap.get(key).nets.push({ name:net.name, type:net.type||'NA', description:net.description||'' });
+      const nets = edgeMap.get(key).nets;
+      // A bus never carries the same net twice (a malformed contract can list the
+      // same consumer more than once for one net — keep the first occurrence).
+      if (!nets.some(x=>x.name===net.name))
+        nets.push({ name:net.name, type:net.type||'NA', description:net.description||'' });
     }
   }
   // Group members arrive as IC part numbers or "external block: <Name>" refs — resolveRef
@@ -151,7 +155,15 @@ function computeGroupEdges(){
     map.get(key).nets.push(...e.nets);
   }
   const list = [...map.values()].sort((a,b)=>(a.source+'|'+a.target).localeCompare(b.source+'|'+b.target));
-  list.forEach((g,i)=>{ g.nets.sort((a,b)=>a.name.localeCompare(b.name)); g.id='ge'+i; });
+  list.forEach((g,i)=>{
+    g.nets.sort((a,b)=>a.name.localeCompare(b.name));
+    // A bus never lists the same net twice: the same net often links several node
+    // pairs between two groups (e.g. one rail feeding many members), which would
+    // otherwise show up repeatedly in the inspector and inflate the count badge.
+    const seen = new Set();
+    g.nets = g.nets.filter(n=> seen.has(n.name) ? false : (seen.add(n.name), true));
+    g.id='ge'+i;
+  });
   return list;
 }
 
@@ -457,26 +469,75 @@ function edgeIsHV(e){ return e.nets.some(n=>/HIGH_VOLTAGE/i.test(n.type||'')); }
 function edgeIsPower(e){ return e.nets.some(isPowerNet); }
 
 // Orthogonal (horizontal/vertical) elbow routing, schematic-style (LTSpice/Altium)
-// instead of a curve. Default shape is a 3-segment "Z": out horizontally, one
-// vertical jog, in horizontally — that's what you get with route=null (bendY
-// defaults to y2, which collapses the trailing vertical stub to zero length).
-// A manual route={x,y} moves the jog: x re-positions the vertical segment
-// (drag it sideways only), y re-positions the horizontal plateau it connects
-// to (drag it up/down only) — same rule for both node-level and group-level
-// edges, since they share this geometry.
-function elbowGeometry(a, b, route){
-  const x1 = a.x + a.w, y1 = a.y + a.h/2;
-  const x2 = b.x,       y2 = b.y + b.h/2;
+// instead of a curve. Full shape is 5 segments: out horizontally from the source
+// port, vertical jog at bendX, horizontal plateau at bendY, second vertical jog at
+// entryX, and a FINAL HORIZONTAL RUN into the target port — so the arrow always
+// enters the block perpendicular to its edge, no matter how the wire is rerouted.
+// With route=null the plateau sits at y2 and entryX collapses onto bendX, which
+// degenerates to the classic 3-segment "Z".
+// A manual route={x,y,x2} moves the joints independently:
+//   x  → the first vertical segment (drag sideways),
+//   y  → the horizontal plateau (drag up/down),
+//   x2 → the LAST vertical segment before the block (drag sideways) — i.e. the
+//        final approach into the block is user-positionable.
+// Same rule for both node-level and group-level edges, since they share this
+// geometry. portY1/portY2 override the default mid-edge attachment so each edge
+// can get its own dedicated slot on the block edge (see computeEdgePorts).
+function elbowGeometry(a, b, route, portY1, portY2){
+  const x1 = a.x + a.w, y1 = portY1!=null ? portY1 : a.y + a.h/2;
+  const x2 = b.x,       y2 = portY2!=null ? portY2 : b.y + b.h/2;
   const bendX = (route && route.x!=null) ? route.x : (x1+x2)/2;
   const bendY = (route && route.y!=null) ? route.y : y2;
-  return { x1, y1, x2, y2, bendX, bendY };
+  let entryX = (route && route.x2!=null) ? route.x2 : (bendY===y2 ? bendX : (bendX+x2)/2);
+  // Keep a visible final stub so the arrow can always enter horizontally.
+  entryX = Math.min(entryX, x2-12);
+  return { x1, y1, x2, y2, bendX, bendY, entryX };
 }
 function elbowPathD(g){
-  return `M ${g.x1} ${g.y1} L ${g.bendX} ${g.y1} L ${g.bendX} ${g.bendY} L ${g.x2} ${g.bendY} L ${g.x2} ${g.y2}`;
+  return `M ${g.x1} ${g.y1} L ${g.bendX} ${g.y1} L ${g.bendX} ${g.bendY} L ${g.entryX} ${g.bendY} L ${g.entryX} ${g.y2} L ${g.x2} ${g.y2}`;
 }
 function elbowBadgePos(g){ return { x:g.bendX, y:(g.y1+g.bendY)/2 }; }
 
-function edgePath(e){ return elbowPathD(elbowGeometry(nodeById(e.source), nodeById(e.target), e.route)); }
+
+// Invisible wide hit-paths over each draggable wire segment. seg-v (first jog)
+// and seg-e (entry jog) move in X; seg-h (plateau) and seg-f (final run into the
+// block) move in Y — grabbing the wire right where it enters the block and
+// dragging vertically lifts the plateau, and the perpendicular re-entry appears.
+function routeHandleMarkup(g, eid, extraAttrs, w){
+  return `
+      <path class="seg-v" data-eid="${esc(eid)}"${extraAttrs} d="M ${g.bendX} ${g.y1} L ${g.bendX} ${g.bendY}" fill="none" stroke="transparent" stroke-width="${w}" style="cursor:ew-resize"/>
+      <path class="seg-h" data-eid="${esc(eid)}"${extraAttrs} d="M ${g.bendX} ${g.bendY} L ${g.entryX} ${g.bendY}" fill="none" stroke="transparent" stroke-width="${w}" style="cursor:ns-resize"/>
+      <path class="seg-e" data-eid="${esc(eid)}"${extraAttrs} d="M ${g.entryX} ${g.bendY} L ${g.entryX} ${g.y2}" fill="none" stroke="transparent" stroke-width="${w}" style="cursor:ew-resize"/>
+      <path class="seg-f" data-eid="${esc(eid)}"${extraAttrs} d="M ${g.entryX} ${g.y2} L ${g.x2} ${g.y2}" fill="none" stroke="transparent" stroke-width="${w}" style="cursor:ns-resize"/>`;
+}
+
+// One dedicated attachment slot per connection (instead of everything piling onto
+// the block's mid-edge): a block's outputs — one per distinct consumer edge — are
+// stacked down its RIGHT edge in deterministic (target id) order, each drawn as a
+// filled dot at the wire start; its inputs get the same treatment on the LEFT
+// edge, each arriving as a perpendicular arrow. reserveLinkSlot additionally
+// keeps the last right-edge slot free for the crosshair "new connection" port.
+// Returned Y values are absolute world coordinates keyed by edge id.
+function computeEdgePorts(rectOf, ids, edges, reserveLinkSlot){
+  const outs = new Map(ids.map(i=>[i,[]])), ins = new Map(ids.map(i=>[i,[]]));
+  for (const e of edges){
+    if (outs.has(e.source)) outs.get(e.source).push(e);
+    if (ins.has(e.target)) ins.get(e.target).push(e);
+  }
+  const yOut = new Map(), yIn = new Map(), linkY = new Map();
+  for (const id of ids){
+    const r = rectOf(id);
+    if (!r) continue;
+    const o = outs.get(id).sort((a,b)=>(a.target+'|'+a.id).localeCompare(b.target+'|'+b.id));
+    const slots = o.length + (reserveLinkSlot ? 1 : 0);
+    o.forEach((e,i)=> yOut.set(e.id, r.y + r.h*(i+1)/(slots+1)));
+    if (reserveLinkSlot) linkY.set(id, r.y + r.h*slots/(slots+1));
+    const inn = ins.get(id).sort((a,b)=>(a.source+'|'+a.id).localeCompare(b.source+'|'+b.id));
+    inn.forEach((e,i)=> yIn.set(e.id, r.y + r.h*(i+1)/(inn.length+1)));
+  }
+  return { yOut, yIn, linkY };
+}
+let lastPorts = null; // ports of the most recently rendered view (used by renderLink)
 
 function render(){
   viewport.setAttribute('transform', `translate(${S.view.tx},${S.view.ty}) scale(${S.view.k})`);
@@ -528,6 +589,11 @@ function renderDrillDown(){
   const edges = S.edges.filter(e=>memberSet.has(e.source) && memberSet.has(e.target));
   const bounds = members.length ? memberBounds(members) : { minX:0,maxX:0,minY:0,maxY:0 };
   const { incoming, outgoing } = openGroupPortals();
+  // One dedicated slot per connection on each block edge: output dot per target
+  // on the right, input arrow per source on the left; the last right-edge slot
+  // stays reserved for the crosshair "new connection" port.
+  const ports = computeEdgePorts(id=>nodeById(id), members.map(n=>n.id), edges, true);
+  lastPorts = ports;
 
   const edgeMarkup = edges.map(e=>{
     const hv = edgeIsHV(e), pw = edgeIsPower(e);
@@ -536,17 +602,15 @@ function renderDrillDown(){
     const w = pw ? 3.4 : 2;
     const a = nodeById(e.source), b = nodeById(e.target);
     if (!a||!b) return '';
-    const geo = elbowGeometry(a, b, e.route);
+    const geo = elbowGeometry(a, b, e.route, ports.yOut.get(e.id), ports.yIn.get(e.id));
     const mid = elbowBadgePos(geo);
     return `<g class="edge" data-eid="${esc(e.id)}">
       <path d="${elbowPathD(geo)}" fill="none" stroke="transparent" stroke-width="14" style="cursor:pointer"/>
       <path d="${elbowPathD(geo)}" fill="none" stroke="${stroke}" stroke-width="${selected?w+1.6:w}"
         ${selected?'stroke-dasharray="none" filter="drop-shadow(0 0 3px var(--probe))"':''}
         marker-end="url(#${hv?'arrowHv':'arrowCopper'})" style="pointer-events:none"/>
-      <path class="seg-v" data-eid="${esc(e.id)}" d="M ${geo.bendX} ${geo.y1} L ${geo.bendX} ${geo.bendY}"
-        fill="none" stroke="transparent" stroke-width="12" style="cursor:ew-resize"/>
-      <path class="seg-h" data-eid="${esc(e.id)}" d="M ${geo.bendX} ${geo.bendY} L ${geo.x2} ${geo.bendY}"
-        fill="none" stroke="transparent" stroke-width="12" style="cursor:ns-resize"/>
+      <circle cx="${geo.x1}" cy="${geo.y1}" r="4" fill="${stroke}" style="pointer-events:none"/>
+      ${routeHandleMarkup(geo, e.id, '', 12)}
       <g style="pointer-events:none">
         <rect x="${mid.x-13}" y="${mid.y-9}" width="26" height="16" rx="8"
           fill="${selected?'var(--probe)':'var(--paper)'}" stroke="${stroke}" stroke-width="1.2"/>
@@ -565,6 +629,9 @@ function renderDrillDown(){
 
   nodesG.innerHTML = members.map(n=>{
     const selected = S.sel && S.sel.type==='node' && S.sel.id===n.id;
+    // Link port sits at its reserved (last) right-edge slot so it never overlaps
+    // the per-connection output dots. Coordinates inside the <g> are relative.
+    const linkCy = (ports.linkY.get(n.id) ?? (n.y + n.h/2)) - n.y;
     if (n.kind==='ic'){
       return `<g class="node" data-nid="${esc(n.id)}" transform="translate(${n.x},${n.y})" style="cursor:move">
         <rect x="-3" y="4" width="${n.w+6}" height="${n.h}" rx="5" fill="#00000018"/>
@@ -573,7 +640,7 @@ function renderDrillDown(){
         <circle cx="13" cy="13" r="3.6" fill="var(--silk)"/>
         <text x="26" y="26" font-family="var(--mono)" font-size="13.5" font-weight="600" fill="var(--silk)">${esc(n.label)}</text>
         <text x="26" y="44" font-family="var(--sans)" font-size="10" fill="#B9BEC4">${esc((n.data.ic_type||'').slice(0,30))}</text>
-        <circle class="port" data-port="${esc(n.id)}" cx="${n.w}" cy="${n.h/2}" r="6.5"
+        <circle class="port" data-port="${esc(n.id)}" cx="${n.w}" cy="${linkCy}" r="6.5"
           fill="var(--copper-soft)" stroke="var(--copper)" stroke-width="1.6" style="cursor:crosshair"/>
       </g>`;
     }
@@ -582,7 +649,7 @@ function renderDrillDown(){
         stroke="${selected?'var(--probe)':'var(--ink-soft)'}" stroke-width="${selected?2.5:1.4}" stroke-dasharray="${selected?'none':'5 4'}"/>
       <text x="12" y="20" font-family="var(--mono)" font-size="10" letter-spacing=".08em" fill="var(--ink-soft)">EXTERNAL</text>
       <text x="12" y="36" font-family="var(--sans)" font-size="11.5" font-weight="500" fill="var(--ink)">${esc(n.label.slice(0,26))}</text>
-      <circle class="port" data-port="${esc(n.id)}" cx="${n.w}" cy="${n.h/2}" r="6"
+      <circle class="port" data-port="${esc(n.id)}" cx="${n.w}" cy="${linkCy}" r="6"
         fill="var(--copper-soft)" stroke="var(--copper)" stroke-width="1.5" style="cursor:crosshair"/>
     </g>`;
   }).join('');
@@ -619,6 +686,11 @@ function portalMarkupFor(item, dir, i, count, bounds){
 function renderTopLevel(){
   const groups = visibleGroups();
   const gEdges = computeGroupEdges();
+  // Same per-connection port discipline as the drill-down: one output dot per
+  // consumer group on the right edge, one perpendicular input arrow per source
+  // group on the left edge. No link slot — group edges are derived, not drawn.
+  const ports = computeEdgePorts(id=>groupBlockRect(id), groups.map(g=>g.id), gEdges, false);
+  lastPorts = null;
 
   edgesG.innerHTML = gEdges.map(e=>{
     const hv = e.nets.some(n=>/HIGH_VOLTAGE/i.test(n.type||''));
@@ -627,17 +699,16 @@ function renderTopLevel(){
     const stroke = hv ? 'var(--hv)' : 'var(--copper)';
     const w = pw ? 4 : 2.4;
     const a = groupBlockRect(e.source), b = groupBlockRect(e.target);
-    const geo = elbowGeometry(a, b, groupEdgeRouteOf(e.source,e.target));
+    const geo = elbowGeometry(a, b, groupEdgeRouteOf(e.source,e.target), ports.yOut.get(e.id), ports.yIn.get(e.id));
     const mid = elbowBadgePos(geo);
+    const segAttrs = ` data-src="${esc(e.source)}" data-tgt="${esc(e.target)}"`;
     return `<g class="edge" data-eid="${esc(e.id)}">
       <path d="${elbowPathD(geo)}" fill="none" stroke="transparent" stroke-width="16" style="cursor:pointer"/>
       <path d="${elbowPathD(geo)}" fill="none" stroke="${stroke}" stroke-width="${selected?w+1.6:w}"
         ${selected?'stroke-dasharray="none" filter="drop-shadow(0 0 3px var(--probe))"':''}
         marker-end="url(#${hv?'arrowHv':'arrowCopper'})" style="pointer-events:none"/>
-      <path class="seg-v" data-eid="${esc(e.id)}" data-src="${esc(e.source)}" data-tgt="${esc(e.target)}"
-        d="M ${geo.bendX} ${geo.y1} L ${geo.bendX} ${geo.bendY}" fill="none" stroke="transparent" stroke-width="14" style="cursor:ew-resize"/>
-      <path class="seg-h" data-eid="${esc(e.id)}" data-src="${esc(e.source)}" data-tgt="${esc(e.target)}"
-        d="M ${geo.bendX} ${geo.bendY} L ${geo.x2} ${geo.bendY}" fill="none" stroke="transparent" stroke-width="14" style="cursor:ns-resize"/>
+      <circle cx="${geo.x1}" cy="${geo.y1}" r="4.5" fill="${stroke}" style="pointer-events:none"/>
+      ${routeHandleMarkup(geo, e.id, segAttrs, 14)}
       <g style="pointer-events:none">
         <rect x="${mid.x-15}" y="${mid.y-10}" width="30" height="18" rx="9"
           fill="${selected?'var(--probe)':'var(--paper)'}" stroke="${stroke}" stroke-width="1.4"/>
@@ -675,7 +746,8 @@ function renderTopLevel(){
 function renderLink(){
   if (!S.link){ linkG.innerHTML=''; return; }
   const a = nodeById(S.link.fromId);
-  linkG.innerHTML = `<path d="M ${a.x+a.w} ${a.y+a.h/2} L ${S.link.x} ${S.link.y}"
+  const y = (lastPorts && lastPorts.linkY.get(a.id) != null) ? lastPorts.linkY.get(a.id) : a.y + a.h/2;
+  linkG.innerHTML = `<path d="M ${a.x+a.w} ${y} L ${S.link.x} ${S.link.y}"
     fill="none" stroke="var(--probe-deep)" stroke-width="2" stroke-dasharray="6 5"/>`;
 }
 
@@ -793,7 +865,7 @@ function renderInspector(){
     eye.textContent='Group connection (read-only)';
     title.textContent = `${gs?gs.title:e.source} → ${gt?gt.title:e.target}`;
     body.innerHTML = `
-      <p style="color:var(--ink-soft)">Derived from ${e.nets.length} underlying net${e.nets.length===1?'':'s'} between member blocks. Open a group to edit its individual connections. Drag the connector's vertical segment sideways or its horizontal segment up/down to reroute it.</p>
+      <p style="color:var(--ink-soft)">Derived from ${e.nets.length} underlying net${e.nets.length===1?'':'s'} between member blocks. Open a group to edit its individual connections. Drag the vertical segments sideways or the horizontal segments up/down to reroute — including the last segment where the wire enters the block.</p>
       ${e.nets.map(n=>`
         <div class="netcard ${/HIGH_VOLTAGE/i.test(n.type)?'hv':''}">
           <div class="nettop"><span class="netname">${esc(n.name)}</span><span class="nettype">${esc(n.type)}</span></div>
@@ -870,7 +942,7 @@ function renderInspector(){
       <div class="kv"><label>Description</label><textarea id="newNetDesc" placeholder="One line: purpose, polarity/tie point if applicable"></textarea></div>
       <button id="btnAddNet">Add net</button>
     </div>
-    <p class="hint">Drag the connector's vertical segment sideways or its horizontal segment up/down to reroute it.</p>
+    <p class="hint">Drag the vertical segments sideways or the horizontal segments up/down to reroute — including the last segment where the wire enters the block. The arrow always enters the block perpendicular to its edge.</p>
     <div class="btnrow">
       ${e.route?'<button id="btnResetRoute">Reset routing</button>':''}
       <button class="danger" id="btnDelEdge">Delete connection</button>
@@ -879,6 +951,7 @@ function renderInspector(){
   $('btnAddNet').onclick=()=>{
     const name = $('newNetName').value.trim().toUpperCase().replace(/[^A-Z0-9]+/g,'_').replace(/^_|_$/g,'');
     if (!name){ toast('Net name required'); return; }
+    if (e.nets.some(n=>n.name===name)){ toast('This connection already carries a net with that name'); return; }
     e.nets.push({ name, type:$('newNetType').value, description:$('newNetDesc').value.trim() });
     e.nets.sort((a,b)=>a.name.localeCompare(b.name));
     render();
@@ -929,20 +1002,23 @@ function blockXY(id){
 }
 
 svg.addEventListener('pointerdown', ev=>{
-  const segV = ev.target.closest('.seg-v');
-  const segH = ev.target.closest('.seg-h');
+  const segEl = ev.target.closest('.seg-v, .seg-h, .seg-e, .seg-f');
   const port = ev.target.closest('.port');
   const portalEl = ev.target.closest('.portal');
   const nodeEl = ev.target.closest('.node');
   const edgeEl = ev.target.closest('.edge');
   svg.setPointerCapture(ev.pointerId);
 
-  if (segV || segH){
-    const el = segV || segH;
+  if (segEl){
+    const cls = segEl.classList;
+    // seg-v → route.x (first jog, drag sideways); seg-e → route.x2 (entry jog,
+    // the LAST vertical run before the block, drag sideways); seg-h and seg-f
+    // (plateau / final run into the block) → route.y (drag up/down).
+    const mode = cls.contains('seg-v') ? 'routeV' : cls.contains('seg-e') ? 'routeE' : 'routeH';
     const topLevel = isTopLevel();
-    S.sel = { type: topLevel?'groupEdge':'edge', id: el.dataset.eid };
-    drag = { mode: segV?'routeV':'routeH', eid: el.dataset.eid,
-      topLevel, src: el.dataset.src, tgt: el.dataset.tgt };
+    S.sel = { type: topLevel?'groupEdge':'edge', id: segEl.dataset.eid };
+    drag = { mode, eid: segEl.dataset.eid,
+      topLevel, src: segEl.dataset.src, tgt: segEl.dataset.tgt };
     render();
     return;
   }
@@ -1000,11 +1076,11 @@ svg.addEventListener('pointermove', ev=>{
     render();
     return;
   }
-  if (drag.mode==='routeV' || drag.mode==='routeH'){
-    // Vertical segment only moves in X; horizontal segment only moves in Y.
-    const patch = drag.mode==='routeV'
-      ? { x: Math.round(w.x/8)*8 }
-      : { y: Math.round(w.y/8)*8 };
+  if (drag.mode==='routeV' || drag.mode==='routeH' || drag.mode==='routeE'){
+    // Vertical segments only move in X; horizontal segments only move in Y.
+    const patch = drag.mode==='routeV' ? { x: Math.round(w.x/8)*8 }
+                : drag.mode==='routeE' ? { x2: Math.round(w.x/8)*8 }
+                : { y: Math.round(w.y/8)*8 };
     if (drag.topLevel) setGroupEdgeRoute(drag.src, drag.tgt, patch);
     else { const e=S.edges.find(x=>x.id===drag.eid); if (e) e.route = { ...e.route, ...patch }; }
     render();
