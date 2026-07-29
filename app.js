@@ -191,45 +191,230 @@ function setGroupEdgeRoute(src,tgt,route){
 }
 
 /* ============================================================
-   DETERMINISTIC AUTO-LAYOUT (longest-path layering, alpha order)
+   DETERMINISTIC AUTO-LAYOUT — full Sugiyama pipeline:
+   1) layer assignment (longest-path, signal edges only)
+   2) crossing reduction (barycenter, 8 alternating passes, all edges)
+   3) y-coordinate assignment (neighbor-average relaxation, 4 passes, all edges)
+   Every step uses a fixed iteration count and alphabetical tie-breaks, so the
+   whole pipeline is deterministic: same graph in, same layout out, always.
    ============================================================ */
-// heightFn(id) lets each column stack boxes by their real height instead of a
-// fixed slot — needed because group blocks now grow with their member count.
-function layeredLayout(ids, edges, colw, gap, heightFn){
-  const sortedIds = [...ids].sort();
-  const indeg = new Map(sortedIds.map(i=>[i,0]));
+function isPowerNet(n){ return /POWER|GROUND|HIGH_CURRENT/i.test(n.type||''); }
+// An edge participates in layering unless EVERY one of its nets is power/ground/
+// high-current — those rails fan out to nearly every block and would otherwise
+// flatten the whole hierarchy into two columns. Power-only edges still draw
+// normally; they just don't influence what layer a block ends up in.
+function isPowerOnlyEdge(e){ return e.nets && e.nets.length>0 && e.nets.every(isPowerNet); }
+
+// Hardware nets routinely form real cycles at the signal level (e.g. a control
+// line out and a status line back between the same two blocks). Longest-path
+// ranking only makes sense on a DAG — fed a cycle, the pass-cap keeps
+// relaxing every node in the cycle upward until it hits the ceiling, so the
+// whole strongly-connected component collapses into the last few layers
+// instead of spreading out. Standard fix (classic first step of Sugiyama):
+// find "back edges" via DFS (edges to a node still on the current recursion
+// stack) and exclude just those from ranking — a deterministic depth-first
+// walk in alphabetical order, so which edge of a cycle gets called "the
+// back edge" is stable across runs.
+function findBackEdges(sortedIds, edges){
   const adj = new Map(sortedIds.map(i=>[i,[]]));
-  for (const e of edges){
-    if (!adj.has(e.source)||!indeg.has(e.target)) continue;
-    adj.get(e.source).push(e.target);
-    indeg.set(e.target, indeg.get(e.target)+1);
+  for (const e of edges) adj.get(e.source).push(e.target);
+  for (const id of sortedIds) adj.get(id).sort();
+
+  const UNVISITED=0, ON_STACK=1, DONE=2;
+  const state = new Map(sortedIds.map(i=>[i,UNVISITED]));
+  const back = new Set();
+  function dfs(u){
+    state.set(u, ON_STACK);
+    for (const v of adj.get(u)){
+      if (state.get(v)===UNVISITED) dfs(v);
+      else if (state.get(v)===ON_STACK) back.add(u+'→'+v);
+    }
+    state.set(u, DONE);
+  }
+  for (const id of sortedIds) if (state.get(id)===UNVISITED) dfs(id);
+  return back;
+}
+
+// Longest-path layering using only "signal" edges (with cycles broken first).
+// A node with no signal edges at all (only power/ground links, or no edges
+// whatsoever) can't be placed this way, so it falls back to the rounded
+// average layer of its neighbors across EVERY edge — or layer 0 if it has no
+// neighbors at all.
+function computeSignalLayers(sortedIds, edges){
+  const signal = edges.filter(e=>!isPowerOnlyEdge(e));
+  const hasSignal = new Set();
+  for (const e of signal){ hasSignal.add(e.source); hasSignal.add(e.target); }
+
+  const backEdges = findBackEdges(sortedIds, signal);
+  const adjSignal = new Map(sortedIds.map(i=>[i,[]]));
+  for (const e of signal){
+    if (backEdges.has(e.source+'→'+e.target)) continue;
+    adjSignal.get(e.source).push(e.target);
   }
   const rank = new Map(sortedIds.map(i=>[i,0]));
-  // longest path via repeated relaxation (deterministic, cycle-safe cap)
   for (let pass=0; pass<sortedIds.length; pass++){
     let changed=false;
-    for (const u of sortedIds) for (const v of adj.get(u))
+    for (const u of sortedIds) for (const v of adjSignal.get(u))
       if (rank.get(v) < rank.get(u)+1 && rank.get(u)+1 < sortedIds.length){ rank.set(v, rank.get(u)+1); changed=true; }
     if (!changed) break;
   }
+  const adjAll = new Map(sortedIds.map(i=>[i,[]]));
+  for (const e of edges){
+    adjAll.get(e.source).push(e.target);
+    adjAll.get(e.target).push(e.source);
+  }
+  for (const id of sortedIds){
+    if (hasSignal.has(id)) continue;
+    const neigh = adjAll.get(id);
+    rank.set(id, neigh.length ? Math.round(neigh.reduce((s,n)=>s+rank.get(n),0)/neigh.length) : 0);
+  }
+  return rank;
+}
+
+// Barycenter crossing reduction: 8 alternating down/up passes. Each pass reorders
+// one layer at a time by the average index of its neighbors in the adjacent layer
+// that was just fixed (all edges count here — this is purely about untangling the
+// drawing, not the hierarchy). A node with no neighbors in the reference layer
+// keeps its current slot instead of jumping. Alphabetical tie-break throughout.
+function orderLayersByBarycenter(sortedRanks, colsMap, edges){
+  const allIds = [].concat(...sortedRanks.map(r=>colsMap.get(r)));
+  const neighborsOf = new Map(allIds.map(id=>[id,[]]));
+  for (const e of edges){
+    if (!neighborsOf.has(e.source) || !neighborsOf.has(e.target)) continue;
+    neighborsOf.get(e.source).push(e.target);
+    neighborsOf.get(e.target).push(e.source);
+  }
+  const order = new Map(sortedRanks.map(r=>[r, [...colsMap.get(r)]]));
+
+  function reorder(idx, refIdx){
+    const r = sortedRanks[idx], refR = sortedRanks[refIdx];
+    const refIndex = new Map(order.get(refR).map((id,i)=>[id,i]));
+    const scored = order.get(r).map((id,i)=>{
+      const neigh = neighborsOf.get(id).filter(n=>refIndex.has(n));
+      const bary = neigh.length ? neigh.reduce((s,n)=>s+refIndex.get(n),0)/neigh.length : i;
+      return { id, bary };
+    });
+    scored.sort((a,b)=> a.bary-b.bary || a.id.localeCompare(b.id));
+    order.set(r, scored.map(x=>x.id));
+  }
+
+  for (let pass=0; pass<8; pass++){
+    if (pass%2===0) for (let i=1;i<sortedRanks.length;i++) reorder(i,i-1);
+    else for (let i=sortedRanks.length-2;i>=0;i--) reorder(i,i+1);
+  }
+  return order;
+}
+
+// Closest (least-squares) non-decreasing sequence to `values` — pool-adjacent-
+// violators algorithm for 1-D isotonic regression, O(n). Used to fit a column's
+// desired Y positions to the minimum-separation constraint without the unfairness
+// of a one-directional push (which can cascade one node's overlap into moving
+// another node that never needed to).
+function poolAdjacentViolators(values){
+  const stack = [];
+  for (const v of values){
+    let block = { sum:v, count:1, avg:v };
+    while (stack.length && stack[stack.length-1].avg > block.avg){
+      const prev = stack.pop();
+      block = { sum:prev.sum+block.sum, count:prev.count+block.count, avg:(prev.sum+block.sum)/(prev.count+block.count) };
+    }
+    stack.push(block);
+  }
+  const result = [];
+  for (const block of stack) for (let k=0;k<block.count;k++) result.push(block.avg);
+  return result;
+}
+
+// Nudges every node toward the average Y of its neighbors (any edge, 4 passes) so
+// connections end up as horizontal as possible, resolving any resulting overlap
+// with the minimum gap. The order within a layer (from the barycenter step) is
+// never changed here — only spacing is, via isotonic regression (see below) so
+// resolving one node's overlap can't unfairly drag an unrelated node in the same
+// column that never needed to move.
+function assignYByAverage(sortedRanks, order, edges, heightFn, gap){
+  const allIds = [].concat(...sortedRanks.map(r=>order.get(r)));
+  const h = new Map(allIds.map(id=>[id, heightFn(id)]));
+  const y = new Map();
+  for (const r of sortedRanks){
+    const col = order.get(r);
+    const total = col.reduce((s,id)=>s+h.get(id),0) + gap*Math.max(0,col.length-1);
+    let cursor = 420 - total/2;
+    for (const id of col){ y.set(id, cursor + h.get(id)/2); cursor += h.get(id)+gap; }
+  }
+
+  const neighborsOf = new Map(allIds.map(id=>[id,[]]));
+  for (const e of edges){
+    if (!neighborsOf.has(e.source) || !neighborsOf.has(e.target)) continue;
+    neighborsOf.get(e.source).push(e.target);
+    neighborsOf.get(e.target).push(e.source);
+  }
+
+  // Move halfway toward the neighbor average each pass rather than snapping to it —
+  // an undamped Jacobi update oscillates and can overshoot far past every neighbor
+  // for high-degree hubs whose neighbors are themselves moving in the same pass.
+  const DAMPING = 0.5;
+  const initialCentroid = allIds.reduce((s,id)=>s+y.get(id),0)/allIds.length;
+  for (let pass=0; pass<4; pass++){
+    const desired = new Map();
+    for (const id of allIds){
+      const neigh = neighborsOf.get(id);
+      const avg = neigh.length ? neigh.reduce((s,n)=>s+y.get(n),0)/neigh.length : y.get(id);
+      desired.set(id, y.get(id) + (avg-y.get(id))*DAMPING);
+    }
+    for (const r of sortedRanks){
+      const col = order.get(r);
+      if (!col.length) continue;
+      // Minimum-separation-preserving fit: de-mean each slot by its cumulative
+      // required offset, run isotonic regression (closest non-decreasing sequence,
+      // pool-adjacent-violators) on the de-meaned desired values, then add the
+      // offsets back. This is the least-displacement solution respecting both the
+      // fixed order and the minimum gaps — unlike a one-directional forward push,
+      // it never lets one node's collision cascade into shifting an unrelated node
+      // that already had room.
+      const offsets=[0];
+      for (let i=1;i<col.length;i++) offsets.push(offsets[i-1] + h.get(col[i-1])/2+gap+h.get(col[i])/2);
+      const z = col.map((id,i)=> desired.get(id)-offsets[i]);
+      const zFit = poolAdjacentViolators(z);
+      col.forEach((id,i)=> y.set(id, zFit[i]+offsets[i]));
+    }
+    // Pooling isn't mean-preserving (it can shift a column's average when it stretches
+    // to satisfy minimum separation), so without this the whole diagram can drift
+    // linearly, pass after pass, in whatever direction the crowding happens to bias it.
+    // Re-anchoring the global centroid every pass removes that free-floating degree of
+    // freedom while leaving all the RELATIVE repositioning (the actual goal) intact.
+    const centroid = allIds.reduce((s,id)=>s+y.get(id),0)/allIds.length;
+    const drift = initialCentroid - centroid;
+    for (const id of allIds) y.set(id, y.get(id)+drift);
+  }
+
+  const pos = new Map();
+  for (const id of allIds) pos.set(id, y.get(id) - h.get(id)/2); // center → top-left
+  return pos;
+}
+
+// heightFn(id) lets each column stack boxes by their real height instead of a
+// fixed slot — needed because group blocks grow with their member count.
+function layeredLayout(ids, edges, colw, gap, heightFn){
+  const sortedIds = [...ids].sort();
+  const idSet = new Set(sortedIds);
+  const relevant = edges.filter(e=>idSet.has(e.source)&&idSet.has(e.target));
+
+  const rank = computeSignalLayers(sortedIds, relevant);
   const cols = new Map();
   for (const id of sortedIds){
     const r = rank.get(id);
     if (!cols.has(r)) cols.set(r,[]);
     cols.get(r).push(id);
   }
-  const pos = new Map();
   const sortedRanks = [...cols.keys()].sort((a,b)=>a-b);
-  for (const r of sortedRanks){
-    const col = cols.get(r).sort();
-    const heights = col.map(heightFn);
-    const totalH = heights.reduce((s,h)=>s+h,0) + gap*Math.max(0,col.length-1);
-    let cursorY = 420 - totalH/2;
-    col.forEach((id,i)=>{
-      pos.set(id, { x: 40 + r*colw, y: cursorY });
-      cursorY += heights[i] + gap;
-    });
-  }
+  for (const r of sortedRanks) cols.set(r, cols.get(r).sort()); // alphabetical seed order
+
+  const order = orderLayersByBarycenter(sortedRanks, cols, relevant);
+  const yOf = assignYByAverage(sortedRanks, order, relevant, heightFn, gap);
+
+  const pos = new Map();
+  for (const r of sortedRanks) for (const id of order.get(r))
+    pos.set(id, { x: 40 + r*colw, y: yOf.get(id) });
   return pos;
 }
 
@@ -269,7 +454,7 @@ function autoLayoutGroups(onlyMissing){
 function esc(s){ return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function nodeById(id){ return S.nodes.find(n=>n.id===id); }
 function edgeIsHV(e){ return e.nets.some(n=>/HIGH_VOLTAGE/i.test(n.type||'')); }
-function edgeIsPower(e){ return e.nets.some(n=>/POWER|GROUND|HIGH_CURRENT/i.test(n.type||'')); }
+function edgeIsPower(e){ return e.nets.some(isPowerNet); }
 
 // Orthogonal (horizontal/vertical) elbow routing, schematic-style (LTSpice/Altium)
 // instead of a curve. Default shape is a 3-segment "Z": out horizontally, one
