@@ -156,6 +156,17 @@ function visibleGroups(){
   return groupsWithUngrouped().filter(g=>g.members.length);
 }
 
+// Moving to UNGROUPED_ID just removes the node from every explicit group's
+// members — it doesn't need (or get) an S.groups entry of its own.
+function moveMemberToGroup(nodeId, fromGroupId, toGroupId){
+  if (fromGroupId === toGroupId) return;
+  S.groups.forEach(g=>{ g.members = g.members.filter(m=>m!==nodeId); });
+  if (toGroupId !== UNGROUPED_ID){
+    const g = S.groups.find(x=>x.id===toGroupId);
+    if (g){ g.members.push(nodeId); g.members.sort(); }
+  }
+}
+
 function groupPosOf(id){
   if (!S.groupPos[id]) S.groupPos[id] = { x:40, y:420 };
   return S.groupPos[id];
@@ -457,6 +468,12 @@ function closeGroupView(){
    ============================================================ */
 const NET_TYPES = ['POWER_DISTRIBUTION','GROUND','DIGITAL_LOGIC','ANALOG_SIGNAL','CONTROL_SIGNAL','FEEDBACK_PATH','SENSING_LINE','SWITCHING_NODE','HIGH_VOLTAGE_PATH','HIGH_CURRENT_PATH','QUIET_REFERENCE','NOISY_NODE','NO_CONNECT','NA'];
 
+function allGroupsOptions(currentId){
+  return groupsWithUngrouped()
+    .map(g=>`<option value="${esc(g.id)}" ${g.id===currentId?'selected':''}>${esc(g.title)}</option>`)
+    .join('');
+}
+
 function renderInspector(){
   const eye=$('insEyebrow'), title=$('insTitle'), body=$('insBody');
   if (!S.sel){
@@ -477,15 +494,47 @@ function renderInspector(){
   if (S.sel.type==='group'){
     const g = visibleGroups().find(x=>x.id===S.sel.id);
     if (!g){ S.sel=null; renderInspector(); return; }
-    eye.textContent = g.id===UNGROUPED_ID ? 'Ungrouped blocks' : 'Functional group';
+    const isUngrouped = g.id===UNGROUPED_ID;
+    eye.textContent = isUngrouped ? 'Ungrouped blocks' : 'Functional group';
     title.textContent = g.title;
+    const memberRows = g.members.map(id=>{
+      const n = nodeById(id);
+      return `<div class="row" style="align-items:center;margin-bottom:6px">
+        <div style="font-family:var(--mono);font-size:12px;word-break:break-word">${esc(n?n.label:id)}</div>
+        <select data-move-member="${esc(id)}">${allGroupsOptions(g.id)}</select>
+      </div>`;
+    }).join('') || '<p style="color:var(--ink-soft)">No members.</p>';
     body.innerHTML = `
-      <p>${esc(g.description||'')}</p>
-      <div class="kv"><label>Members (${g.members.length})</label>
-        <div class="val">${g.members.map(id=>{ const n=nodeById(id); return esc(n?n.label:id); }).join(', ')||'—'}</div></div>
-      <div class="btnrow"><button class="primary" id="btnOpenGroup">Open group</button></div>
-      <p style="margin-top:14px;color:var(--ink-soft)">Double-click the block also opens it. Renaming a group and moving members between groups aren't available yet.</p>`;
+      ${isUngrouped
+        ? `<p>${esc(g.description||'')}</p>`
+        : `<div class="kv"><label>Title</label><input type="text" id="gTitle" value="${esc(g.title)}"></div>
+           <div class="kv"><label>Description</label><textarea id="gDesc">${esc(g.description)}</textarea></div>`}
+      <div class="kv"><label>Members (${g.members.length}) — move to group</label></div>
+      ${memberRows}
+      <div class="btnrow">
+        <button id="btnOpenGroup">Open group</button>
+        ${isUngrouped?'':'<button class="danger" id="btnDelGroup">Delete group</button>'}
+      </div>
+      ${isUngrouped?'':'<p style="margin-top:10px;color:var(--ink-soft);font-size:11.5px">Deleting a group moves its members to Ungrouped — blocks are never deleted.</p>'}`;
     $('btnOpenGroup').onclick=()=>openGroupView(g.id);
+    if (!isUngrouped){
+      $('gTitle').onchange=()=>{
+        const grp=S.groups.find(x=>x.id===g.id);
+        if (grp){ grp.title=$('gTitle').value.trim()||grp.title; render(); }
+      };
+      $('gDesc').onchange=()=>{
+        const grp=S.groups.find(x=>x.id===g.id);
+        if (grp){ grp.description=$('gDesc').value.trim(); render(); }
+      };
+      $('btnDelGroup').onclick=()=>{
+        S.groups=S.groups.filter(x=>x.id!==g.id);
+        delete S.groupPos[g.id];
+        S.sel=null; render(); fitView();
+      };
+    }
+    body.querySelectorAll('[data-move-member]').forEach(sel=>{
+      sel.onchange=()=>{ moveMemberToGroup(sel.dataset.moveMember, g.id, sel.value); render(); };
+    });
     return;
   }
   if (S.sel.type==='groupEdge'){
