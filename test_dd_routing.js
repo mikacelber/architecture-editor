@@ -101,13 +101,38 @@ check('every in-group connection carries a routing lane',
   check('undo restores the automatic route', JSON.stringify(restored.pts)===before);
 }
 
-/* ---- rule 6: FROM/TO boundary portals kept ---- */
+/* ---- rule 6: FROM/TO boundary portals kept, wires attached to real blocks ---- */
 {
   const portals=[...doc.querySelectorAll('#edgesG .portal')];
   check('boundary portals still rendered', portals.length>0);
-  check('portals keep their FROM/TO labels', portals.every(p=>{
-    const t=p.querySelector('text').textContent; return t==='FROM'||t==='TO';
-  }));
+  check('portals keep their FROM/TO labels', portals.every(p=>
+    [...p.querySelectorAll('text')].some(t=>t.textContent==='FROM'||t.textContent==='TO')));
+
+  const g=T.groupsWithUngrouped().find(x=>x.id===best.id);
+  const memberSet=new Set(g.members);
+  const memberRects=T.openGroupObstacleRects().filter(r=>memberSet.has(r.id));
+  const onLeftEdge =(pt,r)=>Math.abs(pt[0]-r.x)<0.5       && pt[1]>r.y && pt[1]<r.y+r.h;
+  const onRightEdge=(pt,r)=>Math.abs(pt[0]-(r.x+r.w))<0.5 && pt[1]>r.y && pt[1]<r.y+r.h;
+  let wireCount=0, attached=true, clear=true;
+  for (const p of portals){
+    const dir=p.dataset.portal.split(':')[0];
+    const box=p.querySelector('rect[fill="var(--vellum)"]');
+    const r={ x:+box.getAttribute('x'), y:+box.getAttribute('y'), w:+box.getAttribute('width'), h:+box.getAttribute('height') };
+    for (const hit of p.querySelectorAll('path[stroke="transparent"]')){
+      const pts=ptsOfPath(hit.getAttribute('d'));
+      wireCount++;
+      const a=pts[0], b=pts[pts.length-1];
+      // FROM: leaves the portal's right edge, arrow lands on a member's left edge.
+      // TO: leaves a member's right edge, arrow lands on the portal's left edge.
+      if (dir==='in'){ if (!onRightEdge(a,r) || !memberRects.some(m=>onLeftEdge(b,m))) attached=false; }
+      else           { if (!memberRects.some(m=>onRightEdge(a,m)) || !onLeftEdge(b,r)) attached=false; }
+      if (crossesAny(pts, T.openGroupObstacleRects())) clear=false;
+    }
+  }
+  console.log('   '+wireCount+' boundary wires drawn across '+portals.length+' portals');
+  check('every portal draws real wires (no floating stub)', wireCount>0);
+  check('every boundary wire connects the portal edge to a specific member block', attached);
+  check('boundary wires never lie across a block or another portal', clear);
 }
 
 T.closeGroupView();

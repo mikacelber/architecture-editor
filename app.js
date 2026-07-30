@@ -1044,18 +1044,21 @@ function ptsInsideAnyBlock(pts, obstacles){
   return false;
 }
 function groupEdgePts(pa, pb, route, obstacles, lane){
-  const stub = GROUP_PORT_STUB + (lane||0)*LANE_PITCH;
-  const start = { x: pa.x + pa.sign*stub, y: pa.y };
-  const goal  = { x: pb.x - pb.sign*stub, y: pb.y };
   const geo = sidedGeometry(pa, pb, null);
   const ptsOf = g => simplifyPts([[g.x1,g.y1],[g.bendX,g.y1],[g.bendX,g.bendY],
     [g.entryX,g.bendY],[g.entryX,g.y2],[g.x2,g.y2]]);
-  const autoRoute = () => {
-    const plain = ptsOf(geo);
-    if (ptsClearOf(plain, obstacles)) return { pts: plain, geo, manual:false };
-    const mid = latticeRoute(start, goal, obstacles, lane);
-    if (!mid) return { pts: plain, geo, manual:false };
-    return { pts: simplifyPts([[pa.x,pa.y], ...mid, [pb.x,pb.y]]), geo, manual:false };
+  const anchorsAt = l => {
+    const stub = GROUP_PORT_STUB + l*LANE_PITCH;
+    return { start: { x: pa.x + pa.sign*stub, y: pa.y },
+             goal:  { x: pb.x - pb.sign*stub, y: pb.y } };
+  };
+  // A lane offset can push the stub endpoints inside a NEIGHBOURING block
+  // (backward edges in tight sheets), which makes the lattice unreachable.
+  // Stepping the lane down until a route exists keeps the wire legal — far
+  // better than falling back to an elbow that lies across a block.
+  const tryLanes = fn => {
+    for (let l=lane||0; l>=0; l--){ const r = fn(l, anchorsAt(l)); if (r) return r; }
+    return null;
   };
   // A hand-routed wire is defined by the WAYPOINT the user dragged it to, not by a
   // rigid elbow: the router then finds a legal path in and out of that point. That
@@ -1063,13 +1066,23 @@ function groupEdgePts(pa, pb, route, obstacles, lane){
   // full-width segment) while still never crossing a block.
   if (route && route.wx!=null && route.wy!=null){
     const wp = { x: route.wx, y: route.wy };
-    const inPart  = latticeRoute(start, wp, obstacles, lane);
-    const outPart = latticeRoute(wp, goal, obstacles, lane);
-    if (inPart && outPart)
-      return { pts: simplifyPts([[pa.x,pa.y], ...inPart, ...outPart.slice(1), [pb.x,pb.y]]), geo, manual:true };
-    return autoRoute();   // waypoint unreachable (fully enclosed) — fall back
+    const manual = tryLanes((l,{start,goal})=>{
+      const inPart  = latticeRoute(start, wp, obstacles, l);
+      const outPart = latticeRoute(wp, goal, obstacles, l);
+      return (inPart && outPart)
+        ? { pts: simplifyPts([[pa.x,pa.y], ...inPart, ...outPart.slice(1), [pb.x,pb.y]]), geo, manual:true }
+        : null;
+    });
+    if (manual) return manual;
+    // waypoint unreachable (fully enclosed) — fall through to the auto route
   }
-  return autoRoute();
+  const plain = ptsOf(geo);
+  if (ptsClearOf(plain, obstacles)) return { pts: plain, geo, manual:false };
+  const auto = tryLanes((l,{start,goal})=>{
+    const mid = latticeRoute(start, goal, obstacles, l);
+    return mid ? { pts: simplifyPts([[pa.x,pa.y], ...mid, [pb.x,pb.y]]), geo, manual:false } : null;
+  });
+  return auto || { pts: plain, geo, manual:false };
 }
 // Drag handles over an auto-routed polyline: first vertical → route.x, last
 // vertical → route.x2, horizontal runs → route.y. Grabbing any of them converts
@@ -1219,7 +1232,9 @@ function assignRouteLanes(){
     const lanes = manual ? 1 : LANE_MAX+1;   // hand-routed wires don't use the lattice
     for (let lane=0; lane<lanes; lane++){
       const r = groupEdgePts(pa, pb, manual, obstacles, lane);
-      const ov = overlapLength(r.pts, placed);
+      // A lane whose route degraded to a block-crossing fallback must never win
+      // on "zero overlap" — being clear of blocks outranks corridor sharing.
+      const ov = overlapLength(r.pts, placed) + (ptsInsideAnyBlock(r.pts, obstacles) ? 1e6 : 0);
       if (ov < bestOv){ bestOv = ov; bestLane = lane; bestPts = r.pts; }
       if (ov === 0) break;
     }
@@ -1290,11 +1305,9 @@ function updateHistoryButtons(){
 }
 
 function memberObstacleRects(members){ return members.map(n=>({ id:n.id, x:n.x, y:n.y, w:n.w, h:n.h })); }
-function openGroupObstacleRects(){
-  const g = groupsWithUngrouped().find(x=>x.id===S.openGroup);
-  const memberSet = new Set(g ? g.members : []);
-  return memberObstacleRects(S.nodes.filter(n=>memberSet.has(n.id)));
-}
+// The full obstacle set of the open group's sheet — member blocks AND portal
+// boxes — so waypoint drags can't park a wire across either.
+function openGroupObstacleRects(){ return drillSheet().obstacles; }
 
 // One dedicated attachment slot per connection (instead of everything piling onto
 // the block's mid-edge): a block's outputs — one per distinct consumer edge — are
@@ -1352,7 +1365,10 @@ function openGroupPortals(){
   return { incoming, outgoing };
 }
 
-const PORTAL_W = 156, PORTAL_H = 52, PORTAL_GAP = 70, PORTAL_MARGIN = 90;
+// PORTAL_MARGIN is the routing corridor between the portal column and the
+// member blocks — wide enough for a boundary wire's stub plus its lane offset
+// (GROUP_PORT_STUB + BOUNDARY_LANE_MAX·LANE_PITCH = 66) with room to spare.
+const PORTAL_W = 156, PORTAL_H = 52, PORTAL_GAP = 70, PORTAL_MARGIN = 130;
 
 function portalRect(i, count, dir, memberBounds){
   const y = (memberBounds.minY+memberBounds.maxY)/2 - ((count-1)*PORTAL_GAP)/2 + i*PORTAL_GAP - PORTAL_H/2;
@@ -1375,45 +1391,97 @@ function memberBounds(members){
 // corridor, waypoint drags, and the incremental route cache.
 const NODE_ROUTE_PREFIX = 'n|';
 function nodeEdgeLaneKey(e){ return 'n:'+e.source+'→'+e.target; }
-function nodeEdgeAnchors(e, ports){
-  const a = nodeById(e.source), b = nodeById(e.target);
-  if (!a||!b) return null;
-  // sign is the direction of TRAVEL at the anchor (see clampEntryX): +1 at both
-  // ends — the wire leaves the source's right edge rightward and enters the
-  // target's left edge rightward.
-  return { pa: { x:a.x+a.w, y: ports.yOut.get(e.id) ?? a.y+a.h/2, sign: 1 },
-           pb: { x:b.x,     y: ports.yIn.get(e.id)  ?? b.y+b.h/2, sign: 1 } };
-}
 // A manual node-edge route is the same single waypoint {wx,wy} the top level
 // uses (stored on the edge itself so history/serialisation carry it for free);
 // legacy {x,y,x2} elbow patches from older sessions simply mean "auto".
 function nodeEdgeRouteOf(e){ return (e.route && e.route.wx!=null && e.route.wy!=null) ? e.route : undefined; }
-// Same corridor-separation rule as assignRouteLanes, for the node edges INSIDE
-// one group. Lanes live in S.groupEdgeLanes under 'n:'-prefixed keys, assigned
-// lazily on first paint of the group (and re-assigned by in-group Auto-layout).
-function assignNodeEdgeLanes(groupId){
-  const g = groupsWithUngrouped().find(x=>x.id===groupId);
-  if (!g) return;
-  const memberSet = new Set(g.members);
+// Boundary wires get fewer lanes than internal ones: their stub must stay
+// inside the portal corridor (GROUP_PORT_STUB + 3·LANE_PITCH = 66 < PORTAL_MARGIN).
+const BOUNDARY_LANE_MAX = 3;
+// Everything the drill-down needs to draw and route one group's sheet, built in
+// ONE place so rendering and lane assignment can't disagree: member blocks,
+// FROM/TO portal boxes, per-connection port slots (internal and boundary
+// connections share the same slot system on the member edges), the obstacle set
+// (members AND portal boxes), and one wire spec per drawn connection.
+// Boundary wires run portal ↔ member block, so every arrow is attached to the
+// exact block it feeds: the portal box aggregates the neighbouring group, the
+// wires say WHAT connects to WHAT.
+function drillSheet(){
+  const g = groupsWithUngrouped().find(x=>x.id===S.openGroup);
+  const memberSet = new Set(g ? g.members : []);
   const members = S.nodes.filter(n=>memberSet.has(n.id));
-  const edges = diagramEdges(S.edges).filter(e=>memberSet.has(e.source) && memberSet.has(e.target))
-    .slice().sort((a,b)=>String(a.id).localeCompare(String(b.id)));
-  const obstacles = memberObstacleRects(members);
-  const ports = computeEdgePorts(id=>nodeById(id), members.map(n=>n.id), edges, true);
+  const bounds = members.length ? memberBounds(members) : { minX:0,maxX:0,minY:0,maxY:0 };
+  const all = diagramEdges(S.edges);
+  const internal = all.filter(e=>memberSet.has(e.source) && memberSet.has(e.target));
+  const { incoming, outgoing } = openGroupPortals();
+  const idx = nodeGroupIndex();
+  const portals = [
+    ...incoming.map((item,i)=>({ item, dir:'in', key:'in:'+item.source,
+      r: portalRect(i, incoming.length, 'in', bounds),
+      unders: all.filter(e=>memberSet.has(e.target) && idx.get(e.source)===item.source)
+        .sort((a,b)=>(a.target+'|'+a.id).localeCompare(b.target+'|'+b.id)) })),
+    ...outgoing.map((item,i)=>({ item, dir:'out', key:'out:'+item.target,
+      r: portalRect(i, outgoing.length, 'out', bounds),
+      unders: all.filter(e=>memberSet.has(e.source) && idx.get(e.target)===item.target)
+        .sort((a,b)=>(a.source+'|'+a.id).localeCompare(b.source+'|'+b.id)) }))
+  ];
+  // Boundary connections claim member-edge slots exactly like internal ones
+  // (computeEdgePorts only assigns slots to ids it knows, so the far endpoint
+  // outside the group is simply ignored).
+  const ports = computeEdgePorts(id=>nodeById(id), members.map(n=>n.id),
+    [...internal, ...portals.flatMap(p=>p.unders)], true);
+  const obstacles = [ ...memberObstacleRects(members),
+    ...portals.map(p=>({ id:'portal:'+p.key, x:p.r.x, y:p.r.y, w:p.r.w, h:p.r.h })) ];
+  const specs = [];
+  // sign is the direction of TRAVEL at the anchor (see clampEntryX): +1 at both
+  // ends — out of a right edge travelling rightward, into a left edge rightward.
+  for (const e of internal){
+    const a = nodeById(e.source), b = nodeById(e.target);
+    if (!a||!b) continue;
+    specs.push({ e, kind:'internal',
+      pa:{ x:a.x+a.w, y: ports.yOut.get(e.id) ?? a.y+a.h/2, sign:1 },
+      pb:{ x:b.x,     y: ports.yIn.get(e.id)  ?? b.y+b.h/2, sign:1 } });
+  }
+  for (const p of portals) p.unders.forEach((e,j)=>{
+    // Each wire gets its own exit slot on the portal edge, fanned like a block's
+    // port slots, so two wires never leave the portal on the same line.
+    const slotY = p.r.y + p.r.h*(j+1)/(p.unders.length+1);
+    if (p.dir==='in'){
+      const b = nodeById(e.target); if (!b) return;
+      specs.push({ e, kind:'in', portalKey:p.key,
+        pa:{ x:p.r.x+p.r.w, y:slotY, sign:1 },
+        pb:{ x:b.x, y: ports.yIn.get(e.id) ?? b.y+b.h/2, sign:1 } });
+    } else {
+      const a = nodeById(e.source); if (!a) return;
+      specs.push({ e, kind:'out', portalKey:p.key,
+        pa:{ x:a.x+a.w, y: ports.yOut.get(e.id) ?? a.y+a.h/2, sign:1 },
+        pb:{ x:p.r.x, y:slotY, sign:1 } });
+    }
+  });
+  return { g, members, bounds, portals, ports, obstacles, specs };
+}
+// Same corridor-separation rule as assignRouteLanes, for every wire drawn in the
+// open group — internal AND boundary. Lanes live in S.groupEdgeLanes under
+// 'n:'-prefixed keys, assigned lazily on first paint of the group (and
+// re-assigned by the in-group Auto-layout).
+function assignNodeEdgeLanes(){
+  const { specs, obstacles } = drillSheet();
+  const ordered = specs.slice().sort((a,b)=>String(a.e.id).localeCompare(String(b.e.id)));
   const placed = [];
-  for (const e of edges){
-    const anch = nodeEdgeAnchors(e, ports);
-    if (!anch) continue;
-    const manual = nodeEdgeRouteOf(e);
+  for (const s of ordered){
+    const manual = s.kind==='internal' ? nodeEdgeRouteOf(s.e) : undefined;
+    const maxLane = s.kind==='internal' ? LANE_MAX : BOUNDARY_LANE_MAX;
     let bestLane = 0, bestPts = null, bestOv = Infinity;
-    const lanes = manual ? 1 : LANE_MAX+1;   // hand-routed wires don't use the lattice
+    const lanes = manual ? 1 : maxLane+1;   // hand-routed wires don't use the lattice
     for (let lane=0; lane<lanes; lane++){
-      const r = groupEdgePts(anch.pa, anch.pb, manual, obstacles, lane);
-      const ov = overlapLength(r.pts, placed);
+      const r = groupEdgePts(s.pa, s.pb, manual, obstacles, lane);
+      // A lane whose route degraded to a block-crossing fallback must never win
+      // on "zero overlap" — being clear of blocks outranks corridor sharing.
+      const ov = overlapLength(r.pts, placed) + (ptsInsideAnyBlock(r.pts, obstacles) ? 1e6 : 0);
       if (ov < bestOv){ bestOv = ov; bestLane = lane; bestPts = r.pts; }
       if (ov === 0) break;
     }
-    S.groupEdgeLanes[nodeEdgeLaneKey(e)] = bestLane;
+    S.groupEdgeLanes[nodeEdgeLaneKey(s.e)] = bestLane;
     if (bestPts) placed.push(...routeSegments(bestPts));
   }
   _routeCache.clear();
@@ -1421,30 +1489,27 @@ function assignNodeEdgeLanes(groupId){
 function renderDrillDown(){
   const g = groupsWithUngrouped().find(x=>x.id===S.openGroup);
   const memberSet = new Set(g ? g.members : []);
-  const members = S.nodes.filter(n=>memberSet.has(n.id));
-  const edges = diagramEdges(S.edges).filter(e=>memberSet.has(e.source) && memberSet.has(e.target));
+  const sheet = drillSheet();
+  const { members, portals, ports, obstacles, specs } = sheet;
   renderGrid(true);   // same adaptive lattice as the top level — in-group drags snap to it too (snapView)
-  const bounds = members.length ? memberBounds(members) : { minX:0,maxX:0,minY:0,maxY:0 };
-  const { incoming, outgoing } = openGroupPortals();
   // One dedicated slot per connection on each block edge: output dot per target
   // on the right, input arrow per source on the left; the last right-edge slot
   // stays reserved for the crosshair "new connection" port.
-  const ports = computeEdgePorts(id=>nodeById(id), members.map(n=>n.id), edges, true);
   lastPorts = ports;
-  const obstacleRects = memberObstacleRects(members);
-  // Undo (or an old session) can leave edges without a lane — reassign, once.
-  if (edges.some(e=>S.groupEdgeLanes[nodeEdgeLaneKey(e)]==null)) assignNodeEdgeLanes(S.openGroup);
+  // Undo (or an old session) can leave wires without a lane — reassign, once.
+  if (specs.some(s=>S.groupEdgeLanes[nodeEdgeLaneKey(s.e)]==null)) assignNodeEdgeLanes();
   // Forget routes for connections that no longer exist (deletions, regrouping).
-  const live = new Set(edges.map(e=>NODE_ROUTE_PREFIX+e.id));
+  const live = new Set(specs.map(s=>NODE_ROUTE_PREFIX+s.e.id));
   for (const k of _routeCache.keys()) if (k.startsWith(NODE_ROUTE_PREFIX) && !live.has(k)) _routeCache.delete(k);
+  const wireOf = s => groupEdgePtsCached(NODE_ROUTE_PREFIX+s.e.id, s.pa, s.pb,
+    s.kind==='internal' ? nodeEdgeRouteOf(s.e) : undefined,
+    obstacles, S.groupEdgeLanes[nodeEdgeLaneKey(s.e)] || 0);
 
-  const edgeMarkup = edges.map(e=>{
+  const edgeMarkup = specs.filter(s=>s.kind==='internal').map(s=>{
+    const e = s.e;
     const cat = edgeCategory(e), style = NET_CATEGORY_STYLE[cat];
     const selected = S.sel && S.sel.type==='edge' && S.sel.id===e.id;
-    const anch = nodeEdgeAnchors(e, ports);
-    if (!anch) return '';
-    const { pts } = groupEdgePtsCached(NODE_ROUTE_PREFIX+e.id, anch.pa, anch.pb, nodeEdgeRouteOf(e),
-      obstacleRects, S.groupEdgeLanes[nodeEdgeLaneKey(e)] || 0);
+    const { pts } = wireOf(s);
     const mid = ptsBadgePos(pts);
     const w = selected ? EDGE_STROKE_W+1.6 : EDGE_STROKE_W;
     const d = ptsPathD(pts);
@@ -1454,7 +1519,7 @@ function renderDrillDown(){
         stroke-dasharray="${selected?'none':(style.dash||'none')}"
         ${selected?'filter="drop-shadow(0 0 3px var(--probe))"':''}
         marker-end="url(#${style.marker})" style="pointer-events:none"/>
-      <circle cx="${anch.pa.x}" cy="${anch.pa.y}" r="4" fill="${style.color}" style="pointer-events:none"/>
+      <circle cx="${s.pa.x}" cy="${s.pa.y}" r="4" fill="${style.color}" style="pointer-events:none"/>
       ${polyHandleMarkup(pts, e.id, '', 12)}
       <g style="pointer-events:none">
         <rect x="${mid.x-13}" y="${mid.y-9}" width="26" height="16" rx="8"
@@ -1465,10 +1530,31 @@ function renderDrillDown(){
     </g>`;
   }).join('');
 
-  const portalMarkup = [
-    ...incoming.map((item,i)=>portalMarkupFor(item,'in',i,incoming.length,bounds)),
-    ...outgoing.map((item,i)=>portalMarkupFor(item,'out',i,outgoing.length,bounds))
-  ].join('');
+  // Boundary wires are drawn inside their portal's <g>, so clicking a wire
+  // selects the portal — same read-only flow as before (open the OTHER group to
+  // edit these connections). Each wire keeps its own category color, dash and
+  // net-count badge, and its arrow lands ON the member block it feeds.
+  const portalMarkup = portals.map(p=>{
+    const selected = S.sel && S.sel.type==='portal' && S.sel.id===p.key;
+    const wires = specs.filter(s=>s.portalKey===p.key).map(s=>{
+      const style = NET_CATEGORY_STYLE[edgeCategory(s.e)];
+      const { pts } = wireOf(s);
+      const mid = ptsBadgePos(pts);
+      const d = ptsPathD(pts);
+      return `
+      <path d="${d}" fill="none" stroke="transparent" stroke-width="12"/>
+      <path d="${d}" fill="none" stroke="${style.color}" stroke-width="${selected?EDGE_STROKE_W+1.2:EDGE_STROKE_W}"
+        stroke-dasharray="${style.dash||'none'}" marker-end="url(#${style.marker})" style="pointer-events:none"/>
+      <circle cx="${s.pa.x}" cy="${s.pa.y}" r="3.6" fill="${style.color}" style="pointer-events:none"/>
+      <g style="pointer-events:none">
+        <rect x="${mid.x-13}" y="${mid.y-9}" width="26" height="16" rx="8"
+          fill="var(--paper)" stroke="${style.color}" stroke-width="1.2"/>
+        <text x="${mid.x}" y="${mid.y+3.5}" text-anchor="middle"
+          font-family="var(--mono)" font-size="9.5" fill="var(--ink)">${s.e.nets.length}</text>
+      </g>`;
+    }).join('');
+    return portalMarkupFor(p, selected, wires);
+  }).join('');
 
   edgesG.innerHTML = edgeMarkup + portalMarkup;
 
@@ -1505,21 +1591,17 @@ function renderDrillDown(){
   }).join('');
 }
 
-function portalMarkupFor(item, dir, i, count, bounds){
-  const r = portalRect(i, count, dir, bounds);
+// The portal box (FROM/TO + neighbour title + total net count). The old
+// floating stub is gone: `wires` are the REAL routed connections to the member
+// blocks, drawn under the box so they visibly leave/enter its edge.
+function portalMarkupFor(p, selected, wires){
+  const { r, dir, item } = p;
   const otherId = dir==='in' ? item.source : item.target;
   const other = groupsWithUngrouped().find(g=>g.id===otherId);
   const label = other ? other.title : otherId;
   const style = NET_CATEGORY_STYLE[edgeCategory(item)];
-  const selected = S.sel && S.sel.type==='portal' && S.sel.id===(dir+':'+otherId);
-  const stubY = r.y + r.h/2;
-  // dir='in': stub sits left of the members, arrow points right into the group.
-  // dir='out': stub sits right of the members, arrow points right away from it.
-  const stubLineX1 = dir==='in' ? r.x + r.w : bounds.maxX;
-  const stubLineX2 = dir==='in' ? bounds.minX : r.x;
-  return `<g class="portal" data-portal="${esc(dir+':'+otherId)}" style="cursor:pointer">
-    <path d="M ${stubLineX1} ${stubY} L ${stubLineX2} ${stubY}" fill="none" stroke="${style.color}"
-      stroke-width="${EDGE_STROKE_W}" stroke-dasharray="${style.dash||'5 4'}" marker-end="url(#${style.marker})"/>
+  return `<g class="portal" data-portal="${esc(p.key)}" style="cursor:pointer">
+    ${wires}
     <rect x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" rx="6" fill="var(--vellum)"
       stroke="${selected?'var(--probe)':'var(--ink-soft)'}" stroke-width="${selected?2.5:1.5}" stroke-dasharray="4 3"/>
     <text x="${r.x+10}" y="${r.y+18}" font-family="var(--mono)" font-size="9" letter-spacing=".08em" fill="var(--ink-soft)">${dir==='in'?'FROM':'TO'}</text>
@@ -2433,7 +2515,7 @@ function toast(msg){
   clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove('show'),2200);
 }
 
-$('btnLayout').onclick=()=>{ commit(); if (isTopLevel()){ autoLayoutGroups(); assignRouteLanes(); } else { autoLayoutGroupMembers(S.openGroup); assignNodeEdgeLanes(S.openGroup); } render(); fitView(); };
+$('btnLayout').onclick=()=>{ commit(); if (isTopLevel()){ autoLayoutGroups(); assignRouteLanes(); } else { autoLayoutGroupMembers(S.openGroup); assignNodeEdgeLanes(); } render(); fitView(); };
 $('btnFit').onclick=fitView;
 $('btnUndo').onclick=undo;
 $('btnRedo').onclick=redo;
