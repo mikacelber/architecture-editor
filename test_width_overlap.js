@@ -8,7 +8,7 @@ window.eval(fs.readFileSync('app.js','utf8')+`
 window.__T={get S(){return S;},loadFromContract,render,computeGroupEdges,visibleGroups,groupBlockRect,
   groupBlockWidth,groupBlockHeight,groupsWithUngrouped,groupPortRowsFor,groupPortRowY,textWidth,
   portRowLabel,groupEyebrow,groupMemberLabel,nodeById,GROUP_PAD_X,GROUP_SIDE_TAG_W,autoLayoutGroups,
-  groupEdgeRouteKey,groupPortAnchor,groupEdgePts,_routeCache,laneOf,assignRouteLanes,groupEdgeRouteOf,buildSessionJSON};`);
+  groupEdgeRouteKey,groupPortAnchor,groupEdgePts,_routeCache,laneOf,assignRouteLanes,groupEdgeRouteOf,buildSessionJSON,groupSide};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -128,6 +128,33 @@ check('wider blocks still do not overlap each other'+(hit?' ['+hit+']':''), !hit
 /* ---- lanes survive a session round-trip ---- */
 const sess=T.buildSessionJSON();
 check('lanes saved in the session', sess.groupEdgeLanes && Object.keys(sess.groupEdgeLanes).length===Object.keys(S.groupEdgeLanes).length);
+
+/* ---- (IN)/(OUT) label format + barrier half containment ---- */
+{
+  const nh=window.document.getElementById('nodesG').innerHTML;
+  check('labels use the (IN)/(OUT) format', nh.includes('(IN) ') && nh.includes('(OUT) '));
+  check('old bare IN/OUT format is gone', !/>IN  |>OUT  /.test(nh));
+
+  // On barrier blocks every port row (badge + label) stays inside its own half.
+  const barrier=T.visibleGroups().filter(g=>T.groupSide(g.id)==='barrier');
+  check('barrier groups exist to verify ('+barrier.map(g=>g.id).join(', ')+')', barrier.length>0);
+  let crossed=[];
+  for (const g of barrier){
+    const W=T.groupBlockWidth(g), mid=W/2, P=T.GROUP_PAD_X;
+    for (const r of T.groupPortRowsFor(g.id)){
+      const label=T.portRowLabel(r, titleOf);
+      const extent=P+26+6+T.textWidth(label,9,true);   // from the row's own edge inward
+      if (extent > mid) crossed.push(g.id+' "'+label+'" reaches '+Math.ceil(extent)+' > half '+mid);
+    }
+  }
+  check('no port row crosses the LV|HV divider'+(crossed.length?' ['+crossed[0]+']':''), crossed.length===0);
+  // and the rule actually bites: at least one barrier block is wider than the old single-row bound
+  const gB=barrier[0], WB=T.groupBlockWidth(gB);
+  const singleRowNeed=Math.max(...T.groupPortRowsFor(gB.id).map(r=>T.GROUP_PAD_X+26+6+T.textWidth(T.portRowLabel(r,titleOf),9,true)+T.GROUP_PAD_X), 240);
+  check('barrier width driven by the half rule (W='+WB+' >= 2x widest row)', WB >= singleRowNeed);
+  // non-barrier blocks are not inflated by the rule
+  check('non-barrier widths unchanged in spirit (min width still 240)', T.visibleGroups().some(g=>T.groupBlockWidth(g)===240));
+}
 
 console.log('\n'+pass+' passed, '+fail+' failed');
 process.exit(fail?1:0);

@@ -62,7 +62,7 @@ function groupEyebrow(g){ return g && g.id===UNGROUPED_ID ? 'UNASSIGNED' : 'FUNC
 function groupMemberLabel(id){ const n = nodeById(id); return n ? n.label : id; }
 function portRowLabel(r, titleOf){
   const other = titleOf ? (titleOf.get(r.other) || r.other) : r.other;
-  return `${r.dir==='in'?'IN':'OUT'}  ${other}`;
+  return `${r.dir==='in'?'(IN)':'(OUT)'} ${other}`;
 }
 // The block is as wide as its widest piece of text needs — nothing is ever
 // truncated. Memoised alongside the port index (it depends on the port rows).
@@ -79,9 +79,18 @@ function groupBlockWidth(g){
     const n = nodeById(id);
     fit(GROUP_PAD_X + textWidth(groupMemberLabel(id), 10, !!(n && n.kind==='ic')) + GROUP_PAD_X);
   }
-  for (const r of groupPortRowsFor(g.id))
-    fit(GROUP_PAD_X + 26 + 6 + textWidth(portRowLabel(r, titleOf), 9, true) + GROUP_PAD_X);
-  return Math.ceil(need/8)*8;   // keep blocks on the 8px grid
+  // On a barrier block the midline is a physical boundary (LV left, HV right),
+  // so a port row must fit ENTIRELY inside its own half: no label may reach past
+  // the divider into the other domain. Half-width therefore has to hold the
+  // longest row, i.e. the block is at least twice the widest row plus a margin
+  // to the divider. Ordinary blocks only need the full width to hold the row.
+  const barrier = groupSide(g.id)==='barrier';
+  const HALF_MARGIN = 8; // clearance between a label's end and the divider
+  for (const r of groupPortRowsFor(g.id)){
+    const rowNeed = GROUP_PAD_X + 26 + 6 + textWidth(portRowLabel(r, titleOf), 9, true);
+    fit(barrier ? 2*(rowNeed + HALF_MARGIN) : rowNeed + GROUP_PAD_X);
+  }
+  return Math.ceil(need/GRID)*GRID;   // width on the grid: vertical edges (and ports' x) on grid lines
 }
 // PORT ZONE — the lower part of a group block, under the member list and split
 // off from it by a separator rule. Every connection attaches here (one row each)
@@ -89,20 +98,39 @@ function groupBlockWidth(g){
 // IC names, and each row has room for written info (its net count + neighbour).
 // The zone's top therefore depends on how many ICs the group lists, and the
 // block's total height on how many connections it has.
-const GROUP_PORT_ROW_H = 22, GROUP_PORT_ZONE_PAD = 12, GROUP_PORT_STUB = 26;
+const GROUP_PORT_ROW_H = 24, GROUP_PORT_ZONE_PAD = 12;
+/* ------------------------------------------------------------------
+   THE GRID
+   One lattice shared by block dimensions, port coordinates and wire
+   waypoints, so a wire dragged to a port's height meets it EXACTLY and
+   runs straight — no tiny 90-degree jog to make up a few pixels. Its
+   size is, by definition, the minimum Y distance between two ports
+   (the port row pitch): ports sit ON grid lines, blocks snap to it,
+   and waypoints snap to it, hence everything can meet everything.
+   ------------------------------------------------------------------ */
+const GRID = GROUP_PORT_ROW_H;
+const snapG = v => Math.round(v/GRID)*GRID;
+const GROUP_PORT_STUB = GRID;
 function groupMemberListBottom(g){ return GROUP_HEAD_H + 8 + (g ? g.members.length : 0)*GROUP_MEMBER_ROW_H; }
 function groupSeparatorY(g){ return groupMemberListBottom(g); }
-function groupPortZoneTop(g){ return groupSeparatorY(g) + GROUP_PORT_ZONE_PAD; }
+function groupPortZoneTop(g){
+  // Aligned so that each row's CENTER (zoneTop + row*GRID + GRID/2) lands on a
+  // grid line when the block's own y is on the grid — that's what lets a wire
+  // waypoint on the grid meet a port dead-on.
+  const raw = groupSeparatorY(g) + GROUP_PORT_ZONE_PAD;
+  return Math.ceil((raw - GRID/2)/GRID)*GRID + GRID/2;
+}
 function groupPortRowY(g, row){ return groupPortZoneTop(g) + row*GROUP_PORT_ROW_H + GROUP_PORT_ROW_H/2; }
 function groupBlockHeight(g){
   const rows = g ? groupPortRowsFor(g.id).length : 0;
-  return groupPortZoneTop(g) + Math.max(rows, 1)*GROUP_PORT_ROW_H + GROUP_FOOT_PAD;
+  const h = groupPortZoneTop(g) + Math.max(rows, 1)*GROUP_PORT_ROW_H + GROUP_FOOT_PAD;
+  return Math.ceil(h/GRID)*GRID;   // bottom edge on the grid too
 }
 const UNGROUPED_ID = 'UNGROUPED';
 function isTopLevel(){ return S.openGroup == null; }
 const $ = id => document.getElementById(id);
 const svg = $('board'), viewport = $('viewport'),
-      edgesG = $('edgesG'), nodesG = $('nodesG'), linkG = $('linkPreviewG');
+      gridG = $('gridG'), edgesG = $('edgesG'), nodesG = $('nodesG'), linkG = $('linkPreviewG');
 
 /* ============================================================
    TOLERANT JSON PARSING (fences, {output}, arrays)
@@ -629,7 +657,7 @@ function layeredLayout(ids, edges, colGap, gap, heightFn, widthFn){
   const yOf = assignYByAverage(sortedRanks, order, relevant, heightFn, gap);
 
   const xOf = new Map();
-  let cursor = 40;
+  let cursor = widthFn ? 2*GRID : 40;   // top level starts on a grid line
   for (const r of sortedRanks){
     xOf.set(r, cursor);
     cursor += widthFn
@@ -673,7 +701,9 @@ function autoLayoutGroups(onlyMissing){
     id=>groupBlockWidth(groups.find(g=>g.id===id)));
   for (const [id,p] of pos){
     if (onlyMissing && S.groupPos[id]) continue;
-    S.groupPos[id] = p;
+    // Barycenter Ys are fractional — land every block on the grid so its ports
+    // (block.y + aligned row offsets) sit exactly on grid lines.
+    S.groupPos[id] = { x:snapG(p.x), y:snapG(p.y) };
   }
 }
 
@@ -812,7 +842,7 @@ function elbowBadgePos(g){ return { x:g.bendX, y:(g.y1+g.bendY)/2 }; }
    being allowed to overlap; the two short stubs at y1/y2 are left alone,
    since they sit inside the column gap and are clear in practice.
    ------------------------------------------------------------------ */
-const ROUTE_CLEARANCE = 9;
+const ROUTE_CLEARANCE = GRID/2;   // padded corridors sit half-grid off the block edges
 function padForRoute(r){ return { x1:r.x-ROUTE_CLEARANCE, y1:r.y-ROUTE_CLEARANCE, x2:r.x+r.w+ROUTE_CLEARANCE, y2:r.y+r.h+ROUTE_CLEARANCE }; }
 function hSegHitsRect(y, xa, xb, r){
   const lo=Math.min(xa,xb), hi=Math.max(xa,xb), p=padForRoute(r);
@@ -926,7 +956,14 @@ class MinHeap{
    Auto-layout), and then FROZEN per connection — so later edits still
    only disturb the wires actually constrained by them.
    ------------------------------------------------------------------ */
-const LANE_PITCH = 16, LANE_MAX = 6;
+// LANE_PITCH must NOT divide (or be divided by) GRID: with every block snapped
+// to the grid, block-edge distances are all multiples of GRID, so lane offsets
+// that are multiples of GRID make different lanes generate the SAME candidate
+// lines and the separation collapses. 14 gives lanes 0..6 seven distinct
+// residues mod 24. Lane verticals therefore run off-grid — deliberately: only
+// PORTS and WAYPOINTS need to be on the grid for straight runs to meet them,
+// and both are (start/goal rows are part of every lattice).
+const LANE_PITCH = 14, LANE_MAX = 6;
 function laneOf(src, tgt){ return S.groupEdgeLanes[groupEdgeRouteKey(src,tgt)] || 0; }
 function latticeRoute(start, goal, obstacles, lane){
   const pads = obstacles.map(padForRoute);
@@ -1370,6 +1407,7 @@ function renderDrillDown(){
   const memberSet = new Set(g ? g.members : []);
   const members = S.nodes.filter(n=>memberSet.has(n.id));
   const edges = diagramEdges(S.edges).filter(e=>memberSet.has(e.source) && memberSet.has(e.target));
+  renderGrid(false);   // the in-group editor keeps its 8px snapping — this grid would lie
   const bounds = members.length ? memberBounds(members) : { minX:0,maxX:0,minY:0,maxY:0 };
   const { incoming, outgoing } = openGroupPortals();
   // One dedicated slot per connection on each block edge: output dot per target
@@ -1473,6 +1511,68 @@ function portalMarkupFor(item, dir, i, count, bounds){
 // Sheet-symbol style: vellum fill, ink border, mono title, member count.
 // Inter-group edges are derived by code from S.edges (see computeGroupEdges) —
 // read-only at this level, so group blocks carry no .port (no manual linking here).
+// The grid lives INSIDE the zoomed viewport, so it scales and pans with the
+// content for free; the pattern tiles from the world origin — exactly the
+// lattice that blocks, ports and waypoints snap to.
+/* ------------------------------------------------------------------
+   ADAPTIVE GRID (Ansys-style)
+   Exactly ONE uniform lattice is visible at any moment — never two
+   pitches overlaid, never unequally spaced lines. Zoomed right out you
+   see the coarsest grid; zooming in, cells SUBDIVIDE by 2 so the
+   on-screen cell size stays in a comfortable band, and the SNAP STEP
+   follows the visible pitch — more zoom, finer adjustments.
+   The pitch is clamped to [GRID_PITCH_MIN, GRID] in world units:
+     · max = GRID (the minimum distance between two ports of a block),
+       so a cell never exceeds the port pitch and zooming out beyond
+       that range just scales the same grid;
+     · min = GRID/4 = 6px, the finest step that is still comfortable
+       to place things with; zooming in further just magnifies it.
+   Subdivision by 2 keeps every level's lines a subset of no one —
+   each pitch divides GRID, so ports (on the GRID lattice) remain
+   reachable dead-on at every level.
+   ------------------------------------------------------------------ */
+const GRID_PITCH_MIN = GRID/4;              // 6px — comfort floor, my call
+const GRID_PITCH_LEVELS = [GRID/4, GRID/2, GRID];   // 6, 12, 24
+const GRID_CELL_MIN_PX = 14;                // a cell never renders smaller than this (except at the clamped max)
+function gridPitch(){
+  for (const p of GRID_PITCH_LEVELS) if (p*S.view.k >= GRID_CELL_MIN_PX) return p;
+  return GRID;                              // clamped at the coarsest level
+}
+// Interactive snap: follows the VISIBLE pitch, so what you see is what you snap to.
+const snapView = v => { const p=gridPitch(); return Math.round(v/p)*p; };
+// The grid is drawn in SCREEN space over the whole board — it has no edges (no
+// "square around the diagram" at far zoom-out) and there is exactly ONE of it.
+// World alignment comes from the pattern itself: tile size = pitch*k screen px
+// and patternTransform = the view translation, so the lines sit precisely on
+// the world lattice the blocks/ports/waypoints snap to, at every pan and zoom.
+let gridVisible = false, gridShownPitch = null;
+function renderGrid(on){
+  gridVisible = !!on;
+  gridShownPitch = null;
+  updateGridLOD();
+}
+function updateGridLOD(){
+  if (!gridVisible){ gridShownPitch = null; gridG.innerHTML=''; return; }
+  const p = gridPitch();
+  if (p !== gridShownPitch || !gridG.firstElementChild){
+    gridShownPitch = p;
+    gridG.innerHTML = `
+    <defs>
+      <pattern id="gridPat" patternUnits="userSpaceOnUse">
+        <path fill="none" stroke="var(--grid)" stroke-width="1"/>
+      </pattern>
+    </defs>
+    <rect x="0" y="0" width="100%" height="100%" fill="url(#gridPat)" style="pointer-events:none"/>`;
+  }
+  // Cheap per-frame update (pan and zoom): resize the tile and shift its origin.
+  const cell = p * S.view.k;
+  const pat = gridG.querySelector('#gridPat');
+  pat.setAttribute('width', cell);
+  pat.setAttribute('height', cell);
+  pat.setAttribute('patternTransform', `translate(${S.view.tx},${S.view.ty})`);
+  pat.querySelector('path').setAttribute('d', `M ${cell} 0 L 0 0 0 ${cell}`);
+}
+
 function renderTopLevel(){
   const groups = visibleGroups();
   const gEdges = computeGroupEdges();
@@ -1480,6 +1580,7 @@ function renderTopLevel(){
   // connection, on whichever edge the row is currently assigned to.
   lastPorts = null;
   const obstacleRects = groups.map(g=>groupBlockRect(g.id));
+  renderGrid(true);
   const catOf = new Map(gEdges.map(e=>[e.id, edgeCategory(e)]));
   // Forget routes for connections that no longer exist (regrouping, deletions).
   const live = new Set(gEdges.map(e=>groupEdgeRouteKey(e.source,e.target)));
@@ -1951,13 +2052,18 @@ svg.addEventListener('pointermove', ev=>{
     if (Math.abs(dx)+Math.abs(dy)>3) drag.moved=true;
     S.view.tx=drag.tx+dx; S.view.ty=drag.ty+dy;
     viewport.setAttribute('transform', `translate(${S.view.tx},${S.view.ty}) scale(${S.view.k})`);
+    updateGridLOD();   // the pan path skips render(), keep the screen-space grid aligned
     return;
   }
   const w = toWorld(ev.clientX, ev.clientY);
   if (drag.mode==='node'){
-    const nx = Math.round((w.x-drag.dx)/8)*8, ny = Math.round((w.y-drag.dy)/8)*8;
-    if (isTopLevel()){ const p=groupPosOf(drag.id); p.x=nx; p.y=ny; }
-    else { const n=nodeById(drag.id); n.x=nx; n.y=ny; }
+    if (isTopLevel()){
+      const p=groupPosOf(drag.id);
+      p.x=snapView(w.x-drag.dx); p.y=snapView(w.y-drag.dy);
+    } else {
+      const n=nodeById(drag.id);
+      n.x=Math.round((w.x-drag.dx)/8)*8; n.y=Math.round((w.y-drag.dy)/8)*8;
+    }
     commitGesture(drag);
     drag.moved=true;
     render();
@@ -1991,7 +2097,8 @@ svg.addEventListener('pointermove', ev=>{
   }
   if (drag.mode==='routeV' || drag.mode==='routeH' || drag.mode==='routeE'){
     // Vertical segments only move in X; horizontal segments only move in Y.
-    const raw = drag.mode==='routeH' ? Math.round(w.y/8)*8 : Math.round(w.x/8)*8;
+    const snap = isTopLevel() ? snapView : (v=>Math.round(v/8)*8);
+    const raw = drag.mode==='routeH' ? snap(w.y) : snap(w.x);
     if (drag.topLevel){
       // Direction is taken from the POINTER (not from the snapped result), so once
       // the wire has hopped past a block, continuing the same way keeps going and
@@ -2002,8 +2109,8 @@ svg.addEventListener('pointermove', ev=>{
       const obstacles = visibleGroups().map(g=>groupBlockRect(g.id));
       // The dragged segment only moves along its own axis; the other coordinate
       // stays where the segment already was.
-      const wx = drag.axis==='v' ? raw : (drag.mx!=null ? drag.mx : Math.round(w.x/8)*8);
-      const wy = drag.axis==='v' ? (drag.my!=null ? drag.my : Math.round(w.y/8)*8) : raw;
+      const wx = drag.axis==='v' ? raw : (drag.mx!=null ? snapView(drag.mx) : snapView(w.x));
+      const wy = drag.axis==='v' ? (drag.my!=null ? snapView(drag.my) : snapView(w.y)) : raw;
       const fixed = pointOutOfBlocks(wx, wy, obstacles, drag.axis, dir);
       commitGesture(drag);
       setGroupEdgeRoute(drag.src, drag.tgt,
@@ -2063,6 +2170,7 @@ svg.addEventListener('wheel', ev=>{
   S.view.ty = my-(my-S.view.ty)*(k1/k0);
   S.view.k=k1;
   viewport.setAttribute('transform', `translate(${S.view.tx},${S.view.ty}) scale(${S.view.k})`);
+  updateGridLOD();   // the wheel path skips render(), so re-pick the grid detail here
 },{passive:false});
 
 document.addEventListener('keydown', ev=>{

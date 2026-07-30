@@ -1,8 +1,8 @@
 :root{
-  --paper:#F7F5F0; --grid:#E7E4D9; --grid-major:#DBD7C8; --ink:#1B2A41; --ink-soft:#4A5A72;
+  --paper:#F7F5F0; --ink:#1B2A41; --ink-soft:#4A5A72;
   --epoxy:#23272B; --epoxy-edge:#3A4046; --silk:#F2F3F4;
   --probe:#FFC53D; --probe-deep:#B8860B;
-  --copper:#B0793C; --copper-soft:#C9A06B; --hv:#C43E1C;
+  --copper:#B0793C; --copper-soft:#C9A06B; --grid:rgba(43,42,38,.07); --hv:#C43E1C;
   --panel:#FFFFFF; --line:#DEDACC; --ok:#3D7A46; --warn:#A05C12;
   --vellum:#F6EFDC; --field-bg:#FDFCF9;
   --btn-hover:#EFECE2; --primary-hover:#2A3D5C; --danger-hover:#FBEAE4;
@@ -15,10 +15,10 @@
   --sans:'IBM Plex Sans',system-ui,-apple-system,sans-serif;
 }
 :root[data-theme="dark"]{
-  --paper:#1B2027; --grid:#242B35; --grid-major:#2E3542; --ink:#E7ECF3; --ink-soft:#8D99AC;
+  --paper:#1B2027; --ink:#E7ECF3; --ink-soft:#8D99AC;
   --epoxy:#14171B; --epoxy-edge:#3A4046; --silk:#F2F3F4;
   --probe:#FFC53D; --probe-deep:#D9A227;
-  --copper:#D3A06C; --copper-soft:#B98A57; --hv:#FF7A5C;
+  --copper:#D3A06C; --copper-soft:#B98A57; --grid:rgba(232,230,225,.06); --hv:#FF7A5C;
   --panel:#20262E; --line:#39424C; --ok:#5FBE6D; --warn:#E0A23D;
   --vellum:#2E2A1E; --field-bg:#161B21;
   --btn-hover:#2A323C; --primary-hover:#C7CEDA; --danger-hover:#3A2620;

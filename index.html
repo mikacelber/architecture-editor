@@ -36,13 +36,6 @@
     <div class="breadcrumb" id="breadcrumb"></div>
     <svg id="board" xmlns="http://www.w3.org/2000/svg">
       <defs>
-        <pattern id="gridSm" width="16" height="16" patternUnits="userSpaceOnUse">
-          <path d="M16 0H0V16" fill="none" stroke="var(--grid)" stroke-width="1"/>
-        </pattern>
-        <pattern id="gridLg" width="80" height="80" patternUnits="userSpaceOnUse">
-          <rect width="80" height="80" fill="url(#gridSm)"/>
-          <path d="M80 0H0V80" fill="none" stroke="var(--grid-major)" stroke-width="1.4"/>
-        </pattern>
         <!-- markerUnits="userSpaceOnUse" pins the arrowhead to a fixed pixel size —
              it never scales with a wire's stroke-width, so every signal category
              (differentiated by color/dash only, see NET_CATEGORY_STYLE in app.js)
@@ -69,7 +62,10 @@
           <path d="M0 0.6 L7.4 4 L0 7.4 Z" fill="var(--sig-other)"/>
         </marker>
       </defs>
-      <rect id="bg" x="-100000" y="-100000" width="200000" height="200000" fill="url(#gridLg)"/>
+      <!-- Plain pan-capture surface. The ONLY grid is the adaptive one in #gridG,
+           drawn in screen space and kept aligned to the world lattice by app.js. -->
+      <rect id="bg" x="-100000" y="-100000" width="200000" height="200000" fill="var(--paper)"/>
+      <g id="gridG"></g>
       <g id="viewport">
         <g id="edgesG"></g>
         <g id="linkPreviewG"></g>

@@ -74,7 +74,7 @@ for (const g of groups)
   }
 check('badge count equals the connection net count', countsOk);
 check('badges rendered inside the blocks', (nodesHTML.match(/class="portnum"/g)||[]).length === gEdges.length*2);
-check('IN/OUT direction written on each row', nodesHTML.includes('>IN  ') && nodesHTML.includes('>OUT  '));
+check('(IN)/(OUT) direction written on each row', nodesHTML.includes('(IN) ') && nodesHTML.includes('(OUT) '));
 check('separator line rendered', (nodesHTML.match(/opacity="\.4"/g)||[]).length >= groups.length);
 
 /* ---- (3) dragging the badge across flips the port side; wire follows ---- */
@@ -153,7 +153,7 @@ for (const g of T.visibleGroups()){
   const h = T.groupBlockHeight(g);
   for (const r of T.groupPortRowsFor(g.id)){
     const W = T.groupBlockWidth(g);
-    const label = `${r.dir==='in'?'IN':'OUT'}  ${(T.groupsWithUngrouped().find(x=>x.id===r.other)||{}).title || r.other}`;
+    const label = `${r.dir==='in'?'(IN)':'(OUT)'} ${(T.groupsWithUngrouped().find(x=>x.id===r.other)||{}).title || r.other}`;
     const bw=26, bh=16, left = r.side==='left';
     const bx = left ? T.GROUP_PAD_X : W-T.GROUP_PAD_X-bw;
     const lx = left ? bx+bw+6 : bx-6;
