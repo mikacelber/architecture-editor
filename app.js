@@ -801,35 +801,13 @@ function hvSideTag(side, w){
   return '';
 }
 
-// Orthogonal (horizontal/vertical) elbow routing, schematic-style (LTSpice/Altium)
-// instead of a curve. Full shape is 5 segments: out horizontally from the source
-// port, vertical jog at bendX, horizontal plateau at bendY, second vertical jog at
-// entryX, and a FINAL HORIZONTAL RUN into the target port — so the arrow always
-// enters the block perpendicular to its edge, no matter how the wire is rerouted.
-// With route=null the plateau sits at y2 and entryX collapses onto bendX, which
-// degenerates to the classic 3-segment "Z".
-// A manual route={x,y,x2} moves the joints independently:
-//   x  → the first vertical segment (drag sideways),
-//   y  → the horizontal plateau (drag up/down),
-//   x2 → the LAST vertical segment before the block (drag sideways) — i.e. the
-//        final approach into the block is user-positionable.
-// Same rule for both node-level and group-level edges, since they share this
-// geometry. portY1/portY2 override the default mid-edge attachment so each edge
-// can get its own dedicated slot on the block edge (see computeEdgePorts).
-function elbowGeometry(a, b, route, portY1, portY2){
-  const x1 = a.x + a.w, y1 = portY1!=null ? portY1 : a.y + a.h/2;
-  const x2 = b.x,       y2 = portY2!=null ? portY2 : b.y + b.h/2;
-  const bendX = (route && route.x!=null) ? route.x : (x1+x2)/2;
-  const bendY = (route && route.y!=null) ? route.y : y2;
-  let entryX = (route && route.x2!=null) ? route.x2 : (bendY===y2 ? bendX : (bendX+x2)/2);
-  // Keep a visible final stub so the arrow can always enter horizontally.
-  entryX = Math.min(entryX, x2-12);
-  return { x1, y1, x2, y2, bendX, bendY, entryX };
-}
+// Path for the 5-segment schematic elbow produced by sidedGeometry below: out
+// from the source port, vertical jog at bendX, horizontal plateau at bendY,
+// second vertical jog at entryX, and a FINAL HORIZONTAL RUN into the target
+// port — so the arrow always enters the block perpendicular to its edge.
 function elbowPathD(g){
   return `M ${g.x1} ${g.y1} L ${g.bendX} ${g.y1} L ${g.bendX} ${g.bendY} L ${g.entryX} ${g.bendY} L ${g.entryX} ${g.y2} L ${g.x2} ${g.y2}`;
 }
-function elbowBadgePos(g){ return { x:g.bendX, y:(g.y1+g.bendY)/2 }; }
 
 /* ------------------------------------------------------------------
    OBSTACLE-AVOIDING ROUTING — a wire must never pass in front of a block:
@@ -902,10 +880,9 @@ function routeAroundObstacles(geo, obstacles, dirIn){
   return { x1,y1,x2,y2,bendX,bendY,entryX, dirIn };
 }
 
-// Same 5-segment elbow as elbowGeometry (so elbowPathD/routeHandleMarkup and the
-// drag handles all still apply), but each end can leave/enter from EITHER edge of
-// its block — which is what makes a port draggable to the other side. p1/p2 are
-// {x,y,sign} anchors from groupPortAnchor.
+// The 5-segment elbow (see elbowPathD), with each end free to leave/enter from
+// EITHER edge of its block — which is what makes a port draggable to the other
+// side. p1/p2 are {x,y,sign} anchors from groupPortAnchor.
 function sidedGeometry(p1, p2, route){
   const x1 = p1.x, y1 = p1.y, x2 = p2.x, y2 = p2.y;
   const out1 = x1 + p1.sign*GROUP_PORT_STUB;   // just outside the source edge
@@ -1313,18 +1290,10 @@ function updateHistoryButtons(){
 }
 
 function memberObstacleRects(members){ return members.map(n=>({ id:n.id, x:n.x, y:n.y, w:n.w, h:n.h })); }
-function obstaclesExcluding(rects, srcId, tgtId){ return rects.filter(r=>r.id!==srcId && r.id!==tgtId); }
-
-// Invisible wide hit-paths over each draggable wire segment. seg-v (first jog)
-// and seg-e (entry jog) move in X; seg-h (plateau) and seg-f (final run into the
-// block) move in Y — grabbing the wire right where it enters the block and
-// dragging vertically lifts the plateau, and the perpendicular re-entry appears.
-function routeHandleMarkup(g, eid, extraAttrs, w){
-  return `
-      <path class="seg-v" data-eid="${esc(eid)}"${extraAttrs} d="M ${g.bendX} ${g.y1} L ${g.bendX} ${g.bendY}" fill="none" stroke="transparent" stroke-width="${w}" style="cursor:ew-resize"/>
-      <path class="seg-h" data-eid="${esc(eid)}"${extraAttrs} d="M ${g.bendX} ${g.bendY} L ${g.entryX} ${g.bendY}" fill="none" stroke="transparent" stroke-width="${w}" style="cursor:ns-resize"/>
-      <path class="seg-e" data-eid="${esc(eid)}"${extraAttrs} d="M ${g.entryX} ${g.bendY} L ${g.entryX} ${g.y2}" fill="none" stroke="transparent" stroke-width="${w}" style="cursor:ew-resize"/>
-      <path class="seg-f" data-eid="${esc(eid)}"${extraAttrs} d="M ${g.entryX} ${g.y2} L ${g.x2} ${g.y2}" fill="none" stroke="transparent" stroke-width="${w}" style="cursor:ns-resize"/>`;
+function openGroupObstacleRects(){
+  const g = groupsWithUngrouped().find(x=>x.id===S.openGroup);
+  const memberSet = new Set(g ? g.members : []);
+  return memberObstacleRects(S.nodes.filter(n=>memberSet.has(n.id)));
 }
 
 // One dedicated attachment slot per connection (instead of everything piling onto
@@ -1400,8 +1369,55 @@ function memberBounds(members){
 
 // Drill-down: only the open group's member nodes and their internal edges, plus
 // left/right portal stubs for edges that cross the group boundary (read-only —
-// open the OTHER group to edit those). All existing node/edge editing below is
-// untouched from the pre-groups flat view, just scoped to this member set.
+// open the OTHER group to edit those). The wires between member blocks obey the
+// SAME rules as the system level: port anchors with stubs, the lattice router
+// with every member block as an obstacle, routing lanes so no two wires share a
+// corridor, waypoint drags, and the incremental route cache.
+const NODE_ROUTE_PREFIX = 'n|';
+function nodeEdgeLaneKey(e){ return 'n:'+e.source+'→'+e.target; }
+function nodeEdgeAnchors(e, ports){
+  const a = nodeById(e.source), b = nodeById(e.target);
+  if (!a||!b) return null;
+  // sign is the direction of TRAVEL at the anchor (see clampEntryX): +1 at both
+  // ends — the wire leaves the source's right edge rightward and enters the
+  // target's left edge rightward.
+  return { pa: { x:a.x+a.w, y: ports.yOut.get(e.id) ?? a.y+a.h/2, sign: 1 },
+           pb: { x:b.x,     y: ports.yIn.get(e.id)  ?? b.y+b.h/2, sign: 1 } };
+}
+// A manual node-edge route is the same single waypoint {wx,wy} the top level
+// uses (stored on the edge itself so history/serialisation carry it for free);
+// legacy {x,y,x2} elbow patches from older sessions simply mean "auto".
+function nodeEdgeRouteOf(e){ return (e.route && e.route.wx!=null && e.route.wy!=null) ? e.route : undefined; }
+// Same corridor-separation rule as assignRouteLanes, for the node edges INSIDE
+// one group. Lanes live in S.groupEdgeLanes under 'n:'-prefixed keys, assigned
+// lazily on first paint of the group (and re-assigned by in-group Auto-layout).
+function assignNodeEdgeLanes(groupId){
+  const g = groupsWithUngrouped().find(x=>x.id===groupId);
+  if (!g) return;
+  const memberSet = new Set(g.members);
+  const members = S.nodes.filter(n=>memberSet.has(n.id));
+  const edges = diagramEdges(S.edges).filter(e=>memberSet.has(e.source) && memberSet.has(e.target))
+    .slice().sort((a,b)=>String(a.id).localeCompare(String(b.id)));
+  const obstacles = memberObstacleRects(members);
+  const ports = computeEdgePorts(id=>nodeById(id), members.map(n=>n.id), edges, true);
+  const placed = [];
+  for (const e of edges){
+    const anch = nodeEdgeAnchors(e, ports);
+    if (!anch) continue;
+    const manual = nodeEdgeRouteOf(e);
+    let bestLane = 0, bestPts = null, bestOv = Infinity;
+    const lanes = manual ? 1 : LANE_MAX+1;   // hand-routed wires don't use the lattice
+    for (let lane=0; lane<lanes; lane++){
+      const r = groupEdgePts(anch.pa, anch.pb, manual, obstacles, lane);
+      const ov = overlapLength(r.pts, placed);
+      if (ov < bestOv){ bestOv = ov; bestLane = lane; bestPts = r.pts; }
+      if (ov === 0) break;
+    }
+    S.groupEdgeLanes[nodeEdgeLaneKey(e)] = bestLane;
+    if (bestPts) placed.push(...routeSegments(bestPts));
+  }
+  _routeCache.clear();
+}
 function renderDrillDown(){
   const g = groupsWithUngrouped().find(x=>x.id===S.openGroup);
   const memberSet = new Set(g ? g.members : []);
@@ -1416,25 +1432,30 @@ function renderDrillDown(){
   const ports = computeEdgePorts(id=>nodeById(id), members.map(n=>n.id), edges, true);
   lastPorts = ports;
   const obstacleRects = memberObstacleRects(members);
+  // Undo (or an old session) can leave edges without a lane — reassign, once.
+  if (edges.some(e=>S.groupEdgeLanes[nodeEdgeLaneKey(e)]==null)) assignNodeEdgeLanes(S.openGroup);
+  // Forget routes for connections that no longer exist (deletions, regrouping).
+  const live = new Set(edges.map(e=>NODE_ROUTE_PREFIX+e.id));
+  for (const k of _routeCache.keys()) if (k.startsWith(NODE_ROUTE_PREFIX) && !live.has(k)) _routeCache.delete(k);
 
   const edgeMarkup = edges.map(e=>{
     const cat = edgeCategory(e), style = NET_CATEGORY_STYLE[cat];
     const selected = S.sel && S.sel.type==='edge' && S.sel.id===e.id;
-    const a = nodeById(e.source), b = nodeById(e.target);
-    if (!a||!b) return '';
-    const geo = routeAroundObstacles(
-      elbowGeometry(a, b, e.route, ports.yOut.get(e.id), ports.yIn.get(e.id)),
-      obstaclesExcluding(obstacleRects, e.source, e.target));
-    const mid = elbowBadgePos(geo);
+    const anch = nodeEdgeAnchors(e, ports);
+    if (!anch) return '';
+    const { pts } = groupEdgePtsCached(NODE_ROUTE_PREFIX+e.id, anch.pa, anch.pb, nodeEdgeRouteOf(e),
+      obstacleRects, S.groupEdgeLanes[nodeEdgeLaneKey(e)] || 0);
+    const mid = ptsBadgePos(pts);
     const w = selected ? EDGE_STROKE_W+1.6 : EDGE_STROKE_W;
+    const d = ptsPathD(pts);
     return `<g class="edge" data-eid="${esc(e.id)}">
-      <path d="${elbowPathD(geo)}" fill="none" stroke="transparent" stroke-width="14" style="cursor:pointer"/>
-      <path d="${elbowPathD(geo)}" fill="none" stroke="${style.color}" stroke-width="${w}"
+      <path d="${d}" fill="none" stroke="transparent" stroke-width="14" style="cursor:pointer"/>
+      <path d="${d}" fill="none" stroke="${style.color}" stroke-width="${w}"
         stroke-dasharray="${selected?'none':(style.dash||'none')}"
         ${selected?'filter="drop-shadow(0 0 3px var(--probe))"':''}
         marker-end="url(#${style.marker})" style="pointer-events:none"/>
-      <circle cx="${geo.x1}" cy="${geo.y1}" r="4" fill="${style.color}" style="pointer-events:none"/>
-      ${routeHandleMarkup(geo, e.id, '', 12)}
+      <circle cx="${anch.pa.x}" cy="${anch.pa.y}" r="4" fill="${style.color}" style="pointer-events:none"/>
+      ${polyHandleMarkup(pts, e.id, '', 12)}
       <g style="pointer-events:none">
         <rect x="${mid.x-13}" y="${mid.y-9}" width="26" height="16" rx="8"
           fill="${selected?'var(--probe)':'var(--paper)'}" stroke="${style.color}" stroke-width="1.2"/>
@@ -1583,8 +1604,9 @@ function renderTopLevel(){
   renderGrid(true);
   const catOf = new Map(gEdges.map(e=>[e.id, edgeCategory(e)]));
   // Forget routes for connections that no longer exist (regrouping, deletions).
+  // 'n|'-prefixed entries belong to the drill-down views and are pruned there.
   const live = new Set(gEdges.map(e=>groupEdgeRouteKey(e.source,e.target)));
-  for (const k of _routeCache.keys()) if (!live.has(k)) _routeCache.delete(k);
+  for (const k of _routeCache.keys()) if (!k.startsWith(NODE_ROUTE_PREFIX) && !live.has(k)) _routeCache.delete(k);
   const titleOf = new Map(groupsWithUngrouped().map(g=>[g.id, g.title||g.id]));
 
   edgesG.innerHTML = gEdges.map(e=>{
@@ -1976,7 +1998,7 @@ function blockXY(id){
 }
 
 svg.addEventListener('pointerdown', ev=>{
-  const segEl = ev.target.closest('.seg-v, .seg-h, .seg-e, .seg-f');
+  const segEl = ev.target.closest('.seg-v, .seg-h');
   const numEl = ev.target.closest('.portnum');
   const port = ev.target.closest('.port');
   const portalEl = ev.target.closest('.portal');
@@ -1986,14 +2008,13 @@ svg.addEventListener('pointerdown', ev=>{
 
   if (segEl){
     const cls = segEl.classList;
-    // seg-v → route.x (first jog, drag sideways); seg-e → route.x2 (entry jog,
-    // the LAST vertical run before the block, drag sideways); seg-h and seg-f
-    // (plateau / final run into the block) → route.y (drag up/down).
-    const mode = cls.contains('seg-v') ? 'routeV' : cls.contains('seg-e') ? 'routeE' : 'routeH';
+    // seg-v (vertical run) drags sideways, seg-h (horizontal run) drags up/down;
+    // either converts the wire to a waypoint route seeded by that drag.
+    const mode = cls.contains('seg-v') ? 'routeV' : 'routeH';
     const topLevel = isTopLevel();
     const mx = segEl.dataset.mx!=null ? +segEl.dataset.mx : null;
     const my = segEl.dataset.my!=null ? +segEl.dataset.my : null;
-    const axis = segEl.dataset.axis || (cls.contains('seg-h')||cls.contains('seg-f') ? 'h' : 'v');
+    const axis = segEl.dataset.axis || (cls.contains('seg-h') ? 'h' : 'v');
     S.sel = { type: topLevel?'groupEdge':'edge', id: segEl.dataset.eid };
     drag = { mode, eid: segEl.dataset.eid, axis, mx, my, snap:snapshotState(),
       topLevel, src: segEl.dataset.src, tgt: segEl.dataset.tgt };
@@ -2097,35 +2118,29 @@ svg.addEventListener('pointermove', ev=>{
     if (changed){ commitGesture(drag); render(); }
     return;
   }
-  if (drag.mode==='routeV' || drag.mode==='routeH' || drag.mode==='routeE'){
+  if (drag.mode==='routeV' || drag.mode==='routeH'){
     // Vertical segments only move in X; horizontal segments only move in Y.
-    // Both view levels snap to the visible grid pitch — what you see is what you snap to.
-    const snap = snapView;
-    const raw = drag.mode==='routeH' ? snap(w.y) : snap(w.x);
-    if (drag.topLevel){
-      // Direction is taken from the POINTER (not from the snapped result), so once
-      // the wire has hopped past a block, continuing the same way keeps going and
-      // reversing hops it back over.
-      const dir = Math.sign(raw - (drag.lastRaw!=null ? drag.lastRaw : raw)) || drag.lastDir || 0;
-      if (dir) drag.lastDir = dir;
-      drag.lastRaw = raw;
-      const obstacles = visibleGroups().map(g=>groupBlockRect(g.id));
-      // The dragged segment only moves along its own axis; the other coordinate
-      // stays where the segment already was.
-      const wx = drag.axis==='v' ? raw : (drag.mx!=null ? snapView(drag.mx) : snapView(w.x));
-      const wy = drag.axis==='v' ? (drag.my!=null ? snapView(drag.my) : snapView(w.y)) : raw;
-      const fixed = pointOutOfBlocks(wx, wy, obstacles, drag.axis, dir);
-      commitGesture(drag);
-      setGroupEdgeRoute(drag.src, drag.tgt,
-        drag.axis==='v' ? { wx: fixed, wy } : { wx, wy: fixed });
-      render();
-      return;
-    }
-    const patch = drag.mode==='routeV' ? { x: raw }
-                : drag.mode==='routeE' ? { x2: raw }
-                : { y: raw };
+    // Both view levels snap to the visible grid pitch — what you see is what you
+    // snap to — and share the SAME waypoint model: the drag places a point, the
+    // lattice router finds a legal path through it. Only where the waypoint is
+    // stored differs (S.groupEdgeRoutes per group pair vs. the edge's .route).
+    const raw = drag.axis==='h' ? snapView(w.y) : snapView(w.x);
+    // Direction is taken from the POINTER (not from the snapped result), so once
+    // the wire has hopped past a block, continuing the same way keeps going and
+    // reversing hops it back over.
+    const dir = Math.sign(raw - (drag.lastRaw!=null ? drag.lastRaw : raw)) || drag.lastDir || 0;
+    if (dir) drag.lastDir = dir;
+    drag.lastRaw = raw;
+    const obstacles = drag.topLevel ? visibleGroups().map(g=>groupBlockRect(g.id)) : openGroupObstacleRects();
+    // The dragged segment only moves along its own axis; the other coordinate
+    // stays where the segment already was.
+    const wx = drag.axis==='v' ? raw : (drag.mx!=null ? snapView(drag.mx) : snapView(w.x));
+    const wy = drag.axis==='v' ? (drag.my!=null ? snapView(drag.my) : snapView(w.y)) : raw;
+    const fixed = pointOutOfBlocks(wx, wy, obstacles, drag.axis, dir);
+    const wp = drag.axis==='v' ? { wx: fixed, wy } : { wx, wy: fixed };
     commitGesture(drag);
-    const e=S.edges.find(x=>x.id===drag.eid); if (e) e.route = { ...e.route, ...patch };
+    if (drag.topLevel) setGroupEdgeRoute(drag.src, drag.tgt, wp);
+    else { const e=S.edges.find(x=>x.id===drag.eid); if (e) e.route = wp; }
     render();
     return;
   }
@@ -2418,7 +2433,7 @@ function toast(msg){
   clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove('show'),2200);
 }
 
-$('btnLayout').onclick=()=>{ commit(); if (isTopLevel()){ autoLayoutGroups(); assignRouteLanes(); } else autoLayoutGroupMembers(S.openGroup); render(); fitView(); };
+$('btnLayout').onclick=()=>{ commit(); if (isTopLevel()){ autoLayoutGroups(); assignRouteLanes(); } else { autoLayoutGroupMembers(S.openGroup); assignNodeEdgeLanes(S.openGroup); } render(); fitView(); };
 $('btnFit').onclick=fitView;
 $('btnUndo').onclick=undo;
 $('btnRedo').onclick=redo;

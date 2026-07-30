@@ -120,9 +120,15 @@ const res=T.groupEdgePts(A2,B2,T.groupEdgeRouteOf(e0.source,e0.target),obstacles
 check('a block dropped onto a manual route is routed around when drawn', !crossesAny(res.pts,obstacles()));
 mv.x=ox; mv.y=oy; delete S.groupEdgeRoutes[key]; T._routeCache.clear(); T.render();
 
-/* ---------- drill-down behaviour left alone ---------- */
-check('drill-down segment drag still writes the raw value (unchanged scope)',
-  /const patch = drag\.mode==='routeV' \? \{ x: raw \}/.test(fs.readFileSync('app.js','utf8')));
+/* ---------- drill-down shares the top-level drag pipeline ---------- */
+{
+  const src = fs.readFileSync('app.js','utf8');
+  check('drill-down segment drags write the same waypoint model as the top level',
+    /if \(drag\.topLevel\) setGroupEdgeRoute\(drag\.src, drag\.tgt, wp\);/.test(src) &&
+    /if \(e\) e\.route = wp;/.test(src));
+  check('the raw elbow patch \\{x,y,x2\\} is gone from the drag handler',
+    !/drag\.mode==='routeE'/.test(src));
+}
 
 console.log('\n'+pass+' passed, '+fail+' failed');
 process.exit(fail?1:0);
