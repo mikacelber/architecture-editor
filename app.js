@@ -352,8 +352,8 @@ function setGroupPortSide(gid, src, tgt, side){
   S.groupPortSides[groupPortKey(gid,src,tgt)] = side;
   invalidateGroupPorts();
 }
-let _groupPortIdx = null;
-function invalidateGroupPorts(){ _groupPortIdx = null; }
+let _groupPortIdx = null, _nodePortIdx = null;
+function invalidateGroupPorts(){ _groupPortIdx = null; _nodePortIdx = null; }
 function groupPortIndex(){
   if (_groupPortIdx) return _groupPortIdx;
   const titleOf = new Map(groupsWithUngrouped().map(g=>[g.id, g.title||g.id]));
@@ -413,6 +413,114 @@ function groupPortAnchor(gid, src, tgt, dir){
     side: r.side,
     // Source: +1 when leaving from the right edge. Target: +1 when arriving into
     // the left edge (still travelling rightward).
+    sign: dir==='out' ? (left ? -1 : 1) : (left ? 1 : -1)
+  };
+}
+
+/* ------------------------------------------------------------------
+   NODE PORT INDEX — the drill-down blocks follow the SAME norms as the
+   group blocks above: one port row per connection touching the node
+   (internal or boundary-crossing alike), inputs first then outputs,
+   alphabetically by the other block's label; sides default in=left /
+   out=right and are overridden per port; rows reorderable by dragging
+   the badge. Overrides share the group stores (S.groupPortSides /
+   S.groupPortOrder, keyed by node id — node ids and group ids never
+   collide in practice, and the keys are opaque). Independent of which
+   group is open, so block dimensions can be computed at import time.
+   ------------------------------------------------------------------ */
+function nodePortIndex(){
+  if (_nodePortIdx) return _nodePortIdx;
+  const idx = new Map(S.nodes.map(n=>[n.id, []]));
+  for (const e of diagramEdges(S.edges)){
+    if (idx.has(e.source)) idx.get(e.source).push({ eid:e.id, src:e.source, tgt:e.target, dir:'out', other:e.target, nets:e.nets.length });
+    if (idx.has(e.target)) idx.get(e.target).push({ eid:e.id, src:e.source, tgt:e.target, dir:'in',  other:e.source, nets:e.nets.length });
+  }
+  const labelOf = id => { const n=nodeById(id); return n ? n.label : id; };
+  for (const [nid, rows] of idx){
+    rows.sort((a,b)=>
+      (a.dir===b.dir ? 0 : (a.dir==='in' ? -1 : 1)) ||
+      labelOf(a.other).localeCompare(labelOf(b.other)) ||
+      String(a.eid).localeCompare(String(b.eid)));
+    const manual = S.groupPortOrder[nid];
+    if (manual && manual.length){
+      const rank = new Map(manual.map((k,i)=>[k,i]));
+      rows.forEach((r,i)=>{ r._nat = i; });
+      rows.sort((a,b)=>
+        (rank.has(portRowKey(a))?rank.get(portRowKey(a)):Infinity) -
+        (rank.has(portRowKey(b))?rank.get(portRowKey(b)):Infinity)
+        || a._nat - b._nat);
+      rows.forEach(r=>{ delete r._nat; });
+    }
+    rows.forEach((r,i)=>{ r.row = i; r.side = groupPortSideOf(nid, r.src, r.tgt, r.dir); });
+  }
+  _nodePortIdx = idx;
+  return idx;
+}
+function nodePortRowsFor(id){ return nodePortIndex().get(id) || []; }
+function nodePortOf(id, src, tgt, dir){
+  return nodePortRowsFor(id).find(r=>r.src===src && r.tgt===tgt && r.dir===dir);
+}
+function moveNodePortToRow(nid, key, newRow){
+  const keys = nodePortRowsFor(nid).map(portRowKey);
+  const from = keys.indexOf(key);
+  if (from < 0) return false;
+  const to = Math.max(0, Math.min(keys.length-1, newRow));
+  if (from === to) return false;
+  keys.splice(to, 0, keys.splice(from, 1)[0]);
+  S.groupPortOrder[nid] = keys;
+  invalidateGroupPorts();
+  return true;
+}
+// Same geometry as the group blocks: a header, a separator, then the port zone
+// with one GRID-pitch row per connection — the block grows to fit, and rows are
+// aligned so their centers land on grid lines when the block's y is on the grid.
+function nodeHeaderBottom(n){ return n.kind==='ic' ? 50 : 40; }
+function nodePortZoneTop(n){
+  const raw = nodeHeaderBottom(n) + GROUP_PORT_ZONE_PAD;
+  return Math.ceil((raw - GRID/2)/GRID)*GRID + GRID/2;
+}
+function nodePortRowY(n, row){ return nodePortZoneTop(n) + row*GROUP_PORT_ROW_H + GROUP_PORT_ROW_H/2; }
+function nodeBlockHeight(n){
+  const rows = nodePortRowsFor(n.id).length;
+  const h = nodePortZoneTop(n) + Math.max(rows, 1)*GROUP_PORT_ROW_H + GROUP_FOOT_PAD;
+  return Math.ceil(h/GRID)*GRID;
+}
+function nodePortRowLabel(r){
+  const n = nodeById(r.other);
+  return `${r.dir==='in'?'(IN)':'(OUT)'} ${n ? n.label : r.other}`;
+}
+function nodeBlockWidth(n){
+  let need = n.kind==='ic' ? NODE_W_IC : NODE_W_EXT;
+  const fit = w => { if (w > need) need = w; };
+  if (n.kind==='ic'){
+    fit(26 + textWidth(n.label, 13.5, true) + GROUP_PAD_X + GROUP_SIDE_TAG_W);
+    fit(26 + textWidth((n.data.ic_type||'').slice(0,30), 10, false) + GROUP_PAD_X);
+  } else {
+    fit(12 + textWidth('EXTERNAL', 10, true, 0.08) + GROUP_PAD_X + GROUP_SIDE_TAG_W);
+    fit(12 + textWidth(n.label.slice(0,26), 11.5, false) + GROUP_PAD_X);
+  }
+  for (const r of nodePortRowsFor(n.id))
+    fit(GROUP_PAD_X + 26 + 6 + textWidth(nodePortRowLabel(r), 9, true) + GROUP_PAD_X);
+  return Math.ceil(need/GRID)*GRID;
+}
+// n.w/n.h are stored on the node (legacy of the flat editor), so they're
+// refreshed from the port rows wherever the sheet is about to be measured —
+// layout and drill rendering — keeping every consumer (obstacles, bounds,
+// fitView, drags) in agreement.
+function updateMemberDims(members){
+  for (const n of members){ n.w = nodeBlockWidth(n); n.h = nodeBlockHeight(n); }
+}
+// Absolute attachment point of one end of a node edge — same contract as
+// groupPortAnchor: {x, y, side, sign} with sign the direction of travel.
+function nodePortAnchor(id, src, tgt, dir){
+  const n = nodeById(id);
+  const r = nodePortOf(id, src, tgt, dir);
+  if (!r) return { x: n.x + (dir==='in' ? 0 : n.w), y: n.y + n.h/2, side:(dir==='in'?'left':'right'), sign:1 };
+  const left = r.side==='left';
+  return {
+    x: n.x + (left ? 0 : n.w),
+    y: n.y + nodePortRowY(n, r.row),
+    side: r.side,
     sign: dir==='out' ? (left ? -1 : 1) : (left ? 1 : -1)
   };
 }
@@ -680,9 +788,16 @@ function autoLayoutGroupMembers(groupId){
   const g = groupsWithUngrouped().find(x=>x.id===groupId);
   if (!g || !g.members.length) return;
   const memberSet = new Set(g.members);
+  const members = S.nodes.filter(n=>memberSet.has(n.id));
+  // Blocks grow with their port zone — measure BEFORE spacing, and hand the
+  // real widths to the layout so columns clear each other. Channel gaps are
+  // sized like the top level: room for several parallel routing lanes.
+  updateMemberDims(members);
   const internalEdges = diagramEdges(S.edges).filter(e=>memberSet.has(e.source) && memberSet.has(e.target));
-  const pos = layeredLayout(g.members, internalEdges, 265, 32, nodeHeight);
-  for (const id of g.members){ const n=nodeById(id); if (n){ const p=pos.get(id); n.x=p.x; n.y=p.y; } }
+  const pos = layeredLayout(g.members, internalEdges, GROUP_COL_GAP, GROUP_ROW_GAP, nodeHeight,
+    id=>{ const n=nodeById(id); return n ? n.w : NODE_W_IC; });
+  // Land every block on the grid so its port rows sit exactly on grid lines.
+  for (const id of g.members){ const n=nodeById(id); if (n){ const p=pos.get(id); n.x=snapG(p.x); n.y=snapG(p.y); } }
 }
 
 function autoLayoutAllGroupMembers(){
@@ -1309,33 +1424,7 @@ function memberObstacleRects(members){ return members.map(n=>({ id:n.id, x:n.x, 
 // boxes — so waypoint drags can't park a wire across either.
 function openGroupObstacleRects(){ return drillSheet().obstacles; }
 
-// One dedicated attachment slot per connection (instead of everything piling onto
-// the block's mid-edge): a block's outputs — one per distinct consumer edge — are
-// stacked down its RIGHT edge in deterministic (target id) order, each drawn as a
-// filled dot at the wire start; its inputs get the same treatment on the LEFT
-// edge, each arriving as a perpendicular arrow. reserveLinkSlot additionally
-// keeps the last right-edge slot free for the crosshair "new connection" port.
-// Returned Y values are absolute world coordinates keyed by edge id.
-function computeEdgePorts(rectOf, ids, edges, reserveLinkSlot){
-  const outs = new Map(ids.map(i=>[i,[]])), ins = new Map(ids.map(i=>[i,[]]));
-  for (const e of edges){
-    if (outs.has(e.source)) outs.get(e.source).push(e);
-    if (ins.has(e.target)) ins.get(e.target).push(e);
-  }
-  const yOut = new Map(), yIn = new Map(), linkY = new Map();
-  for (const id of ids){
-    const r = rectOf(id);
-    if (!r) continue;
-    const o = outs.get(id).sort((a,b)=>(a.target+'|'+a.id).localeCompare(b.target+'|'+b.id));
-    const slots = o.length + (reserveLinkSlot ? 1 : 0);
-    o.forEach((e,i)=> yOut.set(e.id, r.y + r.h*(i+1)/(slots+1)));
-    if (reserveLinkSlot) linkY.set(id, r.y + r.h*slots/(slots+1));
-    const inn = ins.get(id).sort((a,b)=>(a.source+'|'+a.id).localeCompare(b.source+'|'+b.id));
-    inn.forEach((e,i)=> yIn.set(e.id, r.y + r.h*(i+1)/(inn.length+1)));
-  }
-  return { yOut, yIn, linkY };
-}
-let lastPorts = null; // ports of the most recently rendered view (used by renderLink)
+let lastPorts = null; // {linkY} of the most recently rendered view (used by renderLink)
 
 function render(){
   // Block heights depend on the port index, so drop the memo before drawing:
@@ -1410,6 +1499,9 @@ function drillSheet(){
   const g = groupsWithUngrouped().find(x=>x.id===S.openGroup);
   const memberSet = new Set(g ? g.members : []);
   const members = S.nodes.filter(n=>memberSet.has(n.id));
+  // Block dimensions follow the port rows (a connection added since the last
+  // measure grows the block) — refresh before anything is placed or routed.
+  updateMemberDims(members);
   const bounds = members.length ? memberBounds(members) : { minX:0,maxX:0,minY:0,maxY:0 };
   const all = diagramEdges(S.edges);
   const internal = all.filter(e=>memberSet.has(e.source) && memberSet.has(e.target));
@@ -1425,40 +1517,35 @@ function drillSheet(){
       unders: all.filter(e=>memberSet.has(e.source) && idx.get(e.target)===item.target)
         .sort((a,b)=>(a.source+'|'+a.id).localeCompare(b.source+'|'+b.id)) }))
   ];
-  // Boundary connections claim member-edge slots exactly like internal ones
-  // (computeEdgePorts only assigns slots to ids it knows, so the far endpoint
-  // outside the group is simply ignored).
-  const ports = computeEdgePorts(id=>nodeById(id), members.map(n=>n.id),
-    [...internal, ...portals.flatMap(p=>p.unders)], true);
   const obstacles = [ ...memberObstacleRects(members),
     ...portals.map(p=>({ id:'portal:'+p.key, x:p.r.x, y:p.r.y, w:p.r.w, h:p.r.h })) ];
   const specs = [];
-  // sign is the direction of TRAVEL at the anchor (see clampEntryX): +1 at both
-  // ends — out of a right edge travelling rightward, into a left edge rightward.
+  // Every wire end on a member block attaches at that connection's own port row
+  // (nodePortAnchor) — dedicated, GRID-spaced, side-switchable — exactly the
+  // top-level norm. Only the portal ends use the portal's fanned exit slots.
   for (const e of internal){
-    const a = nodeById(e.source), b = nodeById(e.target);
-    if (!a||!b) continue;
+    if (!nodeById(e.source) || !nodeById(e.target)) continue;
     specs.push({ e, kind:'internal',
-      pa:{ x:a.x+a.w, y: ports.yOut.get(e.id) ?? a.y+a.h/2, sign:1 },
-      pb:{ x:b.x,     y: ports.yIn.get(e.id)  ?? b.y+b.h/2, sign:1 } });
+      pa: nodePortAnchor(e.source, e.source, e.target, 'out'),
+      pb: nodePortAnchor(e.target, e.source, e.target, 'in') });
   }
   for (const p of portals) p.unders.forEach((e,j)=>{
     // Each wire gets its own exit slot on the portal edge, fanned like a block's
     // port slots, so two wires never leave the portal on the same line.
     const slotY = p.r.y + p.r.h*(j+1)/(p.unders.length+1);
     if (p.dir==='in'){
-      const b = nodeById(e.target); if (!b) return;
+      if (!nodeById(e.target)) return;
       specs.push({ e, kind:'in', portalKey:p.key,
         pa:{ x:p.r.x+p.r.w, y:slotY, sign:1 },
-        pb:{ x:b.x, y: ports.yIn.get(e.id) ?? b.y+b.h/2, sign:1 } });
+        pb: nodePortAnchor(e.target, e.source, e.target, 'in') });
     } else {
-      const a = nodeById(e.source); if (!a) return;
+      if (!nodeById(e.source)) return;
       specs.push({ e, kind:'out', portalKey:p.key,
-        pa:{ x:a.x+a.w, y: ports.yOut.get(e.id) ?? a.y+a.h/2, sign:1 },
+        pa: nodePortAnchor(e.source, e.source, e.target, 'out'),
         pb:{ x:p.r.x, y:slotY, sign:1 } });
     }
   });
-  return { g, members, bounds, portals, ports, obstacles, specs };
+  return { g, members, bounds, portals, obstacles, specs };
 }
 // Same corridor-separation rule as assignRouteLanes, for every wire drawn in the
 // open group — internal AND boundary. Lanes live in S.groupEdgeLanes under
@@ -1469,7 +1556,7 @@ function assignNodeEdgeLanes(){
   const ordered = specs.slice().sort((a,b)=>String(a.e.id).localeCompare(String(b.e.id)));
   const placed = [];
   for (const s of ordered){
-    const manual = s.kind==='internal' ? nodeEdgeRouteOf(s.e) : undefined;
+    const manual = nodeEdgeRouteOf(s.e);
     const maxLane = s.kind==='internal' ? LANE_MAX : BOUNDARY_LANE_MAX;
     let bestLane = 0, bestPts = null, bestOv = Infinity;
     const lanes = manual ? 1 : maxLane+1;   // hand-routed wires don't use the lattice
@@ -1490,20 +1577,19 @@ function renderDrillDown(){
   const g = groupsWithUngrouped().find(x=>x.id===S.openGroup);
   const memberSet = new Set(g ? g.members : []);
   const sheet = drillSheet();
-  const { members, portals, ports, obstacles, specs } = sheet;
+  const { members, portals, obstacles, specs } = sheet;
   renderGrid(true);   // same adaptive lattice as the top level — in-group drags snap to it too (snapView)
-  // One dedicated slot per connection on each block edge: output dot per target
-  // on the right, input arrow per source on the left; the last right-edge slot
-  // stays reserved for the crosshair "new connection" port.
-  lastPorts = ports;
+  // The crosshair "new connection" port sits in the block's foot area, below
+  // the port zone, so it never collides with a connection's own row.
+  const linkY = new Map(members.map(n=>[n.id, n.y+n.h-8]));
+  lastPorts = { linkY };
   // Undo (or an old session) can leave wires without a lane — reassign, once.
   if (specs.some(s=>S.groupEdgeLanes[nodeEdgeLaneKey(s.e)]==null)) assignNodeEdgeLanes();
   // Forget routes for connections that no longer exist (deletions, regrouping).
   const live = new Set(specs.map(s=>NODE_ROUTE_PREFIX+s.e.id));
   for (const k of _routeCache.keys()) if (k.startsWith(NODE_ROUTE_PREFIX) && !live.has(k)) _routeCache.delete(k);
   const wireOf = s => groupEdgePtsCached(NODE_ROUTE_PREFIX+s.e.id, s.pa, s.pb,
-    s.kind==='internal' ? nodeEdgeRouteOf(s.e) : undefined,
-    obstacles, S.groupEdgeLanes[nodeEdgeLaneKey(s.e)] || 0);
+    nodeEdgeRouteOf(s.e), obstacles, S.groupEdgeLanes[nodeEdgeLaneKey(s.e)] || 0);
 
   const edgeMarkup = specs.filter(s=>s.kind==='internal').map(s=>{
     const e = s.e;
@@ -1531,9 +1617,11 @@ function renderDrillDown(){
   }).join('');
 
   // Boundary wires are drawn inside their portal's <g>, so clicking a wire
-  // selects the portal — same read-only flow as before (open the OTHER group to
-  // edit these connections). Each wire keeps its own category color, dash and
-  // net-count badge, and its arrow lands ON the member block it feeds.
+  // selects the portal — still read-only as a connection (open the OTHER group
+  // to edit its nets), but its segments drag like any other wire and its port
+  // on the member block moves like any other port. Each wire keeps its own
+  // category color, dash and net-count badge, and its arrow lands ON the member
+  // block it feeds.
   const portalMarkup = portals.map(p=>{
     const selected = S.sel && S.sel.type==='portal' && S.sel.id===p.key;
     const wires = specs.filter(s=>s.portalKey===p.key).map(s=>{
@@ -1546,6 +1634,7 @@ function renderDrillDown(){
       <path d="${d}" fill="none" stroke="${style.color}" stroke-width="${selected?EDGE_STROKE_W+1.2:EDGE_STROKE_W}"
         stroke-dasharray="${style.dash||'none'}" marker-end="url(#${style.marker})" style="pointer-events:none"/>
       <circle cx="${s.pa.x}" cy="${s.pa.y}" r="3.6" fill="${style.color}" style="pointer-events:none"/>
+      ${polyHandleMarkup(pts, s.e.id, '', 12)}
       <g style="pointer-events:none">
         <rect x="${mid.x-13}" y="${mid.y-9}" width="26" height="16" rx="8"
           fill="var(--paper)" stroke="${style.color}" stroke-width="1.2"/>
@@ -1558,12 +1647,36 @@ function renderDrillDown(){
 
   edgesG.innerHTML = edgeMarkup + portalMarkup;
 
+  // Per-edge category for the port-row tick/badge colors, over ALL drawn wires.
+  const catOf = new Map(specs.map(s=>[s.e.id, edgeCategory(s.e)]));
   nodesG.innerHTML = members.map(n=>{
     const selected = S.sel && S.sel.type==='node' && S.sel.id===n.id;
-    // Link port sits at its reserved (last) right-edge slot so it never overlaps
-    // the per-connection output dots. Coordinates inside the <g> are relative.
-    const linkCy = (ports.linkY.get(n.id) ?? (n.y + n.h/2)) - n.y;
     const side = nodeSide(n.id);
+    const sepY = nodeHeaderBottom(n);
+    // Port zone — top-level norm: one row per connection, a lead-in tick from
+    // the block edge, the draggable net-count badge (drag sideways to switch
+    // edge, up/down to reorder) and the direction + other block in writing.
+    const portRows = nodePortRowsFor(n.id).map(r=>{
+      const color = NET_CATEGORY_STYLE[catOf.get(r.eid) || 'other'].color;
+      const y = nodePortRowY(n, r.row);
+      const left = r.side==='left', bw = 26, bh = 16;
+      const bx = left ? GROUP_PAD_X : n.w-GROUP_PAD_X-bw;
+      const lx = left ? bx+bw+6 : bx-6;
+      const selEdge = S.sel && (S.sel.type==='edge' || S.sel.type==='portal') && (S.sel.id===r.eid ||
+        (S.sel.type==='portal' && specs.some(s=>s.e.id===r.eid && s.portalKey===S.sel.id)));
+      const labelColor = n.kind==='ic' ? '#B9BEC4' : 'var(--ink-soft)';
+      return `
+      <line x1="${left?0:n.w}" y1="${y}" x2="${left?bx:bx+bw}" y2="${y}" stroke="${color}" stroke-width="1.4" opacity=".5"/>
+      <text x="${lx}" y="${y+3.5}" text-anchor="${left?'start':'end'}" font-family="var(--mono)" font-size="9" fill="${labelColor}">${esc(nodePortRowLabel(r))}</text>
+      <g class="portnum" data-gid="${esc(n.id)}" data-eid="${esc(r.eid)}" data-src="${esc(r.src)}" data-tgt="${esc(r.tgt)}" data-dir="${esc(r.dir)}" style="cursor:move">
+        <rect x="${bx}" y="${y-bh/2}" width="${bw}" height="${bh}" rx="8"
+          fill="${selEdge?'var(--probe)':'var(--paper)'}" stroke="${color}" stroke-width="1.4"/>
+        <text x="${bx+bw/2}" y="${y+4}" text-anchor="middle" font-family="var(--mono)" font-size="10" font-weight="600" fill="var(--ink)">${r.nets}</text>
+      </g>`;
+    }).join('');
+    // Crosshair "new connection" port in the foot area, clear of the port rows.
+    const linkPort = `<circle class="port" data-port="${esc(n.id)}" cx="${n.w}" cy="${n.h-8}" r="6"
+        fill="var(--copper-soft)" stroke="var(--copper)" stroke-width="1.5" style="cursor:crosshair"/>`;
     if (n.kind==='ic'){
       return `<g class="node" data-nid="${esc(n.id)}" transform="translate(${n.x},${n.y})" style="cursor:move">
         <rect x="-3" y="4" width="${n.w+6}" height="${n.h}" rx="5" fill="#00000018"/>
@@ -1574,8 +1687,9 @@ function renderDrillDown(){
         <text x="26" y="26" font-family="var(--mono)" font-size="13.5" font-weight="600" fill="var(--silk)">${esc(n.label)}</text>
         <text x="26" y="44" font-family="var(--sans)" font-size="10" fill="#B9BEC4">${esc((n.data.ic_type||'').slice(0,30))}</text>
         ${hvSideTag(side, n.w)}
-        <circle class="port" data-port="${esc(n.id)}" cx="${n.w}" cy="${linkCy}" r="6.5"
-          fill="var(--copper-soft)" stroke="var(--copper)" stroke-width="1.6" style="cursor:crosshair"/>
+        <line x1="10" y1="${sepY}" x2="${n.w-10}" y2="${sepY}" stroke="var(--silk)" stroke-width="1" opacity=".25"/>
+        ${portRows}
+        ${linkPort}
       </g>`;
     }
     return `<g class="node" data-nid="${esc(n.id)}" transform="translate(${n.x},${n.y})" style="cursor:move">
@@ -1585,8 +1699,9 @@ function renderDrillDown(){
       <text x="12" y="20" font-family="var(--mono)" font-size="10" letter-spacing=".08em" fill="var(--ink-soft)">EXTERNAL</text>
       <text x="12" y="36" font-family="var(--sans)" font-size="11.5" font-weight="500" fill="var(--ink)">${esc(n.label.slice(0,26))}</text>
       ${hvSideTag(side, n.w)}
-      <circle class="port" data-port="${esc(n.id)}" cx="${n.w}" cy="${linkCy}" r="6"
-        fill="var(--copper-soft)" stroke="var(--copper)" stroke-width="1.5" style="cursor:crosshair"/>
+      <line x1="10" y1="${sepY}" x2="${n.w-10}" y2="${sepY}" stroke="var(--ink)" stroke-width="1" opacity=".25"/>
+      ${portRows}
+      ${linkPort}
     </g>`;
   }).join('');
 }
@@ -1955,6 +2070,8 @@ function renderInspector(){
           <option value="hv" ${n.hvSide==='hv'?'selected':''}>High voltage</option>
         </select>
       </div>`;
+    const customPorts = !!S.groupPortOrder[n.id] || Object.keys(S.groupPortSides).some(k=>k.startsWith(n.id+'|'));
+    const portHint = `<p class="hint">${nodePortRowsFor(n.id).length} port${nodePortRowsFor(n.id).length===1?'':'s'} in this block's port zone. Drag a port's net-count badge sideways to switch which edge it attaches to, or up/down to reorder it.</p>`;
     if (n.kind==='ic'){
       body.innerHTML = `
         <div class="kv"><label>Type</label><div class="val">${esc(n.data.ic_type||'')}</div></div>
@@ -1963,14 +2080,17 @@ function renderInspector(){
         <div class="kv"><label>Selection rationale</label><div class="val">${esc(n.data.selection_rationale||'')}</div></div>
         <div class="kv"><label>Datasheet</label><div class="val">${n.data.DatasheetUrl?`<a href="${esc(n.data.DatasheetUrl)}" target="_blank" rel="noopener">${esc(n.data.DatasheetUrl)}</a>`:'—'}</div></div>
         ${sideRow}
-        <div class="btnrow"><button class="danger" id="btnDelNode">Delete IC and its connections</button></div>`;
+        ${portHint}
+        <div class="btnrow">${customPorts?'<button id="btnResetNodePorts">Reset port layout</button>':''}<button class="danger" id="btnDelNode">Delete IC and its connections</button></div>`;
     } else {
       body.innerHTML = `
         <div class="kv"><label>Description</label><div class="val">${esc(n.data.description||'')}</div></div>
         ${sideRow}
-        <div class="btnrow"><button class="danger" id="btnDelNode">Delete block and its connections</button></div>`;
+        ${portHint}
+        <div class="btnrow">${customPorts?'<button id="btnResetNodePorts">Reset port layout</button>':''}<button class="danger" id="btnDelNode">Delete block and its connections</button></div>`;
     }
     $('fSide').onchange=()=>{ n.hvSide = $('fSide').value || undefined; render(); };
+    const rp=$('btnResetNodePorts'); if (rp) rp.onclick=()=>{ commit(); resetGroupPortLayout(n.id); render(); };
     const del=$('btnDelNode'); if (del) del.onclick=()=>deleteNode(n.id);
     return;
   }
@@ -2027,6 +2147,8 @@ function deleteNode(id){
   S.nodes = S.nodes.filter(n=>n.id!==id);
   S.edges = S.edges.filter(e=>e.source!==id && e.target!==id);
   S.groups.forEach(g=>{ g.members = g.members.filter(m=>m!==id); });
+  delete S.groupPortOrder[id];
+  Object.keys(S.groupPortSides).forEach(k=>{ if (k.startsWith(id+'|')) delete S.groupPortSides[k]; });
   S.sel=null; render();
 }
 
@@ -2103,12 +2225,18 @@ svg.addEventListener('pointerdown', ev=>{
     render();
     return;
   }
-  // Must be tested before .node: the badge lives inside the group's <g class="node">,
-  // and dragging it moves the PORT, not the block.
+  // Must be tested before .node: the badge lives inside the block's <g class="node">,
+  // and dragging it moves the PORT, not the block. Same gesture at both view
+  // levels — only the port index it acts on differs (group rows vs node rows).
   if (numEl){
     const d = numEl.dataset;
-    S.sel = { type:'groupEdge', id:d.eid || (computeGroupEdges().find(x=>x.source===d.src && x.target===d.tgt)||{}).id };
-    drag = { mode:'portside', gid:d.gid, src:d.src, tgt:d.tgt, dir:d.dir, snap:snapshotState() };
+    if (isTopLevel()){
+      S.sel = { type:'groupEdge', id:d.eid || (computeGroupEdges().find(x=>x.source===d.src && x.target===d.tgt)||{}).id };
+      drag = { mode:'portside', gid:d.gid, src:d.src, tgt:d.tgt, dir:d.dir, snap:snapshotState() };
+    } else {
+      S.sel = { type:'edge', id:d.eid };
+      drag = { mode:'nodeportside', nid:d.gid, src:d.src, tgt:d.tgt, dir:d.dir, snap:snapshotState() };
+    }
     render();
     return;
   }
@@ -2197,6 +2325,23 @@ svg.addEventListener('pointermove', ev=>{
     const zoneTop = rect.y + groupPortZoneTop(g);
     const wantedRow = Math.floor((w.y - zoneTop) / GROUP_PORT_ROW_H);
     if (moveGroupPortToRow(drag.gid, groupEdgeRouteKey(drag.src, drag.tgt), wantedRow)) changed = true;
+    if (changed){ commitGesture(drag); render(); }
+    return;
+  }
+  if (drag.mode==='nodeportside'){
+    // The drill-down twin of 'portside': X picks the edge of the member block
+    // the port attaches to, Y picks its row. Same live feel, same stores.
+    const n = nodeById(drag.nid);
+    if (!n) return;
+    let changed = false;
+    const wantedSide = w.x > n.x + n.w/2 ? 'right' : 'left';
+    if (groupPortSideOf(drag.nid, drag.src, drag.tgt, drag.dir) !== wantedSide){
+      setGroupPortSide(drag.nid, drag.src, drag.tgt, wantedSide);
+      changed = true;
+    }
+    const zoneTop = n.y + nodePortZoneTop(n);
+    const wantedRow = Math.floor((w.y - zoneTop) / GROUP_PORT_ROW_H);
+    if (moveNodePortToRow(drag.nid, groupEdgeRouteKey(drag.src, drag.tgt), wantedRow)) changed = true;
     if (changed){ commitGesture(drag); render(); }
     return;
   }
