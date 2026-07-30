@@ -14,6 +14,9 @@ const S = {
   groups: [],  // {id, title, description, members:[nodeId,...]} — explicit groups only, UNGROUPED is implicit
   groupPos: {}, // {[groupId]: {x,y}} — top-level sheet-symbol layout, keyed so it also covers the implicit UNGROUPED bucket
   groupEdgeRoutes: {}, // {[srcId+'→'+tgtId]: {x,y}} — manual routing for derived (non-persisted) group edges
+  groupPortSides: {}, // {[gid+'|'+srcId+'→'+tgtId]: 'left'|'right'} — port dragged to the other edge of its block
+  groupEdgeLanes: {}, // {[srcId+'→'+tgtId]: laneIndex} — routing lane frozen at layout time
+  groupPortOrder: {}, // {[gid]: ['srcId→tgtId', ...]} — port rows dragged into a manual vertical order
   openGroup: null, // null = top-level view; groupId = drilled into that group (phase c)
   view: { tx:60, ty:40, k:1 },
   sel: null,   // {type:'node'|'edge'|'group'|'groupEdge'|'portal', id}
@@ -23,8 +26,78 @@ const S = {
 
 const NODE_W_IC = 176, NODE_H_IC = 64, NODE_W_EXT = 160, NODE_H_EXT = 46;
 // Sheet-symbol group blocks grow in Y to list every member's name — width stays fixed.
-const GROUP_W = 240, GROUP_HEAD_H = 70, GROUP_MEMBER_ROW_H = 14, GROUP_FOOT_PAD = 14;
-function groupBlockHeight(g){ return GROUP_HEAD_H + (g ? g.members.length : 0)*GROUP_MEMBER_ROW_H + GROUP_FOOT_PAD; }
+const GROUP_HEAD_H = 70, GROUP_MEMBER_ROW_H = 14, GROUP_FOOT_PAD = 14;
+const GROUP_PAD_X = 14, GROUP_W_MIN = 240, GROUP_SIDE_TAG_W = 26;
+// Spacing between group blocks — wide enough for several parallel routing lanes.
+const GROUP_COL_GAP = 240, GROUP_ROW_GAP = 96;
+
+/* ------------------------------------------------------------------
+   TEXT MEASUREMENT — deterministic, no canvas/DOM measurement, so the
+   layout is reproducible in every environment (and in the test suite).
+   Advances are expressed in em and chosen as UPPER bounds for the IBM
+   Plex faces: a block may end up a few px wider than strictly needed,
+   never too narrow to hold its text.
+   ------------------------------------------------------------------ */
+// 0.62 rather than Plex Mono's exact 0.6: the CSS stack falls back to other
+// monospace faces when the webfont doesn't load, and a slightly generous advance
+// keeps text inside the block instead of clipping it.
+const ADV_MONO = 0.62;
+const ADV_WIDE = new Set(['W','M','m','w','@','%','&','—']);
+const ADV_NARROW = new Set(['i','l','j','f','t','r','I','.',',',':',';',"'",'`','|','!','[',']','(',')','-',' ','/']);
+function textWidth(str, fontSize, mono, letterSpacingEm){
+  const s = String(str ?? '');
+  let em = 0;
+  if (mono) em = s.length * ADV_MONO;
+  else for (const ch of s){
+    if (ADV_WIDE.has(ch)) em += 0.95;
+    else if (ADV_NARROW.has(ch)) em += 0.38;
+    else if (ch >= 'A' && ch <= 'Z') em += 0.72;
+    else if (ch >= '0' && ch <= '9') em += 0.60;
+    else em += 0.57;
+  }
+  return em*fontSize + (letterSpacingEm||0)*fontSize*Math.max(0, s.length-1);
+}
+
+function groupEyebrow(g){ return g && g.id===UNGROUPED_ID ? 'UNASSIGNED' : 'FUNCTIONAL GROUP'; }
+function groupMemberLabel(id){ const n = nodeById(id); return n ? n.label : id; }
+function portRowLabel(r, titleOf){
+  const other = titleOf ? (titleOf.get(r.other) || r.other) : r.other;
+  return `${r.dir==='in'?'IN':'OUT'}  ${other}`;
+}
+// The block is as wide as its widest piece of text needs — nothing is ever
+// truncated. Memoised alongside the port index (it depends on the port rows).
+function groupBlockWidth(g){
+  if (!g) return GROUP_W_MIN;
+  const titleOf = new Map(groupsWithUngrouped().map(x=>[x.id, x.title||x.id]));
+  let need = GROUP_W_MIN;
+  const fit = w => { if (w > need) need = w; };
+  // header rows share the right margin with the LV/HV side tag
+  fit(GROUP_PAD_X + textWidth(groupEyebrow(g), 9.5, true, 0.1) + GROUP_PAD_X + GROUP_SIDE_TAG_W);
+  fit(GROUP_PAD_X + textWidth(g.title, 15, true) + GROUP_PAD_X + GROUP_SIDE_TAG_W);
+  fit(GROUP_PAD_X + textWidth(`${g.members.length} block${g.members.length===1?'':'s'}`, 11, false) + GROUP_PAD_X);
+  for (const id of g.members){
+    const n = nodeById(id);
+    fit(GROUP_PAD_X + textWidth(groupMemberLabel(id), 10, !!(n && n.kind==='ic')) + GROUP_PAD_X);
+  }
+  for (const r of groupPortRowsFor(g.id))
+    fit(GROUP_PAD_X + 26 + 6 + textWidth(portRowLabel(r, titleOf), 9, true) + GROUP_PAD_X);
+  return Math.ceil(need/8)*8;   // keep blocks on the 8px grid
+}
+// PORT ZONE — the lower part of a group block, under the member list and split
+// off from it by a separator rule. Every connection attaches here (one row each)
+// instead of on the block's mid-edge, so no wire ever crosses the title or the
+// IC names, and each row has room for written info (its net count + neighbour).
+// The zone's top therefore depends on how many ICs the group lists, and the
+// block's total height on how many connections it has.
+const GROUP_PORT_ROW_H = 22, GROUP_PORT_ZONE_PAD = 12, GROUP_PORT_STUB = 26;
+function groupMemberListBottom(g){ return GROUP_HEAD_H + 8 + (g ? g.members.length : 0)*GROUP_MEMBER_ROW_H; }
+function groupSeparatorY(g){ return groupMemberListBottom(g); }
+function groupPortZoneTop(g){ return groupSeparatorY(g) + GROUP_PORT_ZONE_PAD; }
+function groupPortRowY(g, row){ return groupPortZoneTop(g) + row*GROUP_PORT_ROW_H + GROUP_PORT_ROW_H/2; }
+function groupBlockHeight(g){
+  const rows = g ? groupPortRowsFor(g.id).length : 0;
+  return groupPortZoneTop(g) + Math.max(rows, 1)*GROUP_PORT_ROW_H + GROUP_FOOT_PAD;
+}
 const UNGROUPED_ID = 'UNGROUPED';
 function isTopLevel(){ return S.openGroup == null; }
 const $ = id => document.getElementById(id);
@@ -83,12 +156,11 @@ function buildGraph(input, contract, rawGroups){
 
   const edgeMap = new Map();
   for (const net of (contract.global_nets||[])){
-    // GND is never drawn: every block shares a return path to some ground, so
-    // routing it block-to-block adds a wire that carries no design information
-    // and only clutters the diagram. Skipping it here (instead of after the
-    // fact) means an edge that ONLY existed because of a shared ground net is
-    // never created at all.
-    if (/^GROUND$/i.test(net.type||'')) continue;
+    // GND is never DRAWN (see visibleNets / diagramEdges): every block shares a
+    // return path, so routing it block-to-block carries no design information
+    // and only clutters the sheet. It is deliberately still IMPORTED and kept in
+    // the model, because global_contract_override feeds the downstream pipeline
+    // and a contract with no ground connectivity would be broken.
     const src = resolveRef(net.source);
     for (const cons of (net.consumers||[])){
       const dst = resolveRef(cons);
@@ -153,7 +225,7 @@ function nodeGroupIndex(){
 function computeGroupEdges(){
   const idx = nodeGroupIndex();
   const map = new Map();
-  for (const e of S.edges){
+  for (const e of diagramEdges(S.edges)){
     const gs = idx.get(e.source), gt = idx.get(e.target);
     if (!gs || !gt || gs===gt) continue;
     const key = gs+'→'+gt;
@@ -196,7 +268,7 @@ function groupPosOf(id){
 function groupBlockRect(id){
   const p = groupPosOf(id);
   const g = groupsWithUngrouped().find(x=>x.id===id);
-  return { id, x:p.x, y:p.y, w:GROUP_W, h:groupBlockHeight(g) };
+  return { id, x:p.x, y:p.y, w:groupBlockWidth(g), h:groupBlockHeight(g) };
 }
 
 // Group-level edges are recomputed from scratch every render (computeGroupEdges),
@@ -205,7 +277,116 @@ function groupBlockRect(id){
 function groupEdgeRouteKey(src,tgt){ return src+'→'+tgt; }
 function groupEdgeRouteOf(src,tgt){ return S.groupEdgeRoutes[groupEdgeRouteKey(src,tgt)]; }
 function setGroupEdgeRoute(src,tgt,route){
-  S.groupEdgeRoutes[groupEdgeRouteKey(src,tgt)] = { ...groupEdgeRouteOf(src,tgt), ...route };
+  // A route is a single waypoint {wx,wy}; replace rather than merge so a stale
+  // coordinate from an older drag can't survive.
+  S.groupEdgeRoutes[groupEdgeRouteKey(src,tgt)] = { ...route };
+}
+
+/* ------------------------------------------------------------------
+   GROUP PORT INDEX — one port row per connection touching a group.
+   Row order is deterministic and, deliberately, INDEPENDENT of which
+   edge of the block the port currently sits on: inputs first, then
+   outputs, each alphabetically by neighbouring group. So dragging a
+   port to the opposite side moves it straight across its own row
+   instead of reshuffling the block.
+   A port's side defaults to left for inputs / right for outputs and is
+   overridden by S.groupPortSides. Memoized because groupBlockHeight()
+   depends on it and gets called many times per render — invalidated
+   from render() and from the layout entry points.
+   ------------------------------------------------------------------ */
+function groupPortKey(gid, src, tgt){ return gid+'|'+groupEdgeRouteKey(src,tgt); }
+// A port's identity inside its own group. Unique because a group edge never has
+// the same group at both ends (self-links are dropped in computeGroupEdges).
+function portRowKey(r){ return groupEdgeRouteKey(r.src, r.tgt); }
+// Drop a port at a given row, pushing whatever was there (and below) down — or up
+// if the port came from lower down. Row count is unchanged, so the block keeps
+// its height and nothing else in the sheet moves.
+function moveGroupPortToRow(gid, key, newRow){
+  const keys = groupPortRowsFor(gid).map(portRowKey);
+  const from = keys.indexOf(key);
+  if (from < 0) return false;
+  const to = Math.max(0, Math.min(keys.length-1, newRow));
+  if (from === to) return false;
+  keys.splice(to, 0, keys.splice(from, 1)[0]);
+  S.groupPortOrder[gid] = keys;
+  invalidateGroupPorts();
+  return true;
+}
+function resetGroupPortLayout(gid){
+  delete S.groupPortOrder[gid];
+  Object.keys(S.groupPortSides).forEach(k=>{ if (k.startsWith(gid+'|')) delete S.groupPortSides[k]; });
+  invalidateGroupPorts();
+}
+function groupPortSideOf(gid, src, tgt, dir){
+  return S.groupPortSides[groupPortKey(gid,src,tgt)] || (dir==='in' ? 'left' : 'right');
+}
+function setGroupPortSide(gid, src, tgt, side){
+  S.groupPortSides[groupPortKey(gid,src,tgt)] = side;
+  invalidateGroupPorts();
+}
+let _groupPortIdx = null;
+function invalidateGroupPorts(){ _groupPortIdx = null; }
+function groupPortIndex(){
+  if (_groupPortIdx) return _groupPortIdx;
+  const titleOf = new Map(groupsWithUngrouped().map(g=>[g.id, g.title||g.id]));
+  const idx = new Map(groupsWithUngrouped().map(g=>[g.id, []]));
+  for (const e of computeGroupEdges()){
+    const hv = e.nets.some(isHvNetType);   // the connection's insulation domain
+    if (idx.has(e.source)) idx.get(e.source).push({ eid:e.id, src:e.source, tgt:e.target, dir:'out', other:e.target, nets:e.nets.length, hv });
+    if (idx.has(e.target)) idx.get(e.target).push({ eid:e.id, src:e.source, tgt:e.target, dir:'in',  other:e.source, nets:e.nets.length, hv });
+  }
+  for (const [gid, rows] of idx){
+    rows.sort((a,b)=>
+      (a.dir===b.dir ? 0 : (a.dir==='in' ? -1 : 1)) ||
+      String(titleOf.get(a.other)||a.other).localeCompare(String(titleOf.get(b.other)||b.other)) ||
+      a.eid.localeCompare(b.eid));
+    // A manual order (from dragging a badge up or down) takes precedence; ports
+    // it doesn't mention — new connections, or stale keys left by an edit — fall
+    // in after it, still in the natural order above. Stable either way.
+    const manual = S.groupPortOrder[gid];
+    if (manual && manual.length){
+      const rank = new Map(manual.map((k,i)=>[k,i]));
+      rows.forEach((r,i)=>{ r._nat = i; });
+      rows.sort((a,b)=>
+        (rank.has(portRowKey(a))?rank.get(portRowKey(a)):Infinity) -
+        (rank.has(portRowKey(b))?rank.get(portRowKey(b)):Infinity)
+        || a._nat - b._nat);
+      rows.forEach(r=>{ delete r._nat; });
+    }
+    // On a block that straddles the isolation barrier the halves are physical:
+    // the HV wash is the right half, so HV connections may only attach on the
+    // right and LV ones only on the left. The side is pinned, not merely
+    // defaulted, so a stored override can never place a port in the wrong domain.
+    const gside = groupSide(gid);
+    rows.forEach((r,i)=>{
+      r.row = i;
+      r.pinned = gside==='barrier';
+      r.side = r.pinned ? (r.hv ? 'right' : 'left') : groupPortSideOf(gid, r.src, r.tgt, r.dir);
+    });
+  }
+  _groupPortIdx = idx;
+  return idx;
+}
+function groupPortRowsFor(gid){ return groupPortIndex().get(gid) || []; }
+function groupPortOf(gid, src, tgt, dir){
+  return groupPortRowsFor(gid).find(r=>r.src===src && r.tgt===tgt && r.dir===dir);
+}
+// Absolute attachment point of one end of a group edge, plus the direction the
+// wire leaves/arrives in (+1 rightward, -1 leftward).
+function groupPortAnchor(gid, src, tgt, dir){
+  const rect = groupBlockRect(gid);
+  const g = groupsWithUngrouped().find(x=>x.id===gid);
+  const r = groupPortOf(gid, src, tgt, dir);
+  if (!r) return { x: rect.x + (dir==='in' ? 0 : rect.w), y: rect.y + rect.h/2, side:(dir==='in'?'left':'right'), sign:1 };
+  const left = r.side==='left';
+  return {
+    x: rect.x + (left ? 0 : rect.w),
+    y: rect.y + groupPortRowY(g, r.row),
+    side: r.side,
+    // Source: +1 when leaving from the right edge. Target: +1 when arriving into
+    // the left edge (still travelling rightward).
+    sign: dir==='out' ? (left ? -1 : 1) : (left ? 1 : -1)
+  };
 }
 
 /* ============================================================
@@ -216,7 +397,20 @@ function setGroupEdgeRoute(src,tgt,route){
    Every step uses a fixed iteration count and alphabetical tie-breaks, so the
    whole pipeline is deterministic: same graph in, same layout out, always.
    ============================================================ */
-function isPowerNet(n){ return /POWER|HIGH_CURRENT/i.test(n.type||''); }
+function isGroundNet(n){ return /^GROUND$/i.test(n.type||''); }
+// Nets that are kept in the model but never drawn on the sheet.
+function visibleNets(nets){ return (nets||[]).filter(n=>!isGroundNet(n)); }
+// The edges the DIAGRAM shows: ground-only connections vanish entirely, and the
+// rest expose just their drawable nets (so counts and colours ignore ground).
+function diagramEdges(edges){
+  const out=[];
+  for (const e of (edges||[])){
+    const nets = visibleNets(e.nets);
+    if (nets.length) out.push({ ...e, nets });
+  }
+  return out;
+}
+function isPowerNet(n){ return /POWER|GROUND|HIGH_CURRENT/i.test(n.type||''); }
 // An edge participates in layering unless EVERY one of its nets is power/ground/
 // high-current — those rails fan out to nearly every block and would otherwise
 // flatten the whole hierarchy into two columns. Power-only edges still draw
@@ -412,7 +606,11 @@ function assignYByAverage(sortedRanks, order, edges, heightFn, gap){
 
 // heightFn(id) lets each column stack boxes by their real height instead of a
 // fixed slot — needed because group blocks grow with their member count.
-function layeredLayout(ids, edges, colw, gap, heightFn){
+// widthFn=null keeps the legacy fixed column pitch (used by the in-group layout,
+// whose spacing must stay as it was). With a widthFn, columns are placed
+// cumulatively from each layer's widest block plus colGap, so variable-width
+// blocks never eat into the routing channels between columns.
+function layeredLayout(ids, edges, colGap, gap, heightFn, widthFn){
   const sortedIds = [...ids].sort();
   const idSet = new Set(sortedIds);
   const relevant = edges.filter(e=>idSet.has(e.source)&&idSet.has(e.target));
@@ -430,9 +628,18 @@ function layeredLayout(ids, edges, colw, gap, heightFn){
   const order = orderLayersByBarycenter(sortedRanks, cols, relevant);
   const yOf = assignYByAverage(sortedRanks, order, relevant, heightFn, gap);
 
+  const xOf = new Map();
+  let cursor = 40;
+  for (const r of sortedRanks){
+    xOf.set(r, cursor);
+    cursor += widthFn
+      ? Math.max(...cols.get(r).map(id=>widthFn(id))) + colGap
+      : colGap;
+  }
+
   const pos = new Map();
   for (const r of sortedRanks) for (const id of order.get(r))
-    pos.set(id, { x: 40 + r*colw, y: yOf.get(id) });
+    pos.set(id, { x: xOf.get(r), y: yOf.get(id) });
   return pos;
 }
 
@@ -445,7 +652,7 @@ function autoLayoutGroupMembers(groupId){
   const g = groupsWithUngrouped().find(x=>x.id===groupId);
   if (!g || !g.members.length) return;
   const memberSet = new Set(g.members);
-  const internalEdges = S.edges.filter(e=>memberSet.has(e.source) && memberSet.has(e.target));
+  const internalEdges = diagramEdges(S.edges).filter(e=>memberSet.has(e.source) && memberSet.has(e.target));
   const pos = layeredLayout(g.members, internalEdges, 265, 32, nodeHeight);
   for (const id of g.members){ const n=nodeById(id); if (n){ const p=pos.get(id); n.x=p.x; n.y=p.y; } }
 }
@@ -457,9 +664,13 @@ function autoLayoutAllGroupMembers(){
 // onlyMissing=true fills in positions only for groups that don't have one yet
 // (used when restoring a session, so manually-dragged group positions survive).
 function autoLayoutGroups(onlyMissing){
+  invalidateGroupPorts(); // heightFn below reads the port index
   const groups = visibleGroups();
-  const pos = layeredLayout(groups.map(g=>g.id), computeGroupEdges(), 340, 40,
-    id=>groupBlockHeight(groups.find(g=>g.id===id)));
+  // Generous channels: the gaps between columns and rows are where every wire has
+  // to fit, so they're sized for several parallel routing lanes (see LANE_PITCH).
+  const pos = layeredLayout(groups.map(g=>g.id), computeGroupEdges(), GROUP_COL_GAP, GROUP_ROW_GAP,
+    id=>groupBlockHeight(groups.find(g=>g.id===id)),
+    id=>groupBlockWidth(groups.find(g=>g.id===id)));
   for (const [id,p] of pos){
     if (onlyMissing && S.groupPos[id]) continue;
     S.groupPos[id] = p;
@@ -641,7 +852,12 @@ function clearVertical(preferred, ya, yb, obstacles){
   }
   return x;
 }
-function routeAroundObstacles(geo, obstacles){
+// dirIn=+1 → the wire enters the target travelling rightward (left edge), so the
+// entry jog must stay left of it; dirIn=-1 → mirrored (enters the right edge).
+function clampEntryX(entryX, x2, dirIn){
+  return (dirIn==null||dirIn>0) ? Math.min(entryX, x2-12) : Math.max(entryX, x2+12);
+}
+function routeAroundObstacles(geo, obstacles, dirIn){
   if (!obstacles.length) return geo;
   const { x1,y1,x2,y2 } = geo;
   let { bendX, bendY, entryX } = geo;
@@ -652,9 +868,413 @@ function routeAroundObstacles(geo, obstacles){
     if (nBendY===bendY && nBendX===bendX && nEntryX===entryX){ bendY=nBendY; bendX=nBendX; entryX=nEntryX; break; }
     bendX=nBendX; bendY=nBendY; entryX=nEntryX;
   }
-  entryX = Math.min(entryX, x2-12);
-  return { x1,y1,x2,y2,bendX,bendY,entryX };
+  entryX = clampEntryX(entryX, x2, dirIn);
+  return { x1,y1,x2,y2,bendX,bendY,entryX, dirIn };
 }
+
+// Same 5-segment elbow as elbowGeometry (so elbowPathD/routeHandleMarkup and the
+// drag handles all still apply), but each end can leave/enter from EITHER edge of
+// its block — which is what makes a port draggable to the other side. p1/p2 are
+// {x,y,sign} anchors from groupPortAnchor.
+function sidedGeometry(p1, p2, route){
+  const x1 = p1.x, y1 = p1.y, x2 = p2.x, y2 = p2.y;
+  const out1 = x1 + p1.sign*GROUP_PORT_STUB;   // just outside the source edge
+  const in1  = x2 - p2.sign*GROUP_PORT_STUB;   // approach point outside the target edge
+  let bendX = (route && route.x!=null) ? route.x : (out1+in1)/2;
+  if (route==null || route.x==null) bendX = p1.sign>0 ? Math.max(bendX, out1) : Math.min(bendX, out1);
+  const bendY = (route && route.y!=null) ? route.y : y2;
+  let entryX = (route && route.x2!=null) ? route.x2
+             : (Math.abs(bendY-y2)<0.5 ? bendX : in1);
+  entryX = clampEntryX(entryX, x2, p2.sign);
+  return { x1, y1, x2, y2, bendX, bendY, entryX, dirIn:p2.sign };
+}
+/* ------------------------------------------------------------------
+   LATTICE ROUTER (top-level group edges only)
+   The nudge heuristic above can only push a segment to the nearest free
+   side, which in a crowded sheet still leaves wires lying across blocks.
+   This instead searches the orthogonal lattice formed by the inflated
+   obstacle boundaries with Dijkstra + a turn penalty, so a route that
+   clears EVERY block is found when one exists — and one always does,
+   since the corridor above/below all blocks is part of the lattice.
+   Deterministic: fixed lattice order, ties broken on the state key.
+   ------------------------------------------------------------------ */
+const TURN_COST = 55;
+class MinHeap{
+  constructor(){ this.a=[]; }
+  get size(){ return this.a.length; }
+  push(v){ const a=this.a; a.push(v); let i=a.length-1;
+    while(i>0){ const p=(i-1)>>1; if (this.lt(a[i],a[p])){ [a[i],a[p]]=[a[p],a[i]]; i=p; } else break; } }
+  pop(){ const a=this.a, top=a[0], last=a.pop();
+    if (a.length){ a[0]=last; let i=0;
+      for(;;){ const l=2*i+1, r=l+1; let m=i;
+        if (l<a.length && this.lt(a[l],a[m])) m=l;
+        if (r<a.length && this.lt(a[r],a[m])) m=r;
+        if (m===i) break; [a[i],a[m]]=[a[m],a[i]]; i=m; } }
+    return top; }
+  lt(x,y){ return x.g<y.g || (x.g===y.g && x.k<y.k); } // integer tie-break keeps it deterministic
+}
+/* ------------------------------------------------------------------
+   ROUTING LANES
+   Wires are routed on the lattice of obstacle boundaries, so without
+   help every wire squeezing through the same gap picks the SAME line
+   and they end up drawn on top of each other. A lane shifts the whole
+   candidate set further away from the blocks (left/top boundaries move
+   left/up, right/bottom move right/down) by lane*LANE_PITCH, which
+   keeps every line obstacle-free by construction and guarantees that
+   two wires on different lanes never share a corridor.
+   Lanes are assigned once, when the sheet is laid out (import /
+   Auto-layout), and then FROZEN per connection — so later edits still
+   only disturb the wires actually constrained by them.
+   ------------------------------------------------------------------ */
+const LANE_PITCH = 16, LANE_MAX = 6;
+function laneOf(src, tgt){ return S.groupEdgeLanes[groupEdgeRouteKey(src,tgt)] || 0; }
+function latticeRoute(start, goal, obstacles, lane){
+  const pads = obstacles.map(padForRoute);
+  const d = (lane||0)*LANE_PITCH;
+  const xs = [...new Set([start.x, goal.x, ...pads.flatMap(p=>[p.x1-d, p.x2+d])])].sort((a,b)=>a-b);
+  const ys = [...new Set([start.y, goal.y, ...pads.flatMap(p=>[p.y1-d, p.y2+d])])].sort((a,b)=>a-b);
+  const si=xs.indexOf(start.x), sj=ys.indexOf(start.y), gi=xs.indexOf(goal.x), gj=ys.indexOf(goal.y);
+  if (si<0||sj<0||gi<0||gj<0) return null;
+  // Flat arrays + inlined tests: this runs on the order of 10^4 times per edge,
+  // so the closure-per-obstacle version of the same check dominated the render.
+  const n = pads.length;
+  const px1=new Float64Array(n), py1=new Float64Array(n), px2=new Float64Array(n), py2=new Float64Array(n);
+  for (let k=0;k<n;k++){ const p=pads[k]; px1[k]=p.x1; py1[k]=p.y1; px2[k]=p.x2; py2[k]=p.y2; }
+  const hFree = (y,xa,xb)=>{
+    const lo = xa<xb?xa:xb, hi = xa<xb?xb:xa;
+    for (let k=0;k<n;k++) if (y>py1[k] && y<py2[k] && hi>px1[k] && lo<px2[k]) return false;
+    return true;
+  };
+  const vFree = (x,ya,yb)=>{
+    const lo = ya<yb?ya:yb, hi = ya<yb?yb:ya;
+    for (let k=0;k<n;k++) if (x>px1[k] && x<px2[k] && hi>py1[k] && lo<py2[k]) return false;
+    return true;
+  };
+  // State = (cell, incoming direction), encoded as an integer so dist/prev can be
+  // typed arrays: string keys in a Map dominated the cost at ~10^4 states/edge.
+  const XN=xs.length, YN=ys.length, CN=XN*YN, SN=4*CN;
+  const DX=[1,-1,0,0], DY=[0,0,1,-1];
+  const dist=new Float64Array(SN).fill(Infinity), prev=new Int32Array(SN).fill(-1);
+  const heap=new MinHeap();
+  const sCell=sj*XN+si, gCell=gj*XN+gi;
+  for (let d=0;d<4;d++){ const k=d*CN+sCell; dist[k]=0; heap.push({ g:0, k }); }
+  let goalK=-1;
+  while (heap.size){
+    const cur=heap.pop(), k=cur.k;
+    if (cur.g>dist[k]) continue;
+    const cell=k%CN, d0=(k-cell)/CN, i=cell%XN, j=(cell-i)/XN;
+    if (cell===gCell){ goalK=k; break; }
+    for (let d=0;d<4;d++){
+      const ni=i+DX[d], nj=j+DY[d];
+      if (ni<0||nj<0||ni>=XN||nj>=YN) continue;
+      const x1=xs[i], y1=ys[j], x2=xs[ni], y2=ys[nj];
+      if (DY[d]===0 ? !hFree(y1,x1,x2) : !vFree(x1,y1,y2)) continue;
+      const step = DY[d]===0 ? Math.abs(x2-x1) : Math.abs(y2-y1);
+      const g = cur.g + step + (d!==d0?TURN_COST:0);
+      const nk = d*CN + nj*XN + ni;
+      if (g < dist[nk]){ dist[nk]=g; prev[nk]=k; heap.push({ g, k:nk }); }
+    }
+  }
+  if (goalK<0) return null;
+  const pts=[];
+  for (let k=goalK; k>=0; k=prev[k]){
+    const cell=k%CN, i=cell%XN, j=(cell-i)/XN;
+    const x=xs[i], y=ys[j];
+    if (!pts.length || pts[0][0]!==x || pts[0][1]!==y) pts.unshift([x,y]);
+  }
+  return pts;
+}
+function simplifyPts(pts){
+  const out=[pts[0]];
+  for (let i=1;i<pts.length-1;i++){
+    const a=out[out.length-1], b=pts[i], c=pts[i+1];
+    if ((a[0]===b[0]&&b[0]===c[0])||(a[1]===b[1]&&b[1]===c[1])) continue;
+    out.push(b);
+  }
+  if (pts.length>1) out.push(pts[pts.length-1]);
+  return out;
+}
+function ptsPathD(pts){ return 'M '+pts.map(p=>p[0]+' '+p[1]).join(' L '); }
+function ptsBadgePos(pts){
+  let best=-1,bx=0,by=0;
+  for (let i=0;i<pts.length-1;i++){
+    const len=Math.abs(pts[i+1][0]-pts[i][0])+Math.abs(pts[i+1][1]-pts[i][1]);
+    if (len>best){ best=len; bx=(pts[i][0]+pts[i+1][0])/2; by=(pts[i][1]+pts[i+1][1])/2; }
+  }
+  return { x:bx, y:by };
+}
+// Full point list for a group edge: a manual route keeps the draggable 5-segment
+// elbow (the user's explicit choice wins); otherwise the lattice route, which
+// treats EVERY block as an obstacle — including the edge's own endpoints, so a
+// port dragged to the far side is routed around its own block automatically.
+function ptsClearOf(pts, obstacles){
+  for (let i=0;i<pts.length-1;i++){
+    const [x1,y1]=pts[i], [x2,y2]=pts[i+1];
+    if (y1===y2){ if (obstacles.some(r=>hSegHitsRect(y1,x1,x2,r))) return false; }
+    else if (x1===x2){ if (obstacles.some(r=>vSegHitsRect(x1,y1,y2,r))) return false; }
+  }
+  return true;
+}
+// A wire lies "behind" a block only when it overlaps the block's OPEN INTERIOR.
+// (The padded test used to steer the router would also flag the legitimate stub
+// leaving a port, which starts exactly on its own block's edge.)
+function ptsInsideAnyBlock(pts, obstacles){
+  for (let i=0;i<pts.length-1;i++){
+    const [x1,y1]=pts[i], [x2,y2]=pts[i+1];
+    const lo=Math.min(x1,x2), hi=Math.max(x1,x2), loY=Math.min(y1,y2), hiY=Math.max(y1,y2);
+    for (const r of obstacles){
+      if (Math.abs(y1-y2)<0.5 && y1>r.y && y1<r.y+r.h && hi>r.x && lo<r.x+r.w) return true;
+      if (Math.abs(x1-x2)<0.5 && x1>r.x && x1<r.x+r.w && hiY>r.y && loY<r.y+r.h) return true;
+    }
+  }
+  return false;
+}
+function groupEdgePts(pa, pb, route, obstacles, lane){
+  const stub = GROUP_PORT_STUB + (lane||0)*LANE_PITCH;
+  const start = { x: pa.x + pa.sign*stub, y: pa.y };
+  const goal  = { x: pb.x - pb.sign*stub, y: pb.y };
+  const geo = sidedGeometry(pa, pb, null);
+  const ptsOf = g => simplifyPts([[g.x1,g.y1],[g.bendX,g.y1],[g.bendX,g.bendY],
+    [g.entryX,g.bendY],[g.entryX,g.y2],[g.x2,g.y2]]);
+  const autoRoute = () => {
+    const plain = ptsOf(geo);
+    if (ptsClearOf(plain, obstacles)) return { pts: plain, geo, manual:false };
+    const mid = latticeRoute(start, goal, obstacles, lane);
+    if (!mid) return { pts: plain, geo, manual:false };
+    return { pts: simplifyPts([[pa.x,pa.y], ...mid, [pb.x,pb.y]]), geo, manual:false };
+  };
+  // A hand-routed wire is defined by the WAYPOINT the user dragged it to, not by a
+  // rigid elbow: the router then finds a legal path in and out of that point. That
+  // keeps every drag responsive (a point has far more legal positions than a
+  // full-width segment) while still never crossing a block.
+  if (route && route.wx!=null && route.wy!=null){
+    const wp = { x: route.wx, y: route.wy };
+    const inPart  = latticeRoute(start, wp, obstacles, lane);
+    const outPart = latticeRoute(wp, goal, obstacles, lane);
+    if (inPart && outPart)
+      return { pts: simplifyPts([[pa.x,pa.y], ...inPart, ...outPart.slice(1), [pb.x,pb.y]]), geo, manual:true };
+    return autoRoute();   // waypoint unreachable (fully enclosed) — fall back
+  }
+  return autoRoute();
+}
+// Drag handles over an auto-routed polyline: first vertical → route.x, last
+// vertical → route.x2, horizontal runs → route.y. Grabbing any of them converts
+// the wire to a manual elbow seeded by that drag.
+// Handles carry the segment's own midpoint, so a drag can keep the coordinate it
+// isn't changing (a vertical segment moves in X and keeps its Y, and vice versa).
+function polyHandleMarkup(pts, eid, extraAttrs, w){
+  const segs=[];
+  for (let i=0;i<pts.length-1;i++)
+    segs.push({ x1:pts[i][0], y1:pts[i][1], x2:pts[i+1][0], y2:pts[i+1][1], vert:pts[i][0]===pts[i+1][0] });
+  let html='';
+  segs.forEach((s,i)=>{
+    if (s.x1===s.x2 && s.y1===s.y2) return;
+    if (i===0 && !s.vert) return;                 // stub pinned to the port
+    if (i===segs.length-1 && !s.vert) return;     // final approach pinned to the port
+    const mx=(s.x1+s.x2)/2, my=(s.y1+s.y2)/2;
+    html += `
+      <path class="${s.vert?'seg-v':'seg-h'}" data-eid="${esc(eid)}" data-axis="${s.vert?'v':'h'}" data-mx="${mx}" data-my="${my}"${extraAttrs} d="M ${s.x1} ${s.y1} L ${s.x2} ${s.y2}" fill="none" stroke="transparent" stroke-width="${w}" style="cursor:${s.vert?'ew-resize':'ns-resize'}"/>`;
+  });
+  return html;
+}
+
+// Push a single point out of any block it landed in, continuing in the direction
+// of travel (so dragging a wire into a block makes it hop to the far side). A
+// POINT has far more legal positions than a full-width segment, which is why the
+// waypoint model below keeps dragging responsive everywhere on the sheet.
+function pointOutOfBlocks(x, y, obstacles, axis, dir){
+  let v = axis==='v' ? x : y;
+  for (let i=0;i<12;i++){
+    const px = axis==='v' ? v : x, py = axis==='v' ? y : v;
+    const hit = obstacles.find(r=>{ const p=padForRoute(r); return px>p.x1 && px<p.x2 && py>p.y1 && py<p.y2; });
+    if (!hit) return v;
+    const p = padForRoute(hit);
+    const lo = axis==='v' ? p.x1 : p.y1, hi = axis==='v' ? p.x2 : p.y2;
+    v = dir<0 ? lo : dir>0 ? hi : (Math.abs(lo-v)<=Math.abs(hi-v) ? lo : hi);
+  }
+  return v;
+}
+
+/* ------------------------------------------------------------------
+   INCREMENTAL ROUTE CACHE
+   Moving one block must not disturb wires it doesn't constrain. A route
+   depends on its two port anchors, its manual override, and — crucially —
+   only on the obstacles that lie within the corridor the wire actually
+   occupies. So the cache signature lists exactly those, which means:
+     · a block moving far away  → not in the signature → wire untouched
+     · a block moving INTO the corridor → signature changes → re-routed
+     · a block leaving the corridor → signature changes → re-routed (the
+       detour it forced may no longer be needed)
+   Keyed by src→tgt (stable across renders, unlike the derived edge id).
+   The router is deterministic, so a cache hit and a recomputation always
+   agree — the cache only decides whether we pay for the search.
+   ------------------------------------------------------------------ */
+const _routeCache = new Map();
+function routeBBox(pts){
+  let x1=Infinity,y1=Infinity,x2=-Infinity,y2=-Infinity;
+  for (const [x,y] of pts){ if(x<x1)x1=x; if(x>x2)x2=x; if(y<y1)y1=y; if(y>y2)y2=y; }
+  const m = ROUTE_CLEARANCE+1;
+  return { x1:x1-m, y1:y1-m, x2:x2+m, y2:y2+m };
+}
+function corridorObstacleSig(bbox, obstacles){
+  const parts=[];
+  for (const r of obstacles){
+    const p = padForRoute(r);
+    if (p.x2>bbox.x1 && p.x1<bbox.x2 && p.y2>bbox.y1 && p.y1<bbox.y2)
+      parts.push(r.id+':'+r.x+','+r.y+','+r.w+','+r.h);
+  }
+  return parts.sort().join('|');
+}
+function groupEdgePtsCached(key, pa, pb, route, obstacles, lane){
+  const anchorSig = `${pa.x},${pa.y},${pa.sign};${pb.x},${pb.y},${pb.sign};${route?JSON.stringify(route):''};L${lane||0}`;
+  const hit = _routeCache.get(key);
+  if (hit && hit.anchorSig===anchorSig && hit.obsSig===corridorObstacleSig(hit.bbox, obstacles)) return hit;
+  const res = groupEdgePts(pa, pb, route, obstacles, lane);
+  const bbox = routeBBox(res.pts);
+  const entry = { ...res, anchorSig, bbox, obsSig: corridorObstacleSig(bbox, obstacles) };
+  _routeCache.set(key, entry);
+  return entry;
+}
+
+// Directional collision snap, used while a wire segment is being dragged: if the
+// wanted coordinate would leave the segment lying across a block, it is pushed
+// PAST that block in the direction of travel — so pulling a wire into a block
+// makes it hop to the far side instead of resting behind it. dir=0 (no motion
+// yet) falls back to the nearer edge. Loop-capped like the nudge helpers, since
+// a crowded corridor can stack several blocks.
+function snapPastVertical(want, ya, yb, obstacles, dir){
+  let x = want;
+  for (let i=0;i<12;i++){
+    const hit = obstacles.find(r=>vSegHitsRect(x, ya, yb, r));
+    if (!hit) return x;
+    const p = padForRoute(hit);
+    x = dir<0 ? p.x1 : dir>0 ? p.x2 : (Math.abs(p.x1-want)<=Math.abs(p.x2-want) ? p.x1 : p.x2);
+  }
+  return x;
+}
+function snapPastHorizontal(want, xa, xb, obstacles, dir){
+  let y = want;
+  for (let i=0;i<12;i++){
+    const hit = obstacles.find(r=>hSegHitsRect(y, xa, xb, r));
+    if (!hit) return y;
+    const p = padForRoute(hit);
+    y = dir<0 ? p.y1 : dir>0 ? p.y2 : (Math.abs(p.y1-want)<=Math.abs(p.y2-want) ? p.y1 : p.y2);
+  }
+  return y;
+}
+
+// Straight runs of a drawn wire, as {vertical?, position, from, to} — the unit
+// two wires can end up sharing.
+function routeSegments(pts){
+  const out=[];
+  for (let i=0;i<pts.length-1;i++){
+    const [x1,y1]=pts[i], [x2,y2]=pts[i+1];
+    if (Math.abs(x1-x2)<0.5 && Math.abs(y1-y2)>=0.5) out.push({ v:true,  at:x1, a:Math.min(y1,y2), b:Math.max(y1,y2) });
+    else if (Math.abs(y1-y2)<0.5 && Math.abs(x1-x2)>=0.5) out.push({ v:false, at:y1, a:Math.min(x1,x2), b:Math.max(x1,x2) });
+  }
+  return out;
+}
+const OVERLAP_MIN = 8; // shorter shared stretches than this read as a crossing, not a bundle
+function overlapLength(pts, placed){
+  let total=0;
+  for (const s of routeSegments(pts)) for (const p of placed){
+    if (s.v!==p.v || Math.abs(s.at-p.at)>0.5) continue;
+    const ov = Math.min(s.b,p.b) - Math.max(s.a,p.a);
+    if (ov > OVERLAP_MIN) total += ov;
+  }
+  return total;
+}
+// Assign each connection the lowest lane that doesn't lie on top of the wires
+// already placed. Deterministic: connections are processed in key order and the
+// first lane with zero overlap wins (otherwise the least-overlapping one).
+// Wires may still CROSS each other — that's fine and unavoidable; what this
+// removes is wires running along the same line so you can't tell them apart.
+function assignRouteLanes(){
+  S.groupEdgeLanes = {};
+  invalidateGroupPorts();
+  const obstacles = visibleGroups().map(g=>groupBlockRect(g.id));
+  const edges = computeGroupEdges().slice()
+    .sort((a,b)=>groupEdgeRouteKey(a.source,a.target).localeCompare(groupEdgeRouteKey(b.source,b.target)));
+  const placed = [];
+  for (const e of edges){
+    const key = groupEdgeRouteKey(e.source,e.target);
+    const manual = groupEdgeRouteOf(e.source,e.target);
+    const pa = groupPortAnchor(e.source, e.source, e.target, 'out');
+    const pb = groupPortAnchor(e.target, e.source, e.target, 'in');
+    let bestLane = 0, bestPts = null, bestOv = Infinity;
+    const lanes = manual ? 1 : LANE_MAX+1;   // hand-routed wires don't use the lattice
+    for (let lane=0; lane<lanes; lane++){
+      const r = groupEdgePts(pa, pb, manual, obstacles, lane);
+      const ov = overlapLength(r.pts, placed);
+      if (ov < bestOv){ bestOv = ov; bestLane = lane; bestPts = r.pts; }
+      if (ov === 0) break;
+    }
+    S.groupEdgeLanes[key] = bestLane;
+    if (bestPts) placed.push(...routeSegments(bestPts));
+  }
+  _routeCache.clear();
+}
+
+/* ============================================================
+   UNDO / REDO
+   The session serialiser already captures everything a user edit can
+   touch, so history is a stack of those snapshots. commit() is called
+   BEFORE a change, so undo returns to the state just before it; a drag
+   commits once at pointerdown rather than on every pointermove, so one
+   gesture is one undo step. 60 steps is far past what anyone reaches
+   for in a session and costs a few MB at most for a sheet this size.
+   ============================================================ */
+const HISTORY_MAX = 60;
+const HIST = { past: [], future: [] };
+function snapshotState(){ return JSON.stringify(buildSessionJSON()); }
+function commit(snapshot){
+  HIST.past.push(snapshot != null ? snapshot : snapshotState());
+  if (HIST.past.length > HISTORY_MAX) HIST.past.shift();
+  HIST.future.length = 0;          // a new edit discards the redo branch
+  updateHistoryButtons();
+}
+// Drags snapshot at pointerdown but only enter the history once the gesture
+// actually changes something — a plain click (select) must not eat an undo step.
+function commitGesture(d){
+  if (!d || d.committed) return;
+  d.committed = true;
+  commit(d.snap);
+}
+function restoreState(json){
+  const s = JSON.parse(json);
+  S.meta = s.meta || S.meta;
+  S.nodes = s.nodes || [];
+  S.edges = s.edges || [];
+  S.groups = s.groups || [];
+  S.groupPos = s.groupPos || {};
+  S.groupEdgeRoutes = s.groupEdgeRoutes || {};
+  S.groupPortSides = s.groupPortSides || {};
+  S.groupPortOrder = s.groupPortOrder || {};
+  S.groupEdgeLanes = s.groupEdgeLanes || {};
+  S.openGroup = s.openGroup ?? null;
+  S.edgeSeq = Math.max(0, ...S.edges.map(e=>+String(e.id).replace(/^e/,'')||0)) + 1;
+  S.sel = null; S.link = null;
+  invalidateGroupPorts(); _routeCache.clear();
+  render();
+}
+function undo(){
+  if (!HIST.past.length) return;
+  HIST.future.push(snapshotState());
+  restoreState(HIST.past.pop());
+  updateHistoryButtons();
+}
+function redo(){
+  if (!HIST.future.length) return;
+  HIST.past.push(snapshotState());
+  restoreState(HIST.future.pop());
+  updateHistoryButtons();
+}
+function updateHistoryButtons(){
+  const u = $('btnUndo'), r = $('btnRedo');
+  if (u){ u.disabled = !HIST.past.length; u.title = `Undo (Ctrl+Z)${HIST.past.length?' — '+HIST.past.length+' step'+(HIST.past.length>1?'s':''):''}`; }
+  if (r){ r.disabled = !HIST.future.length; r.title = `Redo (Ctrl+Y)${HIST.future.length?' — '+HIST.future.length+' step'+(HIST.future.length>1?'s':''):''}`; }
+}
+
 function memberObstacleRects(members){ return members.map(n=>({ id:n.id, x:n.x, y:n.y, w:n.w, h:n.h })); }
 function obstaclesExcluding(rects, srcId, tgtId){ return rects.filter(r=>r.id!==srcId && r.id!==tgtId); }
 
@@ -699,6 +1319,9 @@ function computeEdgePorts(rectOf, ids, edges, reserveLinkSlot){
 let lastPorts = null; // ports of the most recently rendered view (used by renderLink)
 
 function render(){
+  // Block heights depend on the port index, so drop the memo before drawing:
+  // render() runs after every state change, which keeps the cache honest.
+  invalidateGroupPorts();
   viewport.setAttribute('transform', `translate(${S.view.tx},${S.view.ty}) scale(${S.view.k})`);
 
   if (isTopLevel()) renderTopLevel(); else renderDrillDown();
@@ -707,6 +1330,7 @@ function render(){
   renderBreadcrumb();
   renderInspector();
   renderStatus();
+  updateHistoryButtons();
   $('projTitle').textContent = S.meta.title || 'Untitled system';
 }
 
@@ -745,7 +1369,7 @@ function renderDrillDown(){
   const g = groupsWithUngrouped().find(x=>x.id===S.openGroup);
   const memberSet = new Set(g ? g.members : []);
   const members = S.nodes.filter(n=>memberSet.has(n.id));
-  const edges = S.edges.filter(e=>memberSet.has(e.source) && memberSet.has(e.target));
+  const edges = diagramEdges(S.edges).filter(e=>memberSet.has(e.source) && memberSet.has(e.target));
   const bounds = members.length ? memberBounds(members) : { minX:0,maxX:0,minY:0,maxY:0 };
   const { incoming, outgoing } = openGroupPortals();
   // One dedicated slot per connection on each block edge: output dot per target
@@ -852,31 +1476,35 @@ function portalMarkupFor(item, dir, i, count, bounds){
 function renderTopLevel(){
   const groups = visibleGroups();
   const gEdges = computeGroupEdges();
-  // Same per-connection port discipline as the drill-down: one output dot per
-  // consumer group on the right edge, one perpendicular input arrow per source
-  // group on the left edge. No link slot — group edges are derived, not drawn.
-  const ports = computeEdgePorts(id=>groupBlockRect(id), groups.map(g=>g.id), gEdges, false);
+  // Ports live in each block's port zone (below the member list), one row per
+  // connection, on whichever edge the row is currently assigned to.
   lastPorts = null;
   const obstacleRects = groups.map(g=>groupBlockRect(g.id));
+  const catOf = new Map(gEdges.map(e=>[e.id, edgeCategory(e)]));
+  // Forget routes for connections that no longer exist (regrouping, deletions).
+  const live = new Set(gEdges.map(e=>groupEdgeRouteKey(e.source,e.target)));
+  for (const k of _routeCache.keys()) if (!live.has(k)) _routeCache.delete(k);
+  const titleOf = new Map(groupsWithUngrouped().map(g=>[g.id, g.title||g.id]));
 
   edgesG.innerHTML = gEdges.map(e=>{
     const cat = edgeCategory(e), style = NET_CATEGORY_STYLE[cat];
     const selected = S.sel && S.sel.type==='groupEdge' && S.sel.id===e.id;
-    const a = groupBlockRect(e.source), b = groupBlockRect(e.target);
-    const geo = routeAroundObstacles(
-      elbowGeometry(a, b, groupEdgeRouteOf(e.source,e.target), ports.yOut.get(e.id), ports.yIn.get(e.id)),
-      obstaclesExcluding(obstacleRects, e.source, e.target));
-    const mid = elbowBadgePos(geo);
+    const pa = groupPortAnchor(e.source, e.source, e.target, 'out');
+    const pb = groupPortAnchor(e.target, e.source, e.target, 'in');
+    const route = groupEdgeRouteOf(e.source,e.target);
+    const { pts, geo, manual } = groupEdgePtsCached(groupEdgeRouteKey(e.source,e.target), pa, pb, route, obstacleRects, laneOf(e.source,e.target));
+    const mid = ptsBadgePos(pts);
     const w = selected ? GROUP_EDGE_STROKE_W+1.6 : GROUP_EDGE_STROKE_W;
     const segAttrs = ` data-src="${esc(e.source)}" data-tgt="${esc(e.target)}"`;
+    const d = ptsPathD(pts);
     return `<g class="edge" data-eid="${esc(e.id)}">
-      <path d="${elbowPathD(geo)}" fill="none" stroke="transparent" stroke-width="16" style="cursor:pointer"/>
-      <path d="${elbowPathD(geo)}" fill="none" stroke="${style.color}" stroke-width="${w}"
+      <path d="${d}" fill="none" stroke="transparent" stroke-width="16" style="cursor:pointer"/>
+      <path d="${d}" fill="none" stroke="${style.color}" stroke-width="${w}"
         stroke-dasharray="${selected?'none':(style.dash||'none')}"
         ${selected?'filter="drop-shadow(0 0 3px var(--probe))"':''}
         marker-end="url(#${style.marker})" style="pointer-events:none"/>
-      <circle cx="${geo.x1}" cy="${geo.y1}" r="4.5" fill="${style.color}" style="pointer-events:none"/>
-      ${routeHandleMarkup(geo, e.id, segAttrs, 14)}
+      <circle cx="${pa.x}" cy="${pa.y}" r="4.5" fill="${style.color}" style="pointer-events:none"/>
+      ${polyHandleMarkup(pts, e.id, segAttrs, 14)}
       <g style="pointer-events:none">
         <rect x="${mid.x-15}" y="${mid.y-10}" width="30" height="18" rx="9"
           fill="${selected?'var(--probe)':'var(--paper)'}" stroke="${style.color}" stroke-width="1.4"/>
@@ -888,7 +1516,7 @@ function renderTopLevel(){
 
   nodesG.innerHTML = groups.map(g=>{
     const pos = groupPosOf(g.id);
-    const h = groupBlockHeight(g);
+    const h = groupBlockHeight(g), W = groupBlockWidth(g);
     const selected = S.sel && S.sel.type==='group' && S.sel.id===g.id;
     const eyebrow = g.id===UNGROUPED_ID ? 'UNASSIGNED' : 'FUNCTIONAL GROUP';
     const memberLines = g.members.map((id,i)=>{
@@ -896,20 +1524,43 @@ function renderTopLevel(){
       const label = n ? n.label : id;
       const font = n && n.kind==='ic' ? 'var(--mono)' : 'var(--sans)';
       const style = n && n.kind==='ic' ? '' : ' font-style="italic"';
-      return `<text x="14" y="${GROUP_HEAD_H+16+i*GROUP_MEMBER_ROW_H}" font-family="${font}" font-size="10"${style} fill="var(--ink-soft)">${esc(label.slice(0,32))}</text>`;
+      return `<text x="${GROUP_PAD_X}" y="${GROUP_HEAD_H+16+i*GROUP_MEMBER_ROW_H}" font-family="${font}" font-size="10"${style} fill="var(--ink-soft)">${esc(label)}</text>`;
     }).join('');
     const side = groupSide(g.id);
+    const sepY = groupSeparatorY(g);
+    // One row per connection: a lead-in tick from the block edge, the draggable
+    // net-count badge (same number as the one on the wire's midpoint) and the
+    // direction + neighbouring group in writing.
+    const portRows = groupPortRowsFor(g.id).map(r=>{
+      const color = NET_CATEGORY_STYLE[catOf.get(r.eid) || 'other'].color;
+      const y = groupPortRowY(g, r.row);
+      const left = r.side==='left', bw = 26, bh = 16;
+      const bx = left ? GROUP_PAD_X : W-GROUP_PAD_X-bw;
+      const lx = left ? bx+bw+6 : bx-6;
+      const selEdge = S.sel && S.sel.type==='groupEdge' && S.sel.id===r.eid;
+      const label = portRowLabel(r, titleOf);
+      return `
+      <line x1="${left?0:W}" y1="${y}" x2="${left?bx:bx+bw}" y2="${y}" stroke="${color}" stroke-width="1.4" opacity=".5"/>
+      <text x="${lx}" y="${y+3.5}" text-anchor="${left?'start':'end'}" font-family="var(--mono)" font-size="9" fill="var(--ink-soft)">${esc(label)}</text>
+      <g class="portnum" data-gid="${esc(g.id)}" data-src="${esc(r.src)}" data-tgt="${esc(r.tgt)}" data-dir="${esc(r.dir)}" style="cursor:move">
+        <rect x="${bx}" y="${y-bh/2}" width="${bw}" height="${bh}" rx="8"
+          fill="${selEdge?'var(--probe)':'var(--paper)'}" stroke="${color}" stroke-width="1.4"/>
+        <text x="${bx+bw/2}" y="${y+4}" text-anchor="middle" font-family="var(--mono)" font-size="10" font-weight="600" fill="var(--ink)">${r.nets}</text>
+      </g>`;
+    }).join('');
     return `<g class="node" data-nid="${esc(g.id)}" transform="translate(${pos.x},${pos.y})" style="cursor:move">
-      <rect x="-4" y="6" width="${GROUP_W+8}" height="${h}" rx="6" fill="#00000018"/>
-      <rect width="${GROUP_W}" height="${h}" rx="6" fill="var(--vellum)"
+      <rect x="-4" y="6" width="${W+8}" height="${h}" rx="6" fill="#00000018"/>
+      <rect width="${W}" height="${h}" rx="6" fill="var(--vellum)"
         stroke="${selected?'var(--probe)':(side==='lv'?'var(--ink)':'var(--sig-hv)')}" stroke-width="${selected?3:2}"/>
-      ${hvOverlayMarkup(side, GROUP_W, h, 6, 'hvclip-'+safeId(g.id))}
-      <line x1="14" y1="30" x2="${GROUP_W-14}" y2="30" stroke="var(--ink)" stroke-width="1" opacity=".18"/>
-      <text x="14" y="20" font-family="var(--mono)" font-size="9.5" letter-spacing=".1em" fill="var(--ink-soft)">${eyebrow}</text>
-      <text x="14" y="54" font-family="var(--mono)" font-size="15" font-weight="600" fill="var(--ink)">${esc(g.title.slice(0,26))}</text>
-      <text x="14" y="${GROUP_HEAD_H}" font-family="var(--sans)" font-size="11" font-weight="600" fill="var(--ink-soft)">${g.members.length} block${g.members.length===1?'':'s'}</text>
-      ${hvSideTag(side, GROUP_W)}
+      ${hvOverlayMarkup(side, W, h, 6, 'hvclip-'+safeId(g.id))}
+      <line x1="${GROUP_PAD_X}" y1="30" x2="${W-GROUP_PAD_X}" y2="30" stroke="var(--ink)" stroke-width="1" opacity=".18"/>
+      <text x="${GROUP_PAD_X}" y="20" font-family="var(--mono)" font-size="9.5" letter-spacing=".1em" fill="var(--ink-soft)">${eyebrow}</text>
+      <text x="${GROUP_PAD_X}" y="54" font-family="var(--mono)" font-size="15" font-weight="600" fill="var(--ink)">${esc(g.title)}</text>
+      <text x="${GROUP_PAD_X}" y="${GROUP_HEAD_H}" font-family="var(--sans)" font-size="11" font-weight="600" fill="var(--ink-soft)">${g.members.length} block${g.members.length===1?'':'s'}</text>
+      ${hvSideTag(side, W)}
       ${memberLines}
+      <line x1="10" y1="${sepY}" x2="${W-10}" y2="${sepY}" stroke="var(--ink)" stroke-width="1.2" opacity=".4"/>
+      ${portRows}
     </g>`;
   }).join('');
 }
@@ -987,6 +1638,7 @@ function renderInspector(){
     const g = visibleGroups().find(x=>x.id===S.sel.id);
     if (!g){ S.sel=null; renderInspector(); return; }
     const isUngrouped = g.id===UNGROUPED_ID;
+    const customPorts = !!S.groupPortOrder[g.id] || Object.keys(S.groupPortSides).some(k=>k.startsWith(g.id+'|'));
     eye.textContent = isUngrouped ? 'Ungrouped blocks' : 'Functional group';
     title.textContent = g.title;
     const memberRows = g.members.map(id=>{
@@ -1005,10 +1657,13 @@ function renderInspector(){
       ${memberRows}
       <div class="btnrow">
         <button id="btnOpenGroup">Open group</button>
+        ${customPorts?'<button id="btnResetPorts">Reset port layout</button>':''}
         ${isUngrouped?'':'<button class="danger" id="btnDelGroup">Delete group</button>'}
       </div>
+      <p class="hint">${groupPortRowsFor(g.id).length} port${groupPortRowsFor(g.id).length===1?'':'s'} in this block's port zone. Drag a port's net-count badge sideways to switch which edge it attaches to, or up/down to reorder it.</p>
       ${isUngrouped?'':'<p style="margin-top:10px;color:var(--ink-soft);font-size:11.5px">Deleting a group moves its members to Ungrouped — blocks are never deleted.</p>'}`;
     $('btnOpenGroup').onclick=()=>openGroupView(g.id);
+    const rp=$('btnResetPorts'); if (rp) rp.onclick=()=>{ commit(); resetGroupPortLayout(g.id); render(); };
     if (!isUngrouped){
       $('gTitle').onchange=()=>{
         const grp=S.groups.find(x=>x.id===g.id);
@@ -1019,14 +1674,18 @@ function renderInspector(){
         if (grp){ grp.description=$('gDesc').value.trim(); render(); }
       };
       $('btnDelGroup').onclick=()=>{
+        commit();
         S.groups=S.groups.filter(x=>x.id!==g.id);
         delete S.groupPos[g.id];
         Object.keys(S.groupEdgeRoutes).forEach(k=>{ if (k.startsWith(g.id+'→')||k.endsWith('→'+g.id)) delete S.groupEdgeRoutes[k]; });
+        Object.keys(S.groupPortSides).forEach(k=>{ if (k.startsWith(g.id+'|')||k.includes('|'+g.id+'→')||k.endsWith('→'+g.id)) delete S.groupPortSides[k]; });
+        delete S.groupPortOrder[g.id];
+        Object.keys(S.groupEdgeLanes).forEach(k=>{ if (k.startsWith(g.id+'→')||k.endsWith('→'+g.id)) delete S.groupEdgeLanes[k]; });
         S.sel=null; render(); fitView();
       };
     }
     body.querySelectorAll('[data-move-member]').forEach(sel=>{
-      sel.onchange=()=>{ moveMemberToGroup(sel.dataset.moveMember, g.id, sel.value); render(); };
+      sel.onchange=()=>{ commit(); moveMemberToGroup(sel.dataset.moveMember, g.id, sel.value); render(); };
     });
     return;
   }
@@ -1035,6 +1694,7 @@ function renderInspector(){
     if (!e){ S.sel=null; renderInspector(); return; }
     const gs = visibleGroups().find(g=>g.id===e.source), gt = visibleGroups().find(g=>g.id===e.target);
     const hasRoute = !!groupEdgeRouteOf(e.source,e.target);
+    const hasSides = !!(S.groupPortSides[groupPortKey(e.source,e.source,e.target)] || S.groupPortSides[groupPortKey(e.target,e.source,e.target)]);
     eye.textContent='Group connection (read-only)';
     title.textContent = `${gs?gs.title:e.source} → ${gt?gt.title:e.target}`;
     body.innerHTML = `
@@ -1044,8 +1704,14 @@ function renderInspector(){
           <div class="nettop"><span class="netname">${esc(n.name)}</span><span class="nettype">${esc(n.type)}</span></div>
           ${n.description?`<div class="netdesc">${esc(n.description)}</div>`:''}
         </div>`).join('')}
-      ${hasRoute?'<div class="btnrow"><button id="btnResetRoute">Reset routing</button></div>':''}`;
-    const rb=$('btnResetRoute'); if (rb) rb.onclick=()=>{ delete S.groupEdgeRoutes[groupEdgeRouteKey(e.source,e.target)]; render(); };
+      <p class="hint">Each end attaches in its block's port zone, under the member list. Drag a port's net-count badge sideways to move that input/output to the opposite edge of its block, or up/down to reorder it against the group's other ports — the wire and its routing follow.</p>
+      ${(hasRoute||hasSides)?'<div class="btnrow"><button id="btnResetRoute">Reset routing &amp; ports</button></div>':''}`;
+    const rb=$('btnResetRoute'); if (rb) rb.onclick=()=>{
+      delete S.groupEdgeRoutes[groupEdgeRouteKey(e.source,e.target)];
+      delete S.groupPortSides[groupPortKey(e.source, e.source, e.target)];
+      delete S.groupPortSides[groupPortKey(e.target, e.source, e.target)];
+      render();
+    };
     return;
   }
   if (S.sel.type==='portal'){
@@ -1108,9 +1774,13 @@ function renderInspector(){
   if (!e){ S.sel=null; renderInspector(); return; }
   eye.textContent='Connection';
   title.textContent = `${nodeById(e.source)?.label||'?'} → ${nodeById(e.target)?.label||'?'}`;
+  // Ground nets are held in the model for the export but never drawn, so they're
+  // summarised here instead of listed. Delete buttons carry the ORIGINAL index.
+  const shown = e.nets.map((n,i)=>({n,i})).filter(x=>!isGroundNet(x.n));
+  const gndCount = e.nets.length - shown.length;
   body.innerHTML = `
     ${e.nets.length?'':'<p style="color:var(--warn)">This connection has no nets yet — add at least one, or it will be dropped on export.</p>'}
-    ${e.nets.map((n,i)=>`
+    ${shown.map(({n,i})=>`
       <div class="netcard cat-${netCategory(n)}">
         <div class="nettop">
           <span class="netname">${esc(n.name)}</span>
@@ -1119,6 +1789,7 @@ function renderInspector(){
         </div>
         ${n.description?`<div class="netdesc">${esc(n.description)}</div>`:''}
       </div>`).join('')}
+    ${gndCount?`<p class="hint">${gndCount} ground net${gndCount>1?'s':''} on this connection — kept in the export, never drawn.</p>`:''}
     <div class="addnet">
       <div class="kv"><label>Net name</label><input type="text" id="newNetName" placeholder="MY_NEW_NET"></div>
       <div class="row">
@@ -1132,8 +1803,9 @@ function renderInspector(){
       ${e.route?'<button id="btnResetRoute">Reset routing</button>':''}
       <button class="danger" id="btnDelEdge">Delete connection</button>
     </div>`;
-  body.querySelectorAll('[data-delnet]').forEach(b=>b.onclick=()=>{ e.nets.splice(+b.dataset.delnet,1); render(); });
+  body.querySelectorAll('[data-delnet]').forEach(b=>b.onclick=()=>{ commit(); e.nets.splice(+b.dataset.delnet,1); render(); });
   $('btnAddNet').onclick=()=>{
+    commit();
     const name = $('newNetName').value.trim().toUpperCase().replace(/[^A-Z0-9]+/g,'_').replace(/^_|_$/g,'');
     if (!name){ toast('Net name required'); return; }
     if (e.nets.some(n=>n.name===name)){ toast('This connection already carries a net with that name'); return; }
@@ -1142,10 +1814,11 @@ function renderInspector(){
     render();
   };
   const rb=$('btnResetRoute'); if (rb) rb.onclick=()=>{ delete e.route; render(); };
-  $('btnDelEdge').onclick=()=>{ S.edges=S.edges.filter(x=>x.id!==e.id); S.sel=null; render(); };
+  $('btnDelEdge').onclick=()=>{ commit(); S.edges=S.edges.filter(x=>x.id!==e.id); S.sel=null; render(); };
 }
 
 function deleteNode(id){
+  commit();
   S.nodes = S.nodes.filter(n=>n.id!==id);
   S.edges = S.edges.filter(e=>e.source!==id && e.target!==id);
   S.groups.forEach(g=>{ g.members = g.members.filter(m=>m!==id); });
@@ -1156,11 +1829,14 @@ function deleteNode(id){
    STATUS BAR (live validation)
    ============================================================ */
 function renderStatus(){
-  const isolated = S.nodes.filter(n => !S.edges.some(e=>e.source===n.id||e.target===n.id));
+  // Counted on the drawable graph so the figures match what's on screen —
+  // ground-only connections are invisible and mustn't mask an isolated block.
+  const drawn = diagramEdges(S.edges);
+  const isolated = S.nodes.filter(n => !drawn.some(e=>e.source===n.id||e.target===n.id));
   const emptyEdges = S.edges.filter(e=>e.nets.length===0);
   const ungrouped = groupsWithUngrouped().find(g=>g.id===UNGROUPED_ID);
   const bits = [];
-  bits.push(`<span class="chip"><span class="dot" style="background:var(--copper)"></span>${S.nodes.length} blocks · ${S.edges.length} connections</span>`);
+  bits.push(`<span class="chip"><span class="dot" style="background:var(--copper)"></span>${S.nodes.length} blocks · ${drawn.length} connections</span>`);
   bits.push(isolated.length
     ? `<span class="chip warn"><span class="dot"></span>${isolated.length} unconnected block${isolated.length>1?'s':''}: ${esc(isolated.slice(0,3).map(n=>n.label).join(', '))}${isolated.length>3?'…':''}</span>`
     : `<span class="chip ok"><span class="dot"></span>all blocks connected</span>`);
@@ -1187,7 +1863,7 @@ function toWorld(clientX, clientY){
   return { x:(clientX-r.left-S.view.tx)/S.view.k, y:(clientY-r.top-S.view.ty)/S.view.k };
 }
 
-let drag = null; // {mode:'pan'|'node'|'link', ...}
+let drag = null, linkSnap = null; // {mode:'pan'|'node'|'link', ...}
 
 // Position accessor for whatever is currently draggable — flat-view nodes
 // or, at the top level, group sheet-symbol blocks (backed by S.groupPos).
@@ -1198,6 +1874,7 @@ function blockXY(id){
 
 svg.addEventListener('pointerdown', ev=>{
   const segEl = ev.target.closest('.seg-v, .seg-h, .seg-e, .seg-f');
+  const numEl = ev.target.closest('.portnum');
   const port = ev.target.closest('.port');
   const portalEl = ev.target.closest('.portal');
   const nodeEl = ev.target.closest('.node');
@@ -1211,15 +1888,28 @@ svg.addEventListener('pointerdown', ev=>{
     // (plateau / final run into the block) → route.y (drag up/down).
     const mode = cls.contains('seg-v') ? 'routeV' : cls.contains('seg-e') ? 'routeE' : 'routeH';
     const topLevel = isTopLevel();
+    const mx = segEl.dataset.mx!=null ? +segEl.dataset.mx : null;
+    const my = segEl.dataset.my!=null ? +segEl.dataset.my : null;
+    const axis = segEl.dataset.axis || (cls.contains('seg-h')||cls.contains('seg-f') ? 'h' : 'v');
     S.sel = { type: topLevel?'groupEdge':'edge', id: segEl.dataset.eid };
-    drag = { mode, eid: segEl.dataset.eid,
+    drag = { mode, eid: segEl.dataset.eid, axis, mx, my, snap:snapshotState(),
       topLevel, src: segEl.dataset.src, tgt: segEl.dataset.tgt };
+    render();
+    return;
+  }
+  // Must be tested before .node: the badge lives inside the group's <g class="node">,
+  // and dragging it moves the PORT, not the block.
+  if (numEl){
+    const d = numEl.dataset;
+    S.sel = { type:'groupEdge', id:d.eid || (computeGroupEdges().find(x=>x.source===d.src && x.target===d.tgt)||{}).id };
+    drag = { mode:'portside', gid:d.gid, src:d.src, tgt:d.tgt, dir:d.dir, snap:snapshotState() };
     render();
     return;
   }
   if (port){
     const w = toWorld(ev.clientX, ev.clientY);
     S.link = { fromId: port.dataset.port, x:w.x, y:w.y };
+    linkSnap = snapshotState();
     drag = { mode:'link' };
     svg.classList.add('linking');
     renderLink();
@@ -1234,7 +1924,7 @@ svg.addEventListener('pointerdown', ev=>{
     const id = nodeEl.dataset.nid;
     const pos = blockXY(id);
     const w = toWorld(ev.clientX, ev.clientY);
-    drag = { mode:'node', id, dx:w.x-pos.x, dy:w.y-pos.y, moved:false };
+    drag = { mode:'node', id, dx:w.x-pos.x, dy:w.y-pos.y, moved:false, snap:snapshotState() };
     return;
   }
   if (edgeEl){
@@ -1248,6 +1938,7 @@ svg.addEventListener('pointerdown', ev=>{
 
 svg.addEventListener('dblclick', ev=>{
   if (!isTopLevel()) return;
+  if (ev.target.closest('.portnum')) return; // badge is a port handle, not the block
   const nodeEl = ev.target.closest('.node');
   if (!nodeEl) return;
   openGroupView(nodeEl.dataset.nid);
@@ -1267,17 +1958,64 @@ svg.addEventListener('pointermove', ev=>{
     const nx = Math.round((w.x-drag.dx)/8)*8, ny = Math.round((w.y-drag.dy)/8)*8;
     if (isTopLevel()){ const p=groupPosOf(drag.id); p.x=nx; p.y=ny; }
     else { const n=nodeById(drag.id); n.x=nx; n.y=ny; }
+    commitGesture(drag);
     drag.moved=true;
     render();
     return;
   }
+  if (drag.mode==='portside'){
+    // Two axes at once: X picks the edge of the block the port attaches to,
+    // Y picks its row. Both apply live, so the other ports visibly shift as you
+    // drag and the wire follows its port. Row count never changes → no jumps.
+    const rect = groupBlockRect(drag.gid);
+    const g = groupsWithUngrouped().find(x=>x.id===drag.gid);
+    let changed = false;
+    const row = groupPortOf(drag.gid, drag.src, drag.tgt, drag.dir);
+    const wantedSide = w.x > rect.x + rect.w/2 ? 'right' : 'left';
+    if (row && row.pinned){
+      // Isolation barrier: an HV port can't be dragged onto the LV half, nor the
+      // other way round. Vertical reordering below is still allowed.
+      if (wantedSide !== row.side && !drag.warned){
+        drag.warned = true;
+        toast(`${row.hv?'HV':'LV'} connections stay on the ${row.hv?'HV':'LV'} side of this block`);
+      }
+    } else if (groupPortSideOf(drag.gid, drag.src, drag.tgt, drag.dir) !== wantedSide){
+      setGroupPortSide(drag.gid, drag.src, drag.tgt, wantedSide);
+      changed = true;
+    }
+    const zoneTop = rect.y + groupPortZoneTop(g);
+    const wantedRow = Math.floor((w.y - zoneTop) / GROUP_PORT_ROW_H);
+    if (moveGroupPortToRow(drag.gid, groupEdgeRouteKey(drag.src, drag.tgt), wantedRow)) changed = true;
+    if (changed){ commitGesture(drag); render(); }
+    return;
+  }
   if (drag.mode==='routeV' || drag.mode==='routeH' || drag.mode==='routeE'){
     // Vertical segments only move in X; horizontal segments only move in Y.
-    const patch = drag.mode==='routeV' ? { x: Math.round(w.x/8)*8 }
-                : drag.mode==='routeE' ? { x2: Math.round(w.x/8)*8 }
-                : { y: Math.round(w.y/8)*8 };
-    if (drag.topLevel) setGroupEdgeRoute(drag.src, drag.tgt, patch);
-    else { const e=S.edges.find(x=>x.id===drag.eid); if (e) e.route = { ...e.route, ...patch }; }
+    const raw = drag.mode==='routeH' ? Math.round(w.y/8)*8 : Math.round(w.x/8)*8;
+    if (drag.topLevel){
+      // Direction is taken from the POINTER (not from the snapped result), so once
+      // the wire has hopped past a block, continuing the same way keeps going and
+      // reversing hops it back over.
+      const dir = Math.sign(raw - (drag.lastRaw!=null ? drag.lastRaw : raw)) || drag.lastDir || 0;
+      if (dir) drag.lastDir = dir;
+      drag.lastRaw = raw;
+      const obstacles = visibleGroups().map(g=>groupBlockRect(g.id));
+      // The dragged segment only moves along its own axis; the other coordinate
+      // stays where the segment already was.
+      const wx = drag.axis==='v' ? raw : (drag.mx!=null ? drag.mx : Math.round(w.x/8)*8);
+      const wy = drag.axis==='v' ? (drag.my!=null ? drag.my : Math.round(w.y/8)*8) : raw;
+      const fixed = pointOutOfBlocks(wx, wy, obstacles, drag.axis, dir);
+      commitGesture(drag);
+      setGroupEdgeRoute(drag.src, drag.tgt,
+        drag.axis==='v' ? { wx: fixed, wy } : { wx, wy: fixed });
+      render();
+      return;
+    }
+    const patch = drag.mode==='routeV' ? { x: raw }
+                : drag.mode==='routeE' ? { x2: raw }
+                : { y: raw };
+    commitGesture(drag);
+    const e=S.edges.find(x=>x.id===drag.eid); if (e) e.route = { ...e.route, ...patch };
     render();
     return;
   }
@@ -1305,6 +2043,7 @@ svg.addEventListener('pointerup', ev=>{
     if (toId && toId!==fromId){
       let e = S.edges.find(x=>x.source===fromId && x.target===toId);
       if (!e){
+        if (linkSnap!=null) commit(linkSnap);
         e = { id:'e'+(S.edgeSeq++), source:fromId, target:toId, nets:[] };
         S.edges.push(e);
       }
@@ -1312,7 +2051,7 @@ svg.addEventListener('pointerup', ev=>{
     }
     render();
   }
-  drag=null;
+  drag=null; linkSnap=null;
 });
 
 svg.addEventListener('wheel', ev=>{
@@ -1327,10 +2066,16 @@ svg.addEventListener('wheel', ev=>{
 },{passive:false});
 
 document.addEventListener('keydown', ev=>{
+  const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
+  if ((ev.ctrlKey||ev.metaKey) && !typing){
+    const k = ev.key.toLowerCase();
+    if (k==='z' && !ev.shiftKey){ ev.preventDefault(); undo(); return; }
+    if (k==='y' || (k==='z' && ev.shiftKey)){ ev.preventDefault(); redo(); return; }
+  }
   if ((ev.key==='Delete'||ev.key==='Backspace') && S.sel && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)){
     // Group / group-edge deletion is read-only at the top level for now (phase d).
     if (S.sel.type==='node'){ ev.preventDefault(); deleteNode(S.sel.id); }
-    else if (S.sel.type==='edge'){ ev.preventDefault(); S.edges=S.edges.filter(x=>x.id!==S.sel.id); S.sel=null; render(); }
+    else if (S.sel.type==='edge'){ ev.preventDefault(); commit(); S.edges=S.edges.filter(x=>x.id!==S.sel.id); S.sel=null; render(); }
   }
 });
 
@@ -1441,9 +2186,13 @@ $('btnImport').onclick=()=>{
         const s=tolerantParse($('impSess').value);
         if (!s||!s.nodes||!s.edges) throw new Error('Not a session JSON (nodes/edges missing)');
         S.meta=s.meta||S.meta; S.nodes=s.nodes; S.edges=s.edges; S.groups=s.groups||[];
-        S.groupPos = s.groupPos || {}; S.groupEdgeRoutes = s.groupEdgeRoutes || {}; S.openGroup = s.openGroup || null;
+        S.groupPos = s.groupPos || {}; S.groupEdgeRoutes = s.groupEdgeRoutes || {};
+        S.groupPortSides = s.groupPortSides || {}; S.groupPortOrder = s.groupPortOrder || {};
+        S.groupEdgeLanes = s.groupEdgeLanes || {};
+        S.openGroup = s.openGroup || null;
         S.edgeSeq = Math.max(0,...S.edges.map(e=>+String(e.id).replace(/^e/,'')||0))+1;
         autoLayoutGroups(true); // fill in positions only for groups the session didn't have (preserves dragged layout)
+        if (!Object.keys(S.groupEdgeLanes).length) assignRouteLanes();
         S.sel=null; render(); fitView();
       }
       closeModal(); toast('Imported');
@@ -1531,6 +2280,9 @@ function buildSessionJSON(){
     groups:S.groups.map(g=>({ ...g, members:[...g.members] })),
     groupPos:{ ...S.groupPos },
     groupEdgeRoutes:{ ...S.groupEdgeRoutes },
+    groupPortSides:{ ...S.groupPortSides },
+    groupEdgeLanes:{ ...S.groupEdgeLanes },
+    groupPortOrder:Object.fromEntries(Object.entries(S.groupPortOrder).map(([k,v])=>[k,[...v]])),
     openGroup:S.openGroup };
 }
 
@@ -1542,9 +2294,11 @@ function loadFromContract(input, contract, groups){
   S.edgeSeq=0;
   const g = buildGraph(input, contract||{}, groups||[]);
   S.nodes=g.nodes; S.edges=g.edges; S.groups=g.groups;
-  S.groupPos={}; S.groupEdgeRoutes={}; S.openGroup=null; S.sel=null;
+  S.groupPos={}; S.groupEdgeRoutes={}; S.groupPortSides={}; S.groupPortOrder={}; S.groupEdgeLanes={}; S.openGroup=null; S.sel=null;
   autoLayoutAllGroupMembers();
   autoLayoutGroups();
+  assignRouteLanes();   // spread the wires apart before the first paint
+  HIST.past.length = 0; HIST.future.length = 0;   // a fresh import starts fresh
   render(); fitView();
 }
 
@@ -1553,8 +2307,10 @@ function toast(msg){
   clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove('show'),2200);
 }
 
-$('btnLayout').onclick=()=>{ if (isTopLevel()) autoLayoutGroups(); else autoLayoutGroupMembers(S.openGroup); render(); fitView(); };
+$('btnLayout').onclick=()=>{ commit(); if (isTopLevel()){ autoLayoutGroups(); assignRouteLanes(); } else autoLayoutGroupMembers(S.openGroup); render(); fitView(); };
 $('btnFit').onclick=fitView;
+$('btnUndo').onclick=undo;
+$('btnRedo').onclick=redo;
 window.addEventListener('resize', ()=>render());
 
 // Theme is session-only (no localStorage) — index.html seeds the initial value from
