@@ -7,6 +7,10 @@
   --vellum:#F6EFDC; --field-bg:#FDFCF9;
   --btn-hover:#EFECE2; --primary-hover:#2A3D5C; --danger-hover:#FBEAE4;
   --overlay:rgba(27,42,65,.45);
+  /* Signal-category palette — color + dash pattern differentiate nets instead of
+     line/arrow size (every wire renders at the same weight, same arrowhead). */
+  --sig-hv:#C43E1C; --sig-power:#C46A12; --sig-control:#2A63C4; --sig-logic:#1B8E86;
+  --sig-analog:#3D7A46; --sig-switching:#8A4FC4; --sig-other:#767F8C;
   --mono:'IBM Plex Mono',ui-monospace,'SF Mono',Consolas,monospace;
   --sans:'IBM Plex Sans',system-ui,-apple-system,sans-serif;
 }
@@ -19,6 +23,8 @@
   --vellum:#2E2A1E; --field-bg:#161B21;
   --btn-hover:#2A323C; --primary-hover:#C7CEDA; --danger-hover:#3A2620;
   --overlay:rgba(0,0,0,.55);
+  --sig-hv:#FF7A5C; --sig-power:#F2A23D; --sig-control:#5B9BFF; --sig-logic:#3ED6C7;
+  --sig-analog:#5FBE6D; --sig-switching:#BE93F5; --sig-other:#8D99AC;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%}
@@ -76,8 +82,13 @@ textarea{resize:vertical;min-height:52px;font-family:var(--sans)}
 .btnrow{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
 
 /* ---------- net list ---------- */
-.netcard{border:1.5px solid var(--line);border-left:4px solid var(--copper);border-radius:3px;padding:8px 10px;margin-bottom:8px;background:var(--field-bg)}
-.netcard.hv{border-left-color:var(--hv)}
+.netcard{border:1.5px solid var(--line);border-left:4px solid var(--sig-other);border-radius:3px;padding:8px 10px;margin-bottom:8px;background:var(--field-bg)}
+.netcard.cat-hv{border-left-color:var(--sig-hv)}
+.netcard.cat-power{border-left-color:var(--sig-power)}
+.netcard.cat-control{border-left-color:var(--sig-control)}
+.netcard.cat-logic{border-left-color:var(--sig-logic)}
+.netcard.cat-analog{border-left-color:var(--sig-analog)}
+.netcard.cat-switching{border-left-color:var(--sig-switching)}
 .netcard .nettop{display:flex;align-items:center;gap:6px}
 .netcard .netname{font-family:var(--mono);font-size:12px;font-weight:600;flex:1;word-break:break-all}
 .netcard .nettype{font-family:var(--mono);font-size:10px;color:var(--ink-soft)}
@@ -92,6 +103,11 @@ footer{display:flex;align-items:center;gap:10px;padding:6px 16px;border-top:1px 
 .chip.warn{border-color:var(--warn);color:var(--warn)}
 .chip.ok{border-color:var(--ok);color:var(--ok)}
 .dot{width:7px;height:7px;border-radius:50%;background:currentColor}
+
+/* ---------- signal legend ---------- */
+#legend{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-left:auto;padding-left:10px;border-left:1px solid var(--line)}
+#legend .litem{display:inline-flex;align-items:center;gap:4px;font-size:10.5px}
+#legend .lswatch{width:16px;height:0;border-top-width:2.5px;border-top-style:solid;display:inline-block}
 
 /* ---------- modal ---------- */
 .overlay{position:fixed;inset:0;background:var(--overlay);display:none;align-items:center;justify-content:center;z-index:40}

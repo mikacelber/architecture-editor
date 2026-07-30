@@ -8,10 +8,8 @@
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="styles.css">
 <script>
-  // Set before first paint to avoid a flash of the wrong theme; no persistence (session-only),
-  // just an initial guess from the OS preference that the header toggle can override.
-  document.documentElement.dataset.theme =
-    window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  // Dark by default (session-only, no persistence) — the header toggle can still switch to light.
+  document.documentElement.dataset.theme = 'dark';
 </script>
 </head>
 <body>
@@ -43,11 +41,30 @@
           <rect width="80" height="80" fill="url(#gridSm)"/>
           <path d="M80 0H0V80" fill="none" stroke="var(--grid-major)" stroke-width="1.4"/>
         </pattern>
-        <marker id="arrowCopper" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-          <path d="M0 0.6 L7.4 4 L0 7.4 Z" fill="var(--copper)"/>
+        <!-- markerUnits="userSpaceOnUse" pins the arrowhead to a fixed pixel size —
+             it never scales with a wire's stroke-width, so every signal category
+             (differentiated by color/dash only, see NET_CATEGORY_STYLE in app.js)
+             gets an identically sized arrow. -->
+        <marker id="arrowHv" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+          <path d="M0 0.6 L7.4 4 L0 7.4 Z" fill="var(--sig-hv)"/>
         </marker>
-        <marker id="arrowHv" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-          <path d="M0 0.6 L7.4 4 L0 7.4 Z" fill="var(--hv)"/>
+        <marker id="arrowPower" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+          <path d="M0 0.6 L7.4 4 L0 7.4 Z" fill="var(--sig-power)"/>
+        </marker>
+        <marker id="arrowControl" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+          <path d="M0 0.6 L7.4 4 L0 7.4 Z" fill="var(--sig-control)"/>
+        </marker>
+        <marker id="arrowLogic" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+          <path d="M0 0.6 L7.4 4 L0 7.4 Z" fill="var(--sig-logic)"/>
+        </marker>
+        <marker id="arrowAnalog" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+          <path d="M0 0.6 L7.4 4 L0 7.4 Z" fill="var(--sig-analog)"/>
+        </marker>
+        <marker id="arrowSwitching" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+          <path d="M0 0.6 L7.4 4 L0 7.4 Z" fill="var(--sig-switching)"/>
+        </marker>
+        <marker id="arrowOther" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+          <path d="M0 0.6 L7.4 4 L0 7.4 Z" fill="var(--sig-other)"/>
         </marker>
       </defs>
       <rect id="bg" x="-100000" y="-100000" width="200000" height="200000" fill="url(#gridLg)"/>

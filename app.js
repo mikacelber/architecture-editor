@@ -83,6 +83,12 @@ function buildGraph(input, contract, rawGroups){
 
   const edgeMap = new Map();
   for (const net of (contract.global_nets||[])){
+    // GND is never drawn: every block shares a return path to some ground, so
+    // routing it block-to-block adds a wire that carries no design information
+    // and only clutters the diagram. Skipping it here (instead of after the
+    // fact) means an edge that ONLY existed because of a shared ground net is
+    // never created at all.
+    if (/^GROUND$/i.test(net.type||'')) continue;
     const src = resolveRef(net.source);
     for (const cons of (net.consumers||[])){
       const dst = resolveRef(cons);
@@ -210,7 +216,7 @@ function setGroupEdgeRoute(src,tgt,route){
    Every step uses a fixed iteration count and alphabetical tie-breaks, so the
    whole pipeline is deterministic: same graph in, same layout out, always.
    ============================================================ */
-function isPowerNet(n){ return /POWER|GROUND|HIGH_CURRENT/i.test(n.type||''); }
+function isPowerNet(n){ return /POWER|HIGH_CURRENT/i.test(n.type||''); }
 // An edge participates in layering unless EVERY one of its nets is power/ground/
 // high-current — those rails fan out to nearly every block and would otherwise
 // flatten the whole hierarchy into two columns. Power-only edges still draw
@@ -465,8 +471,94 @@ function autoLayoutGroups(onlyMissing){
    ============================================================ */
 function esc(s){ return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function nodeById(id){ return S.nodes.find(n=>n.id===id); }
-function edgeIsHV(e){ return e.nets.some(n=>/HIGH_VOLTAGE/i.test(n.type||'')); }
-function edgeIsPower(e){ return e.nets.some(isPowerNet); }
+function isHvNetType(n){ return /HIGH_VOLTAGE/i.test(n.type||''); }
+
+/* ------------------------------------------------------------------
+   SIGNAL CATEGORIES — every wire and arrowhead renders at the same size
+   (see the markerUnits="userSpaceOnUse" markers in index.html); nets are
+   told apart by color + dash pattern only, never by weight. An edge that
+   bundles several nets of different categories (a bus) draws as the
+   highest-priority one it carries, so the wire always surfaces its most
+   safety-relevant signal.
+   ------------------------------------------------------------------ */
+const NET_CATEGORY_STYLE = {
+  hv:        { color:'var(--sig-hv)',        dash:null,      marker:'arrowHv' },
+  power:     { color:'var(--sig-power)',     dash:null,      marker:'arrowPower' },
+  switching: { color:'var(--sig-switching)', dash:'9 3 2 3', marker:'arrowSwitching' },
+  control:   { color:'var(--sig-control)',   dash:null,      marker:'arrowControl' },
+  logic:     { color:'var(--sig-logic)',     dash:'6 3',     marker:'arrowLogic' },
+  analog:    { color:'var(--sig-analog)',    dash:null,      marker:'arrowAnalog' },
+  other:     { color:'var(--sig-other)',     dash:'2 3',     marker:'arrowOther' },
+};
+const CATEGORY_PRIORITY = ['hv','power','switching','control','logic','analog','other'];
+function netCategory(n){
+  if (isHvNetType(n)) return 'hv';
+  const t = (n.type||'').toUpperCase();
+  if (t==='POWER_DISTRIBUTION' || t==='HIGH_CURRENT_PATH') return 'power';
+  if (t==='SWITCHING_NODE') return 'switching';
+  if (t==='CONTROL_SIGNAL') return 'control';
+  if (t==='DIGITAL_LOGIC') return 'logic';
+  if (t==='ANALOG_SIGNAL' || t==='SENSING_LINE' || t==='FEEDBACK_PATH' || t==='QUIET_REFERENCE') return 'analog';
+  return 'other'; // NOISY_NODE, NO_CONNECT, NA
+}
+function edgeCategory(e){
+  const cats = new Set(e.nets.map(netCategory));
+  for (const c of CATEGORY_PRIORITY) if (cats.has(c)) return c;
+  return 'other';
+}
+const EDGE_STROKE_W = 2.2, GROUP_EDGE_STROKE_W = 2.6;
+
+/* ------------------------------------------------------------------
+   LV / HV SIDE CLASSIFICATION — a block that only ever touches
+   HIGH_VOLTAGE_PATH-typed nets sits on the HV side and renders red; one
+   that touches both an HV-typed net and an ordinary one straddles the
+   isolation barrier and renders half its normal color, half red. This is
+   inferred from the net graph (the contract has no explicit domain field
+   to read instead) but is overridable per node via n.hvSide, since no
+   heuristic gets every real design right.
+   ------------------------------------------------------------------ */
+function nodeTouchingNets(nodeId){
+  const nets = [];
+  for (const e of S.edges) if (e.source===nodeId || e.target===nodeId) nets.push(...e.nets);
+  return nets;
+}
+function inferNodeSide(nodeId){
+  const nets = nodeTouchingNets(nodeId);
+  if (!nets.length) return 'lv';
+  const hv = nets.some(isHvNetType), lv = nets.some(n=>!isHvNetType(n));
+  return hv && lv ? 'barrier' : hv ? 'hv' : 'lv';
+}
+function nodeSide(nodeId){
+  const n = nodeById(nodeId);
+  return (n && n.hvSide) || inferNodeSide(nodeId);
+}
+// A group is 'hv'/'lv' only if every member agrees; any mix (including a
+// group that itself contains a barrier member) reads as a barrier group.
+function groupSide(groupId){
+  const g = groupsWithUngrouped().find(x=>x.id===groupId);
+  if (!g || !g.members.length) return 'lv';
+  const sides = new Set(g.members.map(nodeSide));
+  return sides.size===1 ? [...sides][0] : 'barrier';
+}
+function safeId(s){ return String(s).replace(/[^A-Za-z0-9_-]/g,'_'); }
+// A translucent red wash over whatever fill the block already has — works
+// the same for IC/external/group styling without needing a bespoke "HV
+// variant" of every block's color. 'barrier' clips the wash to the right
+// half only, so the left half keeps showing the block's original color.
+function hvOverlayMarkup(side, w, h, rx, clipId){
+  if (side==='hv') return `<rect width="${w}" height="${h}" rx="${rx}" fill="var(--sig-hv)" opacity=".24" style="pointer-events:none"/>`;
+  if (side==='barrier') return `
+      <clipPath id="${clipId}"><rect width="${w}" height="${h}" rx="${rx}"/></clipPath>
+      <rect clip-path="url(#${clipId})" x="${w/2}" y="0" width="${w/2}" height="${h}" fill="var(--sig-hv)" opacity=".3" style="pointer-events:none"/>
+      <line x1="${w/2}" y1="2" x2="${w/2}" y2="${h-2}" stroke="var(--sig-hv)" stroke-width="1.3" opacity=".8" style="pointer-events:none"/>`;
+  return '';
+}
+function hvSideTag(side, w){
+  if (side==='hv') return `<text x="${w-6}" y="11" text-anchor="end" font-family="var(--mono)" font-size="7.5" font-weight="700" letter-spacing=".04em" fill="var(--sig-hv)" style="pointer-events:none">HV</text>`;
+  if (side==='barrier') return `<text x="${w-6}" y="11" text-anchor="end" font-family="var(--mono)" font-size="7.5" font-weight="700" letter-spacing=".04em" fill="var(--sig-hv)" style="pointer-events:none">HV</text>
+      <text x="6" y="11" font-family="var(--mono)" font-size="7.5" font-weight="700" letter-spacing=".04em" fill="var(--ink-soft)" style="pointer-events:none">LV</text>`;
+  return '';
+}
 
 // Orthogonal (horizontal/vertical) elbow routing, schematic-style (LTSpice/Altium)
 // instead of a curve. Full shape is 5 segments: out horizontally from the source
@@ -498,6 +590,73 @@ function elbowPathD(g){
 }
 function elbowBadgePos(g){ return { x:g.bendX, y:(g.y1+g.bendY)/2 }; }
 
+/* ------------------------------------------------------------------
+   OBSTACLE-AVOIDING ROUTING — a wire must never pass in front of a block:
+   at a glance there's no way to tell whether it terminates there or just
+   runs behind it, which is exactly the ambiguity this is meant to prevent.
+   This nudges the plateau (bendY) and both vertical jogs (bendX, entryX) of
+   the 5-segment elbow off of every OTHER currently-visible block, by a fixed
+   clearance. It runs on every render — including live drags — so a manual
+   reroute that lands on a block is nudged clear automatically instead of
+   being allowed to overlap; the two short stubs at y1/y2 are left alone,
+   since they sit inside the column gap and are clear in practice.
+   ------------------------------------------------------------------ */
+const ROUTE_CLEARANCE = 9;
+function padForRoute(r){ return { x1:r.x-ROUTE_CLEARANCE, y1:r.y-ROUTE_CLEARANCE, x2:r.x+r.w+ROUTE_CLEARANCE, y2:r.y+r.h+ROUTE_CLEARANCE }; }
+function hSegHitsRect(y, xa, xb, r){
+  const lo=Math.min(xa,xb), hi=Math.max(xa,xb), p=padForRoute(r);
+  return y>p.y1 && y<p.y2 && hi>p.x1 && lo<p.x2;
+}
+function vSegHitsRect(x, ya, yb, r){
+  const lo=Math.min(ya,yb), hi=Math.max(ya,yb), p=padForRoute(r);
+  return x>p.x1 && x<p.x2 && hi>p.y1 && lo<p.y2;
+}
+// Nudges `preferred` to the nearer edge of whatever obstacle it clips, then
+// re-checks (a crowded diagram can stack more than one obstacle in the same
+// corridor) — bails out if it starts bouncing between two obstacles rather
+// than looping forever.
+function clearHorizontal(preferred, xa, xb, obstacles){
+  let y = preferred; const seen = new Set();
+  for (let i=0;i<12;i++){
+    const hit = obstacles.find(r=>hSegHitsRect(y, xa, xb, r));
+    if (!hit) return y;
+    const p = padForRoute(hit);
+    const cand = Math.abs(p.y1-preferred) <= Math.abs(p.y2-preferred) ? p.y1 : p.y2;
+    const key = Math.round(cand);
+    if (seen.has(key)) return cand;
+    seen.add(key); y = cand;
+  }
+  return y;
+}
+function clearVertical(preferred, ya, yb, obstacles){
+  let x = preferred; const seen = new Set();
+  for (let i=0;i<12;i++){
+    const hit = obstacles.find(r=>vSegHitsRect(x, ya, yb, r));
+    if (!hit) return x;
+    const p = padForRoute(hit);
+    const cand = Math.abs(p.x1-preferred) <= Math.abs(p.x2-preferred) ? p.x1 : p.x2;
+    const key = Math.round(cand);
+    if (seen.has(key)) return cand;
+    seen.add(key); x = cand;
+  }
+  return x;
+}
+function routeAroundObstacles(geo, obstacles){
+  if (!obstacles.length) return geo;
+  const { x1,y1,x2,y2 } = geo;
+  let { bendX, bendY, entryX } = geo;
+  for (let pass=0; pass<4; pass++){
+    const nBendY = clearHorizontal(bendY, bendX, entryX, obstacles);
+    const nBendX = clearVertical(bendX, y1, nBendY, obstacles);
+    const nEntryX = clearVertical(entryX, nBendY, y2, obstacles);
+    if (nBendY===bendY && nBendX===bendX && nEntryX===entryX){ bendY=nBendY; bendX=nBendX; entryX=nEntryX; break; }
+    bendX=nBendX; bendY=nBendY; entryX=nEntryX;
+  }
+  entryX = Math.min(entryX, x2-12);
+  return { x1,y1,x2,y2,bendX,bendY,entryX };
+}
+function memberObstacleRects(members){ return members.map(n=>({ id:n.id, x:n.x, y:n.y, w:n.w, h:n.h })); }
+function obstaclesExcluding(rects, srcId, tgtId){ return rects.filter(r=>r.id!==srcId && r.id!==tgtId); }
 
 // Invisible wide hit-paths over each draggable wire segment. seg-v (first jog)
 // and seg-e (entry jog) move in X; seg-h (plateau) and seg-f (final run into the
@@ -594,26 +753,29 @@ function renderDrillDown(){
   // stays reserved for the crosshair "new connection" port.
   const ports = computeEdgePorts(id=>nodeById(id), members.map(n=>n.id), edges, true);
   lastPorts = ports;
+  const obstacleRects = memberObstacleRects(members);
 
   const edgeMarkup = edges.map(e=>{
-    const hv = edgeIsHV(e), pw = edgeIsPower(e);
+    const cat = edgeCategory(e), style = NET_CATEGORY_STYLE[cat];
     const selected = S.sel && S.sel.type==='edge' && S.sel.id===e.id;
-    const stroke = hv ? 'var(--hv)' : 'var(--copper)';
-    const w = pw ? 3.4 : 2;
     const a = nodeById(e.source), b = nodeById(e.target);
     if (!a||!b) return '';
-    const geo = elbowGeometry(a, b, e.route, ports.yOut.get(e.id), ports.yIn.get(e.id));
+    const geo = routeAroundObstacles(
+      elbowGeometry(a, b, e.route, ports.yOut.get(e.id), ports.yIn.get(e.id)),
+      obstaclesExcluding(obstacleRects, e.source, e.target));
     const mid = elbowBadgePos(geo);
+    const w = selected ? EDGE_STROKE_W+1.6 : EDGE_STROKE_W;
     return `<g class="edge" data-eid="${esc(e.id)}">
       <path d="${elbowPathD(geo)}" fill="none" stroke="transparent" stroke-width="14" style="cursor:pointer"/>
-      <path d="${elbowPathD(geo)}" fill="none" stroke="${stroke}" stroke-width="${selected?w+1.6:w}"
-        ${selected?'stroke-dasharray="none" filter="drop-shadow(0 0 3px var(--probe))"':''}
-        marker-end="url(#${hv?'arrowHv':'arrowCopper'})" style="pointer-events:none"/>
-      <circle cx="${geo.x1}" cy="${geo.y1}" r="4" fill="${stroke}" style="pointer-events:none"/>
+      <path d="${elbowPathD(geo)}" fill="none" stroke="${style.color}" stroke-width="${w}"
+        stroke-dasharray="${selected?'none':(style.dash||'none')}"
+        ${selected?'filter="drop-shadow(0 0 3px var(--probe))"':''}
+        marker-end="url(#${style.marker})" style="pointer-events:none"/>
+      <circle cx="${geo.x1}" cy="${geo.y1}" r="4" fill="${style.color}" style="pointer-events:none"/>
       ${routeHandleMarkup(geo, e.id, '', 12)}
       <g style="pointer-events:none">
         <rect x="${mid.x-13}" y="${mid.y-9}" width="26" height="16" rx="8"
-          fill="${selected?'var(--probe)':'var(--paper)'}" stroke="${stroke}" stroke-width="1.2"/>
+          fill="${selected?'var(--probe)':'var(--paper)'}" stroke="${style.color}" stroke-width="1.2"/>
         <text x="${mid.x}" y="${mid.y+3.5}" text-anchor="middle"
           font-family="var(--mono)" font-size="9.5" fill="var(--ink)">${e.nets.length}</text>
       </g>
@@ -632,23 +794,28 @@ function renderDrillDown(){
     // Link port sits at its reserved (last) right-edge slot so it never overlaps
     // the per-connection output dots. Coordinates inside the <g> are relative.
     const linkCy = (ports.linkY.get(n.id) ?? (n.y + n.h/2)) - n.y;
+    const side = nodeSide(n.id);
     if (n.kind==='ic'){
       return `<g class="node" data-nid="${esc(n.id)}" transform="translate(${n.x},${n.y})" style="cursor:move">
         <rect x="-3" y="4" width="${n.w+6}" height="${n.h}" rx="5" fill="#00000018"/>
         <rect width="${n.w}" height="${n.h}" rx="5" fill="var(--epoxy)"
-          stroke="${selected?'var(--probe)':'var(--epoxy-edge)'}" stroke-width="${selected?2.5:1.4}"/>
+          stroke="${selected?'var(--probe)':(side==='lv'?'var(--epoxy-edge)':'var(--sig-hv)')}" stroke-width="${selected?2.5:1.4}"/>
+        ${hvOverlayMarkup(side, n.w, n.h, 5, 'hvclip-'+safeId(n.id))}
         <circle cx="13" cy="13" r="3.6" fill="var(--silk)"/>
         <text x="26" y="26" font-family="var(--mono)" font-size="13.5" font-weight="600" fill="var(--silk)">${esc(n.label)}</text>
         <text x="26" y="44" font-family="var(--sans)" font-size="10" fill="#B9BEC4">${esc((n.data.ic_type||'').slice(0,30))}</text>
+        ${hvSideTag(side, n.w)}
         <circle class="port" data-port="${esc(n.id)}" cx="${n.w}" cy="${linkCy}" r="6.5"
           fill="var(--copper-soft)" stroke="var(--copper)" stroke-width="1.6" style="cursor:crosshair"/>
       </g>`;
     }
     return `<g class="node" data-nid="${esc(n.id)}" transform="translate(${n.x},${n.y})" style="cursor:move">
       <rect width="${n.w}" height="${n.h}" rx="4" fill="var(--paper)"
-        stroke="${selected?'var(--probe)':'var(--ink-soft)'}" stroke-width="${selected?2.5:1.4}" stroke-dasharray="${selected?'none':'5 4'}"/>
+        stroke="${selected?'var(--probe)':(side==='lv'?'var(--ink-soft)':'var(--sig-hv)')}" stroke-width="${selected?2.5:1.4}" stroke-dasharray="${selected?'none':'5 4'}"/>
+      ${hvOverlayMarkup(side, n.w, n.h, 4, 'hvclip-'+safeId(n.id))}
       <text x="12" y="20" font-family="var(--mono)" font-size="10" letter-spacing=".08em" fill="var(--ink-soft)">EXTERNAL</text>
       <text x="12" y="36" font-family="var(--sans)" font-size="11.5" font-weight="500" fill="var(--ink)">${esc(n.label.slice(0,26))}</text>
+      ${hvSideTag(side, n.w)}
       <circle class="port" data-port="${esc(n.id)}" cx="${n.w}" cy="${linkCy}" r="6"
         fill="var(--copper-soft)" stroke="var(--copper)" stroke-width="1.5" style="cursor:crosshair"/>
     </g>`;
@@ -660,8 +827,7 @@ function portalMarkupFor(item, dir, i, count, bounds){
   const otherId = dir==='in' ? item.source : item.target;
   const other = groupsWithUngrouped().find(g=>g.id===otherId);
   const label = other ? other.title : otherId;
-  const hv = item.nets.some(n=>/HIGH_VOLTAGE/i.test(n.type||''));
-  const stroke = hv ? 'var(--hv)' : 'var(--copper)';
+  const style = NET_CATEGORY_STYLE[edgeCategory(item)];
   const selected = S.sel && S.sel.type==='portal' && S.sel.id===(dir+':'+otherId);
   const stubY = r.y + r.h/2;
   // dir='in': stub sits left of the members, arrow points right into the group.
@@ -669,13 +835,13 @@ function portalMarkupFor(item, dir, i, count, bounds){
   const stubLineX1 = dir==='in' ? r.x + r.w : bounds.maxX;
   const stubLineX2 = dir==='in' ? bounds.minX : r.x;
   return `<g class="portal" data-portal="${esc(dir+':'+otherId)}" style="cursor:pointer">
-    <path d="M ${stubLineX1} ${stubY} L ${stubLineX2} ${stubY}" fill="none" stroke="${stroke}"
-      stroke-width="2" stroke-dasharray="5 4" marker-end="url(#${hv?'arrowHv':'arrowCopper'})"/>
+    <path d="M ${stubLineX1} ${stubY} L ${stubLineX2} ${stubY}" fill="none" stroke="${style.color}"
+      stroke-width="${EDGE_STROKE_W}" stroke-dasharray="${style.dash||'5 4'}" marker-end="url(#${style.marker})"/>
     <rect x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" rx="6" fill="var(--vellum)"
       stroke="${selected?'var(--probe)':'var(--ink-soft)'}" stroke-width="${selected?2.5:1.5}" stroke-dasharray="4 3"/>
     <text x="${r.x+10}" y="${r.y+18}" font-family="var(--mono)" font-size="9" letter-spacing=".08em" fill="var(--ink-soft)">${dir==='in'?'FROM':'TO'}</text>
     <text x="${r.x+10}" y="${r.y+36}" font-family="var(--mono)" font-size="12" font-weight="600" fill="var(--ink)">${esc(label.slice(0,17))}</text>
-    <circle cx="${r.x+r.w-16}" cy="${r.y+r.h/2}" r="9" fill="var(--paper)" stroke="${stroke}" stroke-width="1.2"/>
+    <circle cx="${r.x+r.w-16}" cy="${r.y+r.h/2}" r="9" fill="var(--paper)" stroke="${style.color}" stroke-width="1.2"/>
     <text x="${r.x+r.w-16}" y="${r.y+r.h/2+3.5}" text-anchor="middle" font-family="var(--mono)" font-size="9.5" fill="var(--ink)">${item.nets.length}</text>
   </g>`;
 }
@@ -691,27 +857,29 @@ function renderTopLevel(){
   // group on the left edge. No link slot — group edges are derived, not drawn.
   const ports = computeEdgePorts(id=>groupBlockRect(id), groups.map(g=>g.id), gEdges, false);
   lastPorts = null;
+  const obstacleRects = groups.map(g=>groupBlockRect(g.id));
 
   edgesG.innerHTML = gEdges.map(e=>{
-    const hv = e.nets.some(n=>/HIGH_VOLTAGE/i.test(n.type||''));
-    const pw = e.nets.some(n=>/POWER|GROUND|HIGH_CURRENT/i.test(n.type||''));
+    const cat = edgeCategory(e), style = NET_CATEGORY_STYLE[cat];
     const selected = S.sel && S.sel.type==='groupEdge' && S.sel.id===e.id;
-    const stroke = hv ? 'var(--hv)' : 'var(--copper)';
-    const w = pw ? 4 : 2.4;
     const a = groupBlockRect(e.source), b = groupBlockRect(e.target);
-    const geo = elbowGeometry(a, b, groupEdgeRouteOf(e.source,e.target), ports.yOut.get(e.id), ports.yIn.get(e.id));
+    const geo = routeAroundObstacles(
+      elbowGeometry(a, b, groupEdgeRouteOf(e.source,e.target), ports.yOut.get(e.id), ports.yIn.get(e.id)),
+      obstaclesExcluding(obstacleRects, e.source, e.target));
     const mid = elbowBadgePos(geo);
+    const w = selected ? GROUP_EDGE_STROKE_W+1.6 : GROUP_EDGE_STROKE_W;
     const segAttrs = ` data-src="${esc(e.source)}" data-tgt="${esc(e.target)}"`;
     return `<g class="edge" data-eid="${esc(e.id)}">
       <path d="${elbowPathD(geo)}" fill="none" stroke="transparent" stroke-width="16" style="cursor:pointer"/>
-      <path d="${elbowPathD(geo)}" fill="none" stroke="${stroke}" stroke-width="${selected?w+1.6:w}"
-        ${selected?'stroke-dasharray="none" filter="drop-shadow(0 0 3px var(--probe))"':''}
-        marker-end="url(#${hv?'arrowHv':'arrowCopper'})" style="pointer-events:none"/>
-      <circle cx="${geo.x1}" cy="${geo.y1}" r="4.5" fill="${stroke}" style="pointer-events:none"/>
+      <path d="${elbowPathD(geo)}" fill="none" stroke="${style.color}" stroke-width="${w}"
+        stroke-dasharray="${selected?'none':(style.dash||'none')}"
+        ${selected?'filter="drop-shadow(0 0 3px var(--probe))"':''}
+        marker-end="url(#${style.marker})" style="pointer-events:none"/>
+      <circle cx="${geo.x1}" cy="${geo.y1}" r="4.5" fill="${style.color}" style="pointer-events:none"/>
       ${routeHandleMarkup(geo, e.id, segAttrs, 14)}
       <g style="pointer-events:none">
         <rect x="${mid.x-15}" y="${mid.y-10}" width="30" height="18" rx="9"
-          fill="${selected?'var(--probe)':'var(--paper)'}" stroke="${stroke}" stroke-width="1.4"/>
+          fill="${selected?'var(--probe)':'var(--paper)'}" stroke="${style.color}" stroke-width="1.4"/>
         <text x="${mid.x}" y="${mid.y+4}" text-anchor="middle"
           font-family="var(--mono)" font-size="10.5" font-weight="600" fill="var(--ink)">${e.nets.length}</text>
       </g>
@@ -730,14 +898,17 @@ function renderTopLevel(){
       const style = n && n.kind==='ic' ? '' : ' font-style="italic"';
       return `<text x="14" y="${GROUP_HEAD_H+16+i*GROUP_MEMBER_ROW_H}" font-family="${font}" font-size="10"${style} fill="var(--ink-soft)">${esc(label.slice(0,32))}</text>`;
     }).join('');
+    const side = groupSide(g.id);
     return `<g class="node" data-nid="${esc(g.id)}" transform="translate(${pos.x},${pos.y})" style="cursor:move">
       <rect x="-4" y="6" width="${GROUP_W+8}" height="${h}" rx="6" fill="#00000018"/>
       <rect width="${GROUP_W}" height="${h}" rx="6" fill="var(--vellum)"
-        stroke="${selected?'var(--probe)':'var(--ink)'}" stroke-width="${selected?3:2}"/>
+        stroke="${selected?'var(--probe)':(side==='lv'?'var(--ink)':'var(--sig-hv)')}" stroke-width="${selected?3:2}"/>
+      ${hvOverlayMarkup(side, GROUP_W, h, 6, 'hvclip-'+safeId(g.id))}
       <line x1="14" y1="30" x2="${GROUP_W-14}" y2="30" stroke="var(--ink)" stroke-width="1" opacity=".18"/>
       <text x="14" y="20" font-family="var(--mono)" font-size="9.5" letter-spacing=".1em" fill="var(--ink-soft)">${eyebrow}</text>
       <text x="14" y="54" font-family="var(--mono)" font-size="15" font-weight="600" fill="var(--ink)">${esc(g.title.slice(0,26))}</text>
       <text x="14" y="${GROUP_HEAD_H}" font-family="var(--sans)" font-size="11" font-weight="600" fill="var(--ink-soft)">${g.members.length} block${g.members.length===1?'':'s'}</text>
+      ${hvSideTag(side, GROUP_W)}
       ${memberLines}
     </g>`;
   }).join('');
@@ -778,7 +949,9 @@ function closeGroupView(){
 /* ============================================================
    INSPECTOR
    ============================================================ */
-const NET_TYPES = ['POWER_DISTRIBUTION','GROUND','DIGITAL_LOGIC','ANALOG_SIGNAL','CONTROL_SIGNAL','FEEDBACK_PATH','SENSING_LINE','SWITCHING_NODE','HIGH_VOLTAGE_PATH','HIGH_CURRENT_PATH','QUIET_REFERENCE','NOISY_NODE','NO_CONNECT','NA'];
+// GROUND is intentionally absent — GND is never drawn in this diagram (see buildGraph),
+// so it isn't offered as a choice when adding a net by hand either.
+const NET_TYPES = ['POWER_DISTRIBUTION','DIGITAL_LOGIC','ANALOG_SIGNAL','CONTROL_SIGNAL','FEEDBACK_PATH','SENSING_LINE','SWITCHING_NODE','HIGH_VOLTAGE_PATH','HIGH_CURRENT_PATH','QUIET_REFERENCE','NOISY_NODE','NO_CONNECT','NA'];
 
 function allGroupsOptions(currentId){
   return groupsWithUngrouped()
@@ -867,7 +1040,7 @@ function renderInspector(){
     body.innerHTML = `
       <p style="color:var(--ink-soft)">Derived from ${e.nets.length} underlying net${e.nets.length===1?'':'s'} between member blocks. Open a group to edit its individual connections. Drag the vertical segments sideways or the horizontal segments up/down to reroute — including the last segment where the wire enters the block.</p>
       ${e.nets.map(n=>`
-        <div class="netcard ${/HIGH_VOLTAGE/i.test(n.type)?'hv':''}">
+        <div class="netcard cat-${netCategory(n)}">
           <div class="nettop"><span class="netname">${esc(n.name)}</span><span class="nettype">${esc(n.type)}</span></div>
           ${n.description?`<div class="netdesc">${esc(n.description)}</div>`:''}
         </div>`).join('')}
@@ -889,7 +1062,7 @@ function renderInspector(){
     body.innerHTML = `
       <p style="color:var(--ink-soft)">This connection leaves the open group. Derived from ${e.nets.length} underlying net${e.nets.length===1?'':'s'}. Open "${esc(other?other.title:otherId)}" to edit it from that side.</p>
       ${e.nets.map(n=>`
-        <div class="netcard ${/HIGH_VOLTAGE/i.test(n.type)?'hv':''}">
+        <div class="netcard cat-${netCategory(n)}">
           <div class="nettop"><span class="netname">${esc(n.name)}</span><span class="nettype">${esc(n.type)}</span></div>
           ${n.description?`<div class="netdesc">${esc(n.description)}</div>`:''}
         </div>`).join('')}
@@ -902,6 +1075,15 @@ function renderInspector(){
     if (!n){ S.sel=null; renderInspector(); return; }
     eye.textContent = n.kind==='ic' ? 'Integrated circuit' : 'External block';
     title.textContent = n.label;
+    const sideRow = `
+      <div class="kv"><label>Voltage domain</label>
+        <select id="fSide">
+          <option value="" ${!n.hvSide?'selected':''}>Auto (${inferNodeSide(n.id)})</option>
+          <option value="lv" ${n.hvSide==='lv'?'selected':''}>Low voltage</option>
+          <option value="barrier" ${n.hvSide==='barrier'?'selected':''}>Isolation barrier (half/half)</option>
+          <option value="hv" ${n.hvSide==='hv'?'selected':''}>High voltage</option>
+        </select>
+      </div>`;
     if (n.kind==='ic'){
       body.innerHTML = `
         <div class="kv"><label>Type</label><div class="val">${esc(n.data.ic_type||'')}</div></div>
@@ -909,12 +1091,15 @@ function renderInspector(){
         <div class="kv"><label>Function</label><div class="val">${esc(n.data.description||'')}</div></div>
         <div class="kv"><label>Selection rationale</label><div class="val">${esc(n.data.selection_rationale||'')}</div></div>
         <div class="kv"><label>Datasheet</label><div class="val">${n.data.DatasheetUrl?`<a href="${esc(n.data.DatasheetUrl)}" target="_blank" rel="noopener">${esc(n.data.DatasheetUrl)}</a>`:'—'}</div></div>
+        ${sideRow}
         <div class="btnrow"><button class="danger" id="btnDelNode">Delete IC and its connections</button></div>`;
     } else {
       body.innerHTML = `
         <div class="kv"><label>Description</label><div class="val">${esc(n.data.description||'')}</div></div>
+        ${sideRow}
         <div class="btnrow"><button class="danger" id="btnDelNode">Delete block and its connections</button></div>`;
     }
+    $('fSide').onchange=()=>{ n.hvSide = $('fSide').value || undefined; render(); };
     const del=$('btnDelNode'); if (del) del.onclick=()=>deleteNode(n.id);
     return;
   }
@@ -926,7 +1111,7 @@ function renderInspector(){
   body.innerHTML = `
     ${e.nets.length?'':'<p style="color:var(--warn)">This connection has no nets yet — add at least one, or it will be dropped on export.</p>'}
     ${e.nets.map((n,i)=>`
-      <div class="netcard ${/HIGH_VOLTAGE/i.test(n.type)?'hv':''}">
+      <div class="netcard cat-${netCategory(n)}">
         <div class="nettop">
           <span class="netname">${esc(n.name)}</span>
           <span class="nettype">${esc(n.type)}</span>
@@ -981,7 +1166,17 @@ function renderStatus(){
     : `<span class="chip ok"><span class="dot"></span>all blocks connected</span>`);
   if (emptyEdges.length) bits.push(`<span class="chip warn"><span class="dot"></span>${emptyEdges.length} connection${emptyEdges.length>1?'s':''} without nets</span>`);
   if (ungrouped && ungrouped.members.length) bits.push(`<span class="chip warn"><span class="dot"></span>${ungrouped.members.length} ungrouped block${ungrouped.members.length>1?'s':''}</span>`);
-  $('statusBar').innerHTML = bits.join('');
+  $('statusBar').innerHTML = bits.join('') + renderLegend();
+}
+
+const LEGEND_LABELS = { hv:'HV', power:'Power', control:'Control', logic:'Logic', analog:'Analog/sense', switching:'Switching', other:'Other' };
+function renderLegend(){
+  const items = CATEGORY_PRIORITY.map(cat=>{
+    const style = NET_CATEGORY_STYLE[cat];
+    const dash = style.dash ? `border-top-style:dashed;` : '';
+    return `<span class="litem"><span class="lswatch" style="border-top-color:${style.color};${dash}"></span>${LEGEND_LABELS[cat]}</span>`;
+  }).join('');
+  return `<span id="legend">${items}</span>`;
 }
 
 /* ============================================================
