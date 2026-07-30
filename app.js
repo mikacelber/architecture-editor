@@ -1407,7 +1407,7 @@ function renderDrillDown(){
   const memberSet = new Set(g ? g.members : []);
   const members = S.nodes.filter(n=>memberSet.has(n.id));
   const edges = diagramEdges(S.edges).filter(e=>memberSet.has(e.source) && memberSet.has(e.target));
-  renderGrid(false);   // the in-group editor keeps its 8px snapping — this grid would lie
+  renderGrid(true);   // same adaptive lattice as the top level — in-group drags snap to it too (snapView)
   const bounds = members.length ? memberBounds(members) : { minX:0,maxX:0,minY:0,maxY:0 };
   const { incoming, outgoing } = openGroupPortals();
   // One dedicated slot per connection on each block edge: output dot per target
@@ -1943,17 +1943,19 @@ function renderStatus(){
     : `<span class="chip ok"><span class="dot"></span>all blocks connected</span>`);
   if (emptyEdges.length) bits.push(`<span class="chip warn"><span class="dot"></span>${emptyEdges.length} connection${emptyEdges.length>1?'s':''} without nets</span>`);
   if (ungrouped && ungrouped.members.length) bits.push(`<span class="chip warn"><span class="dot"></span>${ungrouped.members.length} ungrouped block${ungrouped.members.length>1?'s':''}</span>`);
-  $('statusBar').innerHTML = bits.join('') + renderLegend();
+  $('statusBar').innerHTML = bits.join('');
+  renderLegend();
 }
 
+// The legend floats over the canvas (top-right, see #legend in styles.css) so
+// the color key sits next to the wires it explains, in every view level.
 const LEGEND_LABELS = { hv:'HV', power:'Power', control:'Control', logic:'Logic', analog:'Analog/sense', switching:'Switching', other:'Other' };
 function renderLegend(){
-  const items = CATEGORY_PRIORITY.map(cat=>{
+  $('legend').innerHTML = CATEGORY_PRIORITY.map(cat=>{
     const style = NET_CATEGORY_STYLE[cat];
     const dash = style.dash ? `border-top-style:dashed;` : '';
     return `<span class="litem"><span class="lswatch" style="border-top-color:${style.color};${dash}"></span>${LEGEND_LABELS[cat]}</span>`;
   }).join('');
-  return `<span id="legend">${items}</span>`;
 }
 
 /* ============================================================
@@ -2062,7 +2064,7 @@ svg.addEventListener('pointermove', ev=>{
       p.x=snapView(w.x-drag.dx); p.y=snapView(w.y-drag.dy);
     } else {
       const n=nodeById(drag.id);
-      n.x=Math.round((w.x-drag.dx)/8)*8; n.y=Math.round((w.y-drag.dy)/8)*8;
+      n.x=snapView(w.x-drag.dx); n.y=snapView(w.y-drag.dy);
     }
     commitGesture(drag);
     drag.moved=true;
@@ -2097,7 +2099,8 @@ svg.addEventListener('pointermove', ev=>{
   }
   if (drag.mode==='routeV' || drag.mode==='routeH' || drag.mode==='routeE'){
     // Vertical segments only move in X; horizontal segments only move in Y.
-    const snap = isTopLevel() ? snapView : (v=>Math.round(v/8)*8);
+    // Both view levels snap to the visible grid pitch — what you see is what you snap to.
+    const snap = snapView;
     const raw = drag.mode==='routeH' ? snap(w.y) : snap(w.x);
     if (drag.topLevel){
       // Direction is taken from the POINTER (not from the snapped result), so once
@@ -2249,7 +2252,7 @@ $('btnAddIC').onclick=()=>{
     if (nodeById(pn)){ toast('A block with this part number already exists'); return; }
     const r=svg.getBoundingClientRect();
     const c=toWorld(r.left+r.width/2, r.top+r.height/2);
-    S.nodes.push({ id:pn, kind:'ic', label:pn, x:Math.round(c.x/8)*8-NODE_W_IC/2, y:Math.round(c.y/8)*8-NODE_H_IC/2,
+    S.nodes.push({ id:pn, kind:'ic', label:pn, x:snapView(c.x)-NODE_W_IC/2, y:snapView(c.y)-NODE_H_IC/2,
       w:NODE_W_IC, h:NODE_H_IC,
       data:{ ic_part_number:pn, ic_type:$('fType').value.trim(), manufacturer:$('fMan').value.trim(),
              description:$('fDesc').value.trim(), selection_rationale:$('fRat').value.trim(),

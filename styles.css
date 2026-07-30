@@ -106,9 +106,12 @@ footer{display:flex;align-items:center;gap:10px;padding:6px 16px;border-top:1px 
 .chip.ok{border-color:var(--ok);color:var(--ok)}
 .dot{width:7px;height:7px;border-radius:50%;background:currentColor}
 
-/* ---------- signal legend ---------- */
-#legend{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-left:auto;padding-left:10px;border-left:1px solid var(--line)}
-#legend .litem{display:inline-flex;align-items:center;gap:4px;font-size:10.5px}
+/* ---------- signal legend (floats over the canvas, top-right) ---------- */
+#legend{position:absolute;top:12px;right:12px;z-index:5;display:flex;align-items:center;justify-content:flex-end;
+  gap:10px;flex-wrap:wrap;max-width:min(60%,560px);font-family:var(--mono);
+  background:var(--panel);border:1.5px solid var(--line);border-radius:3px;padding:6px 10px;
+  pointer-events:none;user-select:none}
+#legend .litem{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;color:var(--ink-soft)}
 #legend .lswatch{width:16px;height:0;border-top-width:2.5px;border-top-style:solid;display:inline-block}
 
 /* ---------- modal ---------- */

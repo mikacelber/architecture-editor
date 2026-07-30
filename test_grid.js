@@ -118,7 +118,8 @@ check('snapG lands arbitrary drags on the grid', onGrid(T.snapG(517)) && onGrid(
   check('tile size tracks the zoom (cell = pitch x k)', Math.abs(c1-24)<0.01 && Math.abs(c2-12)<0.01);
   S.view.k=1; T.updateGridLOD();
   T.openGroupView("CONTROL_AND_SUPERVISION");
-  check('grid hidden in the drill-down (its 8px editor is untouched)', doc.getElementById('gridG').innerHTML==='');
+  check('grid stays visible in the drill-down (same adaptive lattice)', doc.getElementById('gridG').innerHTML.includes('gridPat'));
+  check('drill-down drags snap to the visible pitch (no 8px leftovers)', !/\/8\)\*8/.test(fs.readFileSync('app.js','utf8')));
   T.closeGroupView();
 }
 

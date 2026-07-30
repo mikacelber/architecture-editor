@@ -8,7 +8,8 @@ window.eval(fs.readFileSync('app.js','utf8')+`
 window.__T={get S(){return S;},get HIST(){return HIST;},loadFromContract,render,computeGroupEdges,visibleGroups,
  groupBlockRect,groupPortAnchor,groupEdgeRouteKey,groupEdgePts,laneOf,setGroupEdgeRoute,groupEdgeRouteOf,
  pointOutOfBlocks,groupPortRowsFor,groupsWithUngrouped,groupSide,groupPortOf,setGroupPortSide,
- moveGroupPortToRow,commit,commitGesture,undo,redo,resetGroupPortLayout,snapshotState,buildSessionJSON,groupPosOf,_routeCache,nodeById};`);
+ moveGroupPortToRow,commit,commitGesture,undo,redo,resetGroupPortLayout,snapshotState,buildSessionJSON,groupPosOf,_routeCache,nodeById,
+ openGroupView,closeGroupView};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -145,6 +146,18 @@ const key=e=>T.groupEdgeRouteKey(e.source,e.target);
   check('undo restores wire routes as part of the state', T.snapshotState()===full0);
   check('buttons exist in the page', !!window.document.getElementById('btnUndo') && !!window.document.getElementById('btnRedo'));
   check('undo button disabled state tracks the stack', window.document.getElementById('btnUndo').disabled===(T.HIST.past.length===0));
+}
+
+/* ============ 4. signal legend lives on the canvas, top-right ============ */
+{
+  const doc=window.document;
+  const legend=doc.getElementById('legend');
+  check('legend element sits inside the canvas window', !!legend && legend.parentElement===doc.getElementById('canvasWrap'));
+  check('legend lists all 7 signal categories', legend.querySelectorAll('.litem').length===7);
+  check('status bar no longer carries the legend', !doc.getElementById('statusBar').innerHTML.includes('litem'));
+  T.openGroupView('CONTROL_AND_SUPERVISION');
+  check('legend still populated in the drill-down', legend.querySelectorAll('.litem').length===7);
+  T.closeGroupView();
 }
 
 console.log('\n'+pass+' passed, '+fail+' failed');
