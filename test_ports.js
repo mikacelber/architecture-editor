@@ -141,7 +141,7 @@ const beforeDD = JSON.stringify(S.nodes.map(n=>[n.id,n.x,n.y]));
 T.openGroupView('CONTROL_AND_SUPERVISION');
 const ddNodes = window.document.getElementById('nodesG').innerHTML;
 check('drill-down still renders', ddNodes.includes('class="port"'));
-check('drill-down has no port-zone badges', !ddNodes.includes('class="portnum"'));
+check('drill-down blocks carry port-zone badges (top-level norm)', ddNodes.includes('class="portnum"'));
 check('member node positions untouched', JSON.stringify(S.nodes.map(n=>[n.id,n.x,n.y]))===beforeDD);
 T.closeGroupView();
 

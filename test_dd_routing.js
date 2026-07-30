@@ -10,7 +10,8 @@ window.SVGElement.prototype.getBoundingClientRect=()=>({left:0,top:0,width:1600,
 window.Element.prototype.setPointerCapture=()=>{};
 window.eval(fs.readFileSync('app.js','utf8')+`
 window.__T={get S(){return S;},loadFromContract,render,openGroupView,closeGroupView,diagramEdges,
- groupsWithUngrouped,nodeById,openGroupObstacleRects,nodeEdgeLaneKey,commit,undo,_routeCache};`);
+ groupsWithUngrouped,nodeById,openGroupObstacleRects,nodeEdgeLaneKey,commit,undo,_routeCache,
+ nodePortRowsFor,nodePortOf,nodePortRowY,setGroupPortSide,moveNodePortToRow,resetGroupPortLayout,GRID:GRID};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -118,7 +119,7 @@ check('every in-group connection carries a routing lane',
     const dir=p.dataset.portal.split(':')[0];
     const box=p.querySelector('rect[fill="var(--vellum)"]');
     const r={ x:+box.getAttribute('x'), y:+box.getAttribute('y'), w:+box.getAttribute('width'), h:+box.getAttribute('height') };
-    for (const hit of p.querySelectorAll('path[stroke="transparent"]')){
+    for (const hit of p.querySelectorAll('path[stroke="transparent"]:not(.seg-v):not(.seg-h)')){
       const pts=ptsOfPath(hit.getAttribute('d'));
       wireCount++;
       const a=pts[0], b=pts[pts.length-1];
@@ -133,6 +134,40 @@ check('every in-group connection carries a routing lane',
   check('every portal draws real wires (no floating stub)', wireCount>0);
   check('every boundary wire connects the portal edge to a specific member block', attached);
   check('boundary wires never lie across a block or another portal', clear);
+}
+
+/* ---- rule 7: member blocks use the top-level port system ---- */
+{
+  const g=T.groupsWithUngrouped().find(x=>x.id===best.id);
+  const withRows=g.members.map(id=>T.nodeById(id)).filter(n=>T.nodePortRowsFor(n.id).length>=2);
+  check('a member block with 2+ ports exists (test is meaningful)', withRows.length>0);
+  let pitchOk=true, insideOk=true, heightOk=true;
+  for (const n of withRows){
+    const ys=T.nodePortRowsFor(n.id).map(r=>T.nodePortRowY(n,r.row)).sort((a,b)=>a-b);
+    for(let i=1;i<ys.length;i++) if (Math.abs(ys[i]-ys[i-1]-T.GRID)>0.01) pitchOk=false;
+    for(const y of ys) if (y<0 || y>n.h) insideOk=false;
+    if (n.h<64) heightOk=false;
+  }
+  check('port rows spaced at the GRID pitch like the top level (no collapsed arrows)', pitchOk);
+  check('every port row sits inside its (grown) block', insideOk && heightOk);
+  check('port badges rendered on member blocks', doc.querySelectorAll('#nodesG .portnum').length>0);
+
+  const n0=withRows[0];
+  const r0=T.nodePortRowsFor(n0.id)[0], before=r0.side;
+  T.setGroupPortSide(n0.id, r0.src, r0.tgt, before==='left'?'right':'left'); T.render();
+  check('a node port flips to the opposite edge like a group port',
+    T.nodePortOf(n0.id, r0.src, r0.tgt, r0.dir).side!==before);
+  const rows=T.nodePortRowsFor(n0.id), last=rows[rows.length-1];
+  check('node port rows reorder by badge drag semantics',
+    T.moveNodePortToRow(n0.id, last.src+'→'+last.tgt, 0)===true &&
+    (T.render(), T.nodePortRowsFor(n0.id)[0].src===last.src && T.nodePortRowsFor(n0.id)[0].tgt===last.tgt));
+  T.resetGroupPortLayout(n0.id); T.render();
+  check('reset restores the default port layout', T.nodePortRowsFor(n0.id)[0].side===before);
+
+  // after all that shuffling, the sheet still obeys rule 1
+  let bad=null;
+  for (const w of wirePts()){ const hit=crossesAny(w.pts, T.openGroupObstacleRects()); if (hit) bad=w.eid+' over '+hit; }
+  check('wires still clear of every block after port edits'+(bad?' ['+bad+']':''), !bad);
 }
 
 T.closeGroupView();
