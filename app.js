@@ -2562,10 +2562,128 @@ function closeModal(){ $('modalOverlay').classList.remove('open'); }
 $('modalClose').onclick=closeModal;
 $('modalOverlay').addEventListener('pointerdown',ev=>{ if(ev.target===$('modalOverlay')) closeModal(); });
 
+/* ============================================================
+   DIGIKEY PART SEARCH (Add IC)
+   Client-credentials OAuth against the DigiKey Product Search v4
+   API, straight from the browser. Credentials come from the user
+   (free at developer.digikey.com) and live in localStorage only —
+   they are never part of the session/export JSON. DigiKey does not
+   always allow cross-origin browser calls, so an optional CORS
+   proxy prefix can be configured alongside the credentials.
+   ============================================================ */
+const DK_BASE = 'https://api.digikey.com';
+function dkConfig(){
+  try {
+    return { id: localStorage.getItem('dk_client_id')||'',
+             secret: localStorage.getItem('dk_client_secret')||'',
+             proxy: localStorage.getItem('dk_proxy')||'' };
+  } catch(e){ return { id:'', secret:'', proxy:'' }; }
+}
+function dkSaveConfig(id, secret, proxy){
+  try {
+    localStorage.setItem('dk_client_id', id);
+    localStorage.setItem('dk_client_secret', secret);
+    localStorage.setItem('dk_proxy', proxy);
+  } catch(e){ /* storage unavailable — config just won't persist */ }
+  _dkToken = null;
+}
+function dkUrl(path){
+  const { proxy } = dkConfig();
+  return proxy ? proxy + encodeURIComponent(DK_BASE+path) : DK_BASE+path;
+}
+let _dkToken = null;   // { token, exp } — cached until shortly before expiry
+async function dkToken(){
+  const { id, secret } = dkConfig();
+  if (!id || !secret) throw new Error('No DigiKey credentials — open "DigiKey API settings" below');
+  if (_dkToken && Date.now() < _dkToken.exp - 60000) return _dkToken.token;
+  const res = await fetch(dkUrl('/v1/oauth2/token'), { method:'POST',
+    headers:{ 'Content-Type':'application/x-www-form-urlencoded' },
+    body:`client_id=${encodeURIComponent(id)}&client_secret=${encodeURIComponent(secret)}&grant_type=client_credentials` });
+  if (!res.ok) throw new Error('DigiKey auth failed (HTTP '+res.status+')');
+  const j = await res.json();
+  _dkToken = { token: j.access_token, exp: Date.now() + (j.expires_in||600)*1000 };
+  return _dkToken.token;
+}
+// Pure: v4 response → rows for the picker, HIGHEST STOCK FIRST. Liberal in the
+// field shapes it accepts — DigiKey has shipped several near-identical ones.
+function dkNormalizeProducts(json){
+  return ((json && json.Products) || []).map(p=>{
+    const pn = p.ManufacturerProductNumber || p.ManufacturerPartNumber || '';
+    const man = (p.Manufacturer && (p.Manufacturer.Name || p.Manufacturer.Value)) || '';
+    const desc = (p.Description && (p.Description.ProductDescription || p.Description.Value))
+      || p.ProductDescription || '';
+    const stock = +(p.QuantityAvailable ?? 0);
+    let price = p.UnitPrice;
+    if (price == null){
+      const breaks = (p.ProductVariations||[]).flatMap(v=>v.StandardPricing||[]);
+      if (breaks.length) price = breaks.slice().sort((a,b)=>a.BreakQuantity-b.BreakQuantity)[0].UnitPrice;
+    }
+    return { pn, man, desc, stock, price: price!=null ? +price : null, datasheet: p.DatasheetUrl || '' };
+  }).filter(x=>x.pn)
+    .sort((a,b)=> b.stock - a.stock || a.pn.localeCompare(b.pn));
+}
+async function dkSearch(keyword){
+  const token = await dkToken();
+  const res = await fetch(dkUrl('/products/v4/search/keyword'), { method:'POST',
+    headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer '+token,
+      'X-DIGIKEY-Client-Id': dkConfig().id,
+      'X-DIGIKEY-Locale-Site':'US', 'X-DIGIKEY-Locale-Currency':'USD' },
+    body: JSON.stringify({ Keywords: keyword, Limit: 25, Offset: 0 }) });
+  if (!res.ok) throw new Error('DigiKey search failed (HTTP '+res.status+')');
+  return dkNormalizeProducts(await res.json());
+}
+const dkFmtStock = s => s.toLocaleString('en-US');
+const dkFmtPrice = p => p==null ? '—' : '$'+(+p).toFixed(p<1?4:2);
+// Rows into #dkResults; clicking one autofills the identity fields (part
+// number, type, manufacturer, datasheet) and leaves "Function in this system"
+// and "Selection rationale" — the engineering judgement — to the user.
+function dkRenderResults(list){
+  const box = $('dkResults');
+  if (!list.length){ box.innerHTML = '<p class="hint">No parts found.</p>'; return; }
+  box.innerHTML = list.map((r,i)=>`
+    <button type="button" class="dkrow" data-i="${i}">
+      <span class="dkpn">${esc(r.pn)}</span><span class="dkman">${esc(r.man)}</span>
+      <span class="dkdesc">${esc(r.desc)}</span>
+      <span class="dkstock">${dkFmtStock(r.stock)} in stock</span><span class="dkprice">${dkFmtPrice(r.price)}</span>
+    </button>`).join('');
+  box.querySelectorAll('.dkrow').forEach(btn=>btn.onclick=()=>{
+    const r = list[+btn.dataset.i];
+    $('fPN').value = r.pn;
+    $('fType').value = r.desc;
+    $('fMan').value = r.man.toUpperCase();
+    $('fUrl').value = r.datasheet;
+    box.querySelectorAll('.dkrow').forEach(b=>b.classList.toggle('on', b===btn));
+    $('fDesc').focus();
+  });
+}
+
 $('btnAddIC').onclick=()=>{
   const openGroup = !isTopLevel() && S.openGroup!==UNGROUPED_ID
     ? S.groups.find(g=>g.id===S.openGroup) : null;
+  const cfg = dkConfig();
   openModal('Add IC block', `
+    <div class="dksearch">
+      <div class="kv"><label>Search DigiKey by part number</label>
+        <div class="row"><input type="text" id="dkQuery" placeholder="TPS7A21" autocomplete="off">
+        <button id="dkGo" style="flex:0 0 auto">Search</button></div>
+      </div>
+      <div id="dkStatus" class="hint" style="margin:4px 0"></div>
+      <div id="dkResults" class="dkresults"></div>
+      <p class="hint" style="margin-bottom:4px">Results are sorted by stock quantity, highest first. Picking a part fills in its
+        identity below — the function in this system and the selection rationale stay yours to write.
+        <button class="linklike" id="dkCfgToggle">DigiKey API settings</button></p>
+      <div id="dkCfgPane" style="display:${cfg.id?'none':'block'}">
+        <div class="row">
+          <div class="kv"><label>Client ID</label><input type="text" id="dkId" value="${esc(cfg.id)}" autocomplete="off"></div>
+          <div class="kv"><label>Client Secret</label><input type="text" id="dkSecret" value="${esc(cfg.secret)}" autocomplete="off"></div>
+        </div>
+        <div class="kv"><label>CORS proxy prefix (optional)</label><input type="text" id="dkProxy" value="${esc(cfg.proxy)}" placeholder="https://corsproxy.io/?url="></div>
+        <p class="hint">Free credentials at developer.digikey.com (a "Product Information v4" app, client-credentials flow).
+          They are stored only in this browser (localStorage), never in the session or the export.
+          If your browser blocks the request (CORS), route it through a proxy prefix — the full DigiKey URL is appended to it.</p>
+        <button id="dkSave">Save settings</button>
+      </div>
+    </div>
     <div class="kv"><label>Part number *</label><input type="text" id="fPN" placeholder="TPS7A21"></div>
     <div class="kv"><label>IC type *</label><input type="text" id="fType" placeholder="Low-noise LDO regulator"></div>
     <div class="kv"><label>Manufacturer</label><input type="text" id="fMan" placeholder="TEXAS INSTRUMENTS"></div>
@@ -2577,6 +2695,27 @@ $('btnAddIC').onclick=()=>{
       : 'It will be ungrouped — open a group first if it belongs in one.'} Drag from its copper port to wire it, then add the nets on each connection.</p>
   `, `<button id="mCancel">Cancel</button><button class="primary" id="mOk">Add IC</button>`);
   $('mCancel').onclick=closeModal;
+  $('dkCfgToggle').onclick=()=>{ const p=$('dkCfgPane'); p.style.display = p.style.display==='none' ? 'block' : 'none'; };
+  $('dkSave').onclick=()=>{
+    dkSaveConfig($('dkId').value.trim(), $('dkSecret').value.trim(), $('dkProxy').value.trim());
+    $('dkCfgPane').style.display='none';
+    toast('DigiKey settings saved to this browser');
+  };
+  const runSearch = async ()=>{
+    const q = $('dkQuery').value.trim();
+    if (!q){ $('dkStatus').textContent='Type a part number to search.'; return; }
+    $('dkStatus').textContent='Searching DigiKey…';
+    $('dkResults').innerHTML='';
+    try {
+      const list = await dkSearch(q);
+      $('dkStatus').textContent = list.length ? list.length+' part'+(list.length===1?'':'s')+' — highest stock first' : '';
+      dkRenderResults(list);
+    } catch(err){
+      $('dkStatus').textContent = String(err.message||err);
+    }
+  };
+  $('dkGo').onclick=runSearch;
+  $('dkQuery').addEventListener('keydown', ev=>{ if (ev.key==='Enter'){ ev.preventDefault(); runSearch(); } });
   $('mOk').onclick=()=>{
     const pn=$('fPN').value.trim();
     if (!pn || !$('fType').value.trim() || !$('fDesc').value.trim()){ toast('Part number, type and function are required'); return; }
