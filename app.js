@@ -1520,6 +1520,11 @@ const BOUNDARY_LANE_MAX = 3;
 // Boundary wires run portal ↔ member block, so every arrow is attached to the
 // exact block it feeds: the portal box aggregates the neighbouring group, the
 // wires say WHAT connects to WHAT.
+// The portal columns are anchored to the member bounds AT OPEN TIME, frozen
+// for the whole visit: dragging a block around must not tow the FROM/TO
+// columns along. Re-anchored when the group is (re)opened or auto-laid-out.
+let _portalBase = null, _portalBaseGroup = null;
+function resetPortalBase(){ _portalBase = null; _portalBaseGroup = null; }
 function drillSheet(){
   const g = groupsWithUngrouped().find(x=>x.id===S.openGroup);
   const memberSet = new Set(g ? g.members : []);
@@ -1527,7 +1532,11 @@ function drillSheet(){
   // Block dimensions follow the port rows (a connection added since the last
   // measure grows the block) — refresh before anything is placed or routed.
   updateMemberDims(members);
-  const bounds = members.length ? memberBounds(members) : { minX:0,maxX:0,minY:0,maxY:0 };
+  if (_portalBaseGroup !== S.openGroup || !_portalBase){
+    _portalBase = members.length ? memberBounds(members) : { minX:0,maxX:0,minY:0,maxY:0 };
+    _portalBaseGroup = S.openGroup;
+  }
+  const bounds = _portalBase;
   const all = diagramEdges(S.edges);
   const internal = all.filter(e=>memberSet.has(e.source) && memberSet.has(e.target));
   const { incoming, outgoing } = openGroupPortals();
@@ -1620,10 +1629,7 @@ function renderDrillDown(){
   const sheet = drillSheet();
   const { members, portals, obstacles, specs } = sheet;
   renderGrid(true);   // same adaptive lattice as the top level — in-group drags snap to it too (snapView)
-  // The crosshair "new connection" port sits in the block's foot area, below
-  // the port zone, so it never collides with a connection's own row.
-  const linkY = new Map(members.map(n=>[n.id, n.y+n.h-8]));
-  lastPorts = { linkY };
+  lastPorts = null;   // no crosshair link port in the drill-down (removed by design)
   // Undo (or an old session) can leave wires without a lane — reassign, once.
   if (specs.some(s=>S.groupEdgeLanes[nodeEdgeLaneKey(s.e)]==null)) assignNodeEdgeLanes();
   // Forget routes for connections that no longer exist (deletions, regrouping).
@@ -1721,9 +1727,6 @@ function renderDrillDown(){
         <text x="${bx+bw/2}" y="${y+4}" text-anchor="middle" font-family="var(--mono)" font-size="10" font-weight="600" fill="var(--ink)">${r.nets}</text>
       </g>`;
     }).join('');
-    // Crosshair "new connection" port in the foot area, clear of the port rows.
-    const linkPort = `<circle class="port" data-port="${esc(n.id)}" cx="${n.w}" cy="${n.h-8}" r="6"
-        fill="var(--copper-soft)" stroke="var(--copper)" stroke-width="1.5" style="cursor:crosshair"/>`;
     if (n.kind==='ic'){
       return `<g class="node" data-nid="${esc(n.id)}" transform="translate(${n.x},${n.y})" style="cursor:move">
         <rect x="-3" y="4" width="${n.w+6}" height="${n.h}" rx="5" fill="#00000018"/>
@@ -1736,7 +1739,6 @@ function renderDrillDown(){
         ${hvSideTag(side, n.w)}
         <line x1="10" y1="${sepY}" x2="${n.w-10}" y2="${sepY}" stroke="var(--silk)" stroke-width="1" opacity=".25"/>
         ${portRows}
-        ${linkPort}
       </g>`;
     }
     return `<g class="node" data-nid="${esc(n.id)}" transform="translate(${n.x},${n.y})" style="cursor:move">
@@ -1748,7 +1750,6 @@ function renderDrillDown(){
       ${hvSideTag(side, n.w)}
       <line x1="10" y1="${sepY}" x2="${n.w-10}" y2="${sepY}" stroke="var(--ink)" stroke-width="1" opacity=".25"/>
       ${portRows}
-      ${linkPort}
     </g>`;
   }).join('');
 }
@@ -1967,6 +1968,7 @@ function openGroupView(groupId){
   const g = groupsWithUngrouped().find(x=>x.id===groupId);
   if (!g || !g.members.length) return;
   S.openGroup = groupId;
+  resetPortalBase();   // anchor the FROM/TO columns to this visit's layout
   S.sel = null;
   render();
   fitView();
@@ -2007,7 +2009,7 @@ function renderInspector(){
       <div class="kv"><label>Groups</label><div class="val">${groups.length} shown${ungrouped&&ungrouped.members.length?` · ${ungrouped.members.length} ungrouped`:''}</div></div>
       <p style="margin-top:14px">${isTopLevel()
         ? 'System-level view — each block is a functional group, derived automatically from the underlying connections. Select a group or a connection to inspect it, or double-click a group to open it. Drag a group to reposition it.'
-        : 'Select a block or a connection to inspect it. Drag from a copper port to another block to create a connection. Press <b>Delete</b> to remove the selection. Click "System" above to return to the top level.'}</p>`;
+        : 'Select a block or a connection to inspect it. Press <b>Delete</b> to remove the selection. Click "System" above to return to the top level.'}</p>`;
     if (descTruncated) $('btnFullDesc').onclick = () => {
       openModal(S.meta.title||'System description',
         `<p style="white-space:pre-wrap;line-height:1.6">${esc(S.meta.description)}</p>`,
@@ -2587,6 +2589,15 @@ function dkSaveConfig(id, secret, proxy){
   } catch(e){ /* storage unavailable — config just won't persist */ }
   _dkToken = null;
 }
+// Optional repo-side credential file (digikey_credentials.json next to
+// index.html) so the keys can be picked up with one click instead of pasting.
+async function dkLoadCredentialFile(){
+  const res = await fetch('digikey_credentials.json', { cache:'no-store' });
+  if (!res.ok) throw new Error('digikey_credentials.json not found (HTTP '+res.status+')');
+  const j = await res.json();
+  if (!j.client_id || !j.client_secret) throw new Error('digikey_credentials.json is missing client_id / client_secret');
+  return { id:String(j.client_id), secret:String(j.client_secret), proxy:String(j.cors_proxy||'') };
+}
 function dkUrl(path){
   const { proxy } = dkConfig();
   return proxy ? proxy + encodeURIComponent(DK_BASE+path) : DK_BASE+path;
@@ -2681,7 +2692,10 @@ $('btnAddIC').onclick=()=>{
         <p class="hint">Free credentials at developer.digikey.com (a "Product Information v4" app, client-credentials flow).
           They are stored only in this browser (localStorage), never in the session or the export.
           If your browser blocks the request (CORS), route it through a proxy prefix — the full DigiKey URL is appended to it.</p>
-        <button id="dkSave">Save settings</button>
+        <div class="btnrow" style="margin-top:0">
+          <button id="dkSave">Save settings</button>
+          <button id="dkLoadFile" title="Read digikey_credentials.json from the app folder">Load from digikey_credentials.json</button>
+        </div>
       </div>
     </div>
     <div class="kv"><label>Part number *</label><input type="text" id="fPN" placeholder="TPS7A21"></div>
@@ -2692,7 +2706,7 @@ $('btnAddIC').onclick=()=>{
     <div class="kv"><label>Datasheet URL</label><input type="text" id="fUrl" placeholder="https://www.ti.com/lit/ds/symlink/....pdf"></div>
     <p class="hint">The new block appears at the center of the view. ${openGroup
       ? `It will join the open group "${esc(openGroup.title)}".`
-      : 'It will be ungrouped — open a group first if it belongs in one.'} Drag from its copper port to wire it, then add the nets on each connection.</p>
+      : 'It will be ungrouped — open a group first if it belongs in one.'}</p>
   `, `<button id="mCancel">Cancel</button><button class="primary" id="mOk">Add IC</button>`);
   $('mCancel').onclick=closeModal;
   $('dkCfgToggle').onclick=()=>{ const p=$('dkCfgPane'); p.style.display = p.style.display==='none' ? 'block' : 'none'; };
@@ -2700,6 +2714,15 @@ $('btnAddIC').onclick=()=>{
     dkSaveConfig($('dkId').value.trim(), $('dkSecret').value.trim(), $('dkProxy').value.trim());
     $('dkCfgPane').style.display='none';
     toast('DigiKey settings saved to this browser');
+  };
+  $('dkLoadFile').onclick=async()=>{
+    try {
+      const c = await dkLoadCredentialFile();
+      $('dkId').value=c.id; $('dkSecret').value=c.secret;
+      if (c.proxy) $('dkProxy').value=c.proxy;
+      dkSaveConfig(c.id, c.secret, $('dkProxy').value.trim());
+      toast('DigiKey credentials loaded from file');
+    } catch(err){ $('dkStatus').textContent=String(err.message||err); }
   };
   const runSearch = async ()=>{
     const q = $('dkQuery').value.trim();
@@ -2889,7 +2912,7 @@ function toast(msg){
   clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove('show'),2200);
 }
 
-$('btnLayout').onclick=()=>{ commit(); if (isTopLevel()){ autoLayoutGroups(); assignRouteLanes(); } else { autoLayoutGroupMembers(S.openGroup); assignNodeEdgeLanes(); } render(); fitView(); };
+$('btnLayout').onclick=()=>{ commit(); if (isTopLevel()){ autoLayoutGroups(); assignRouteLanes(); } else { autoLayoutGroupMembers(S.openGroup); resetPortalBase(); assignNodeEdgeLanes(); } render(); fitView(); };
 $('btnFit').onclick=fitView;
 $('btnUndo').onclick=undo;
 $('btnRedo').onclick=redo;

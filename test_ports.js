@@ -140,8 +140,9 @@ check('export unaffected by port sides', JSON.stringify(T.buildPipelineJSON())==
 const beforeDD = JSON.stringify(S.nodes.map(n=>[n.id,n.x,n.y]));
 T.openGroupView('CONTROL_AND_SUPERVISION');
 const ddNodes = window.document.getElementById('nodesG').innerHTML;
-check('drill-down still renders', ddNodes.includes('class="port"'));
+check('drill-down still renders', ddNodes.includes('class="node"'));
 check('drill-down blocks carry port-zone badges (top-level norm)', ddNodes.includes('class="portnum"'));
+check('no crosshair link port on drill-down blocks (removed by design)', !ddNodes.includes('class="port"'));
 check('member node positions untouched', JSON.stringify(S.nodes.map(n=>[n.id,n.x,n.y]))===beforeDD);
 T.closeGroupView();
 

@@ -47,8 +47,11 @@ const FIX={Products:[
 /* ---- OAuth + search plumbing over a mocked network ---- */
 {
   let calls=[];
+  const CREDFILE=JSON.parse(fs.readFileSync('digikey_credentials.json','utf8'));
   window.fetch=async (url,opts)=>{
     calls.push(url);
+    if (String(url).includes('digikey_credentials.json'))
+      return { ok:true, json:async()=>CREDFILE };
     if (String(url).includes('/oauth2/token'))
       return { ok:true, json:async()=>({ access_token:'TOK', expires_in:600 }) };
     return { ok:true, json:async()=>FIX };
@@ -83,6 +86,13 @@ const FIX={Products:[
     check('function and rationale stay for the user to write',
       doc.getElementById('fDesc').value==='' && doc.getElementById('fRat').value==='');
     check('the picked row is highlighted', rows[0].classList.contains('on'));
+
+    /* ---- repo-side credential file, selectable from the settings pane ---- */
+    check('settings pane offers "Load from digikey_credentials.json"', !!doc.getElementById('dkLoadFile'));
+    await doc.getElementById('dkLoadFile').onclick();
+    check('loading the file fills and saves the credentials',
+      T.dkConfig().id===CREDFILE.client_id && T.dkConfig().secret===CREDFILE.client_secret);
+    check('the credential file carries both keys', !!CREDFILE.client_id && !!CREDFILE.client_secret);
 
     console.log('\n'+pass+' passed, '+fail+' failed');
     process.exit(fail?1:0);

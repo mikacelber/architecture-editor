@@ -206,6 +206,15 @@ check('every in-group connection carries a routing lane',
   check('wires still clear of every block with the column dragged out'+(bad?' ['+bad+']':''), !bad);
   T.undo();
   check('undo restores the column position', T.portalOffsetOf(best.id,'in').dx===0 && T.portalOffsetOf(best.id,'in').dy===0);
+
+  // the portal columns are anchored per visit: dragging a member block
+  // around must NOT tow the FROM/TO columns along
+  const posBefore=T.drillSheet().portals.map(p=>p.key+'@'+p.r.x+','+p.r.y).join('|');
+  const mover=T.nodeById(T.groupsWithUngrouped().find(x=>x.id===best.id).members[0]);
+  const oy=mover.y; mover.y+=240; T.render();
+  const posAfter=T.drillSheet().portals.map(p=>p.key+'@'+p.r.x+','+p.r.y).join('|');
+  check('moving a member block leaves the FROM/TO columns where they were', posAfter===posBefore);
+  mover.y=oy; T.render();
 }
 
 /* ---- rule 9: portal shape and clickable net badges ---- */
