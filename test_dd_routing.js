@@ -12,7 +12,7 @@ window.eval(fs.readFileSync('app.js','utf8')+`
 window.__T={get S(){return S;},loadFromContract,render,openGroupView,closeGroupView,diagramEdges,
  groupsWithUngrouped,nodeById,openGroupObstacleRects,nodeEdgeLaneKey,commit,undo,_routeCache,
  nodePortRowsFor,nodePortOf,nodePortRowY,setGroupPortSide,moveNodePortToRow,resetGroupPortLayout,GRID:GRID,
- drillSheet,portalOffsetOf,setPortalOffset,movePortalToRow,PORTAL_MARGIN:PORTAL_MARGIN,LANE_PITCH:LANE_PITCH,PORTAL_GAP:PORTAL_GAP};`);
+ drillSheet,portalOffsetOf,setPortalOffset,PORTAL_MARGIN:PORTAL_MARGIN,LANE_PITCH:LANE_PITCH,PORTAL_H:PORTAL_H};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -118,8 +118,7 @@ check('every in-group connection carries a routing lane',
   let wireCount=0, attached=true, clear=true;
   for (const p of portals){
     const dir=p.dataset.portal.split(':')[0];
-    const box=p.querySelector('rect[fill="var(--vellum)"]');
-    const r={ x:+box.getAttribute('x'), y:+box.getAttribute('y'), w:+box.getAttribute('width'), h:+box.getAttribute('height') };
+    const r={ x:+p.dataset.x, y:+p.dataset.y, w:+p.dataset.w, h:+p.dataset.h };
     for (const hit of p.querySelectorAll('path[stroke="transparent"]:not(.seg-v):not(.seg-h)')){
       const pts=ptsOfPath(hit.getAttribute('d'));
       wireCount++;
@@ -207,23 +206,30 @@ check('every in-group connection carries a routing lane',
   check('wires still clear of every block with the column dragged out'+(bad?' ['+bad+']':''), !bad);
   T.undo();
   check('undo restores the column position', T.portalOffsetOf(best.id,'in').dx===0 && T.portalOffsetOf(best.id,'in').dy===0);
+}
 
-  // reorder within a column — the others shuffle to make room
-  const col = (inPortals.length>=2?inPortals:outPortals);
-  if (col.length>=2){
-    const dir=col[0].dir;
-    const ids=col.map(p=>dir==='in'?p.item.source:p.item.target);
-    T.commit();
-    check('a portal drops at the top and the rest shuffle down',
-      T.movePortalToRow(best.id, dir, ids[ids.length-1], 0, ids)===true &&
-      (T.render(), (x=>x[0]===ids[ids.length-1] && x[1]===ids[0])(
-        T.drillSheet().portals.filter(p=>p.dir===dir).map(p=>dir==='in'?p.item.source:p.item.target))));
-    T.undo();
-    const restored=T.drillSheet().portals.filter(p=>p.dir===dir).map(p=>dir==='in'?p.item.source:p.item.target);
-    check('undo restores the portal order', JSON.stringify(restored)===JSON.stringify(ids));
-  } else {
-    check('portal columns with 2+ portals exist to reorder (fixture too small?)', false);
-  }
+/* ---- rule 9: portal shape and clickable net badges ---- */
+{
+  T.render();
+  const sr=T.PORTAL_H/2;
+  const domPortals=[...doc.querySelectorAll('#edgesG .portal')];
+  // outer end is a semicircle: the box path carries an arc of radius PORTAL_H/2
+  const shaped=domPortals.every(p=>{
+    const d=(p.querySelector('path[fill="var(--vellum)"]')||{getAttribute:()=>''}).getAttribute('d')||'';
+    return d.includes(`A ${sr} ${sr}`);
+  });
+  check('every portal box has a semicircular outer end (arc r='+sr+')', shaped);
+  check('portals expose no reorder handle (feature removed)', doc.querySelectorAll('.portalnum').length===0);
+
+  // the mid-wire net-count badge is clickable and lights up with its edge
+  const badges=[...doc.querySelectorAll('#edgesG .netbadge')];
+  check('every drawn wire carries a clickable net badge', badges.length>0 &&
+    badges.every(b=>b.dataset.eid && !(b.getAttribute('style')||'').includes('pointer-events:none')));
+  const bEdge=T.drillSheet().specs.find(s=>s.kind!=='internal');
+  S.sel={ type:'edge', id:bEdge.e.id }; T.render();
+  const lit=[...doc.querySelectorAll('#edgesG .netbadge')].find(b=>b.dataset.eid===bEdge.e.id);
+  check('selecting a boundary connection lights its badge', !!lit && lit.querySelector('rect').getAttribute('fill')==='var(--probe)');
+  S.sel=null; T.render();
 }
 
 T.closeGroupView();
