@@ -221,6 +221,18 @@ check('every in-group connection carries a routing lane',
   check('every portal box has a semicircular outer end (arc r='+sr+')', shaped);
   check('portals expose no reorder handle (feature removed)', doc.querySelectorAll('.portalnum').length===0);
 
+  // titles never truncated; ONE shared width keeps both columns uniform
+  const titleOf=id=>{ const g2=T.groupsWithUngrouped().find(x=>x.id===id); return g2?g2.title:id; };
+  const fullTitle=domPortals.every(p=>{
+    const [d2,otherId]=p.dataset.portal.split(/:(.+)/);
+    const texts=[...p.querySelectorAll('text')].map(t=>t.textContent);
+    return texts.includes(titleOf(otherId));
+  });
+  check('every portal shows its neighbour title in full (no truncation)', fullTitle);
+  const widths=new Set(domPortals.map(p=>p.dataset.w));
+  check('all portals share one width ('+[...widths][0]+'px)', widths.size===1);
+  check('portal width grew to fit the longest title', +[...widths][0] >= 156);
+
   // the mid-wire net-count badge is clickable and lights up with its edge
   const badges=[...doc.querySelectorAll('#edgesG .netbadge')];
   check('every drawn wire carries a clickable net badge', badges.length>0 &&

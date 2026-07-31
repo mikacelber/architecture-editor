@@ -1470,12 +1470,24 @@ function setPortalOffset(gid, dir, dx, dy){
   const o = S.portalOffsets[gid] || (S.portalOffsets[gid] = {});
   o[dir] = { dx: dir==='in' ? Math.min(0,dx) : Math.max(0,dx), dy };
 }
-function portalRect(i, count, dir, memberBounds, margin, off){
+// `w` widens the box beyond the base PORTAL_W when a neighbour's title needs
+// the room (drillSheet passes ONE shared width for every portal of the open
+// group, so the two columns stay visually uniform and no title is truncated).
+function portalRect(i, count, dir, memberBounds, margin, off, w){
+  const W = w != null ? w : PORTAL_W;
   const m = margin != null ? margin : PORTAL_MARGIN;
   const o = off || { dx:0, dy:0 };
   const y = (memberBounds.minY+memberBounds.maxY)/2 - ((count-1)*PORTAL_GAP)/2 + i*PORTAL_GAP - PORTAL_H/2 + o.dy;
-  const x = (dir==='in' ? memberBounds.minX - m - PORTAL_W : memberBounds.maxX + m) + o.dx;
-  return { x, y, w:PORTAL_W, h:PORTAL_H };
+  const x = (dir==='in' ? memberBounds.minX - m - W : memberBounds.maxX + m) + o.dx;
+  return { x, y, w:W, h:PORTAL_H };
+}
+// Shared portal width for one sheet: room for the longest neighbour title at
+// 12px mono — text inset (14) + gap + count badge zone on the flat end (38),
+// never below the base width, rounded up onto the grid.
+function portalWidthFor(labels){
+  let need = PORTAL_W;
+  for (const l of labels) need = Math.max(need, 14 + textWidth(l, 12, true) + 38);
+  return Math.ceil(need/GRID)*GRID;
 }
 
 function memberBounds(members){
@@ -1531,13 +1543,18 @@ function drillSheet(){
   const lanesFor = (margin, off) =>
     Math.max(0, Math.min(LANE_MAX, Math.floor((margin + Math.abs(off.dx) - GROUP_PORT_STUB - ROUTE_CLEARANCE)/LANE_PITCH)));
   const inMaxLane = lanesFor(inMargin, inOff), outMaxLane = lanesFor(outMargin, outOff);
+  // ONE width for every portal on this sheet — sized so the longest neighbour
+  // title fits untruncated, and both columns stay uniform.
+  const titleOf = id => { const gg = groupsWithUngrouped().find(x=>x.id===id); return gg ? gg.title : id; };
+  const portalW = portalWidthFor([
+    ...incoming.map(x=>titleOf(x.source)), ...outgoing.map(x=>titleOf(x.target))]);
   const portals = [
     ...incoming.map((item,i)=>({ item, dir:'in', key:'in:'+item.source, maxLane:inMaxLane,
-      r: portalRect(i, incoming.length, 'in', bounds, inMargin, inOff),
+      r: portalRect(i, incoming.length, 'in', bounds, inMargin, inOff, portalW),
       unders: all.filter(e=>memberSet.has(e.target) && idx.get(e.source)===item.source)
         .sort((a,b)=>(a.target+'|'+a.id).localeCompare(b.target+'|'+b.id)) })),
     ...outgoing.map((item,i)=>({ item, dir:'out', key:'out:'+item.target, maxLane:outMaxLane,
-      r: portalRect(i, outgoing.length, 'out', bounds, outMargin, outOff),
+      r: portalRect(i, outgoing.length, 'out', bounds, outMargin, outOff, portalW),
       unders: all.filter(e=>memberSet.has(e.source) && idx.get(e.target)===item.target)
         .sort((a,b)=>(a.source+'|'+a.id).localeCompare(b.source+'|'+b.id)) }))
   ];
@@ -1765,7 +1782,7 @@ function portalMarkupFor(p, selected, wires){
     <path d="${boxD}" fill="var(--vellum)"
       stroke="${selected?'var(--probe)':'var(--ink-soft)'}" stroke-width="${selected?2.5:1.5}" stroke-dasharray="4 3"/>
     <text x="${tx}" y="${r.y+18}" font-family="var(--mono)" font-size="9" letter-spacing=".08em" fill="var(--ink-soft)">${dir==='in'?'FROM':'TO'}</text>
-    <text x="${tx}" y="${r.y+36}" font-family="var(--mono)" font-size="12" font-weight="600" fill="var(--ink)">${esc(label.slice(0,17))}</text>
+    <text x="${tx}" y="${r.y+36}" font-family="var(--mono)" font-size="12" font-weight="600" fill="var(--ink)">${esc(label)}</text>
     <circle cx="${bcx}" cy="${r.y+r.h/2}" r="9" fill="var(--paper)" stroke="${style.color}" stroke-width="1.2"/>
     <text x="${bcx}" y="${r.y+r.h/2+3.5}" text-anchor="middle" font-family="var(--mono)" font-size="9.5" fill="var(--ink)">${item.nets.length}</text>
   </g>`;
