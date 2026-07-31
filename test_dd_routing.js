@@ -11,7 +11,8 @@ window.Element.prototype.setPointerCapture=()=>{};
 window.eval(fs.readFileSync('app.js','utf8')+`
 window.__T={get S(){return S;},loadFromContract,render,openGroupView,closeGroupView,diagramEdges,
  groupsWithUngrouped,nodeById,openGroupObstacleRects,nodeEdgeLaneKey,commit,undo,_routeCache,
- nodePortRowsFor,nodePortOf,nodePortRowY,setGroupPortSide,moveNodePortToRow,resetGroupPortLayout,GRID:GRID};`);
+ nodePortRowsFor,nodePortOf,nodePortRowY,setGroupPortSide,moveNodePortToRow,resetGroupPortLayout,GRID:GRID,
+ drillSheet,portalOffsetOf,setPortalOffset,movePortalToRow,PORTAL_MARGIN:PORTAL_MARGIN,LANE_PITCH:LANE_PITCH,PORTAL_GAP:PORTAL_GAP};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -168,6 +169,61 @@ check('every in-group connection carries a routing lane',
   let bad=null;
   for (const w of wirePts()){ const hit=crossesAny(w.pts, T.openGroupObstacleRects()); if (hit) bad=w.eid+' over '+hit; }
   check('wires still clear of every block after port edits'+(bad?' ['+bad+']':''), !bad);
+}
+
+/* ---- rule 8: portal columns — corridor scales, drags clamp, order shuffles ---- */
+{
+  const sheet=T.drillSheet();
+  const memberSet=new Set(T.groupsWithUngrouped().find(x=>x.id===best.id).members);
+  const memberRects=sheet.obstacles.filter(r=>memberSet.has(r.id));
+  const minX=Math.min(...memberRects.map(r=>r.x)), maxX=Math.max(...memberRects.map(r=>r.x+r.w));
+  const inPortals=sheet.portals.filter(p=>p.dir==='in'), outPortals=sheet.portals.filter(p=>p.dir==='out');
+  const inWires=sheet.specs.filter(s=>s.kind==='in').length, outWires=sheet.specs.filter(s=>s.kind==='out').length;
+  console.log('   corridor: '+inWires+' in-wires / '+outWires+' out-wires');
+  check('FROM corridor width scales with the number of inputs',
+    inPortals.every(p=>minX-(p.r.x+p.r.w) >= T.PORTAL_MARGIN + inWires*T.LANE_PITCH - 0.01));
+  check('TO corridor width scales with the number of outputs',
+    outPortals.every(p=>p.r.x-maxX >= T.PORTAL_MARGIN + outWires*T.LANE_PITCH - 0.01));
+
+  // clamps: FROM only widens leftward, TO only rightward
+  T.setPortalOffset(best.id,'in',100,0);
+  check('a FROM column can never be pushed toward the blocks (dx clamped to 0)', T.portalOffsetOf(best.id,'in').dx===0);
+  T.setPortalOffset(best.id,'out',-100,0);
+  check('a TO column can never be pushed toward the blocks (dx clamped to 0)', T.portalOffsetOf(best.id,'out').dx===0);
+
+  // the whole column moves together, and only that column
+  const before=T.drillSheet().portals.map(p=>({key:p.key,x:p.r.x,y:p.r.y}));
+  T.commit();
+  T.setPortalOffset(best.id,'in',-96,48); T.render();
+  const after=T.drillSheet().portals.map(p=>({key:p.key,x:p.r.x,y:p.r.y}));
+  const moved=before.filter(b=>b.key.startsWith('in:')).every(b=>{
+    const a=after.find(x=>x.key===b.key); return Math.abs(a.x-(b.x-96))<0.01 && Math.abs(a.y-(b.y+48))<0.01; });
+  const others=before.filter(b=>b.key.startsWith('out:')).every(b=>{
+    const a=after.find(x=>x.key===b.key); return a.x===b.x && a.y===b.y; });
+  check('dragging the FROM column moves every FROM portal together', moved);
+  check('the TO column stays put while FROM moves', others);
+  let bad=null;
+  for (const w of wirePts()){ const hit=crossesAny(w.pts, T.openGroupObstacleRects()); if (hit) bad=w.eid+' over '+hit; }
+  check('wires still clear of every block with the column dragged out'+(bad?' ['+bad+']':''), !bad);
+  T.undo();
+  check('undo restores the column position', T.portalOffsetOf(best.id,'in').dx===0 && T.portalOffsetOf(best.id,'in').dy===0);
+
+  // reorder within a column — the others shuffle to make room
+  const col = (inPortals.length>=2?inPortals:outPortals);
+  if (col.length>=2){
+    const dir=col[0].dir;
+    const ids=col.map(p=>dir==='in'?p.item.source:p.item.target);
+    T.commit();
+    check('a portal drops at the top and the rest shuffle down',
+      T.movePortalToRow(best.id, dir, ids[ids.length-1], 0, ids)===true &&
+      (T.render(), (x=>x[0]===ids[ids.length-1] && x[1]===ids[0])(
+        T.drillSheet().portals.filter(p=>p.dir===dir).map(p=>dir==='in'?p.item.source:p.item.target))));
+    T.undo();
+    const restored=T.drillSheet().portals.filter(p=>p.dir===dir).map(p=>dir==='in'?p.item.source:p.item.target);
+    check('undo restores the portal order', JSON.stringify(restored)===JSON.stringify(ids));
+  } else {
+    check('portal columns with 2+ portals exist to reorder (fixture too small?)', false);
+  }
 }
 
 T.closeGroupView();
