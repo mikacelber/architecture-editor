@@ -306,6 +306,37 @@ check('every in-group connection carries a routing lane',
   } else {
     check('dragging into the port keeps a horizontal entry stub (blocked move is fine too)', true);
   }
+
+  // the port case: dragging the FINAL horizontal run vertically SPLITS it —
+  // a minimal stub (one grid) stays at the port, a new vertical jog takes the
+  // Y offset, and the two horizontal parts add up to the original run.
+  {
+    const w1=wirePts()[0], p1=w1.pts, li=p1.length-2;
+    const horiz=Math.abs(p1[li][1]-p1[li+1][1])<0.5;
+    const movedS=T.translateWireSegment(p1.map(p=>p.slice()), li, 'h', p1[li][1]+T.GRID, obstacles, 1)
+              || T.translateWireSegment(p1.map(p=>p.slice()), li, 'h', p1[li][1]-T.GRID, obstacles, -1);
+    if (horiz && movedS){
+      const end=movedS[movedS.length-1], stubStart=movedS[movedS.length-2];
+      check('dragging the port-adjacent horizontal splits it (the needed jog appears)', movedS.length>p1.length);
+      check('a minimal one-grid stub stays at the port',
+        Math.abs(stubStart[1]-end[1])<0.5 && Math.abs(Math.abs(end[0]-stubStart[0])-T.GRID)<0.01);
+      check('the endpoints stay on their ports',
+        JSON.stringify(movedS[0])===JSON.stringify(p1[0]) && JSON.stringify(end)===JSON.stringify(p1[p1.length-1]));
+      check('the split shape stays clear of every block', !crossesAny(movedS, obstacles));
+    } else {
+      check('port-adjacent horizontal drag testable on the first wire', false);
+    }
+  }
+  // every horizontal segment carries a drag handle now, port-adjacent included
+  {
+    const w2=wirePts()[0];
+    let hCount=0;
+    for(let k=0;k<w2.pts.length-1;k++)
+      if (Math.abs(w2.pts[k][1]-w2.pts[k+1][1])<0.5 && Math.abs(w2.pts[k][0]-w2.pts[k+1][0])>=0.5) hCount++;
+    const g2=doc.querySelector('#edgesG .edge[data-eid="'+w2.eid+'"]');
+    check('port-adjacent horizontals expose drag handles too ('+hCount+' handles)',
+      g2.querySelectorAll('.seg-h').length===hCount);
+  }
 }
 
 /* ---- rule 11: external blocks widen to fit their full name ---- */
