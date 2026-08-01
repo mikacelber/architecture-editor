@@ -1,10 +1,3 @@
-# DigiKey API credentials — local file read by the "Load from
-# digikey_credentials.json" button in the Add IC modal. Kept out of git so
-# the client secret never lands in the history (see README of the settings
-# pane); create it manually next to index.html, or commit it deliberately
-# via the GitHub web UI if you accept the exposure risk.
-digikey_credentials.json
-
 # Test-run artifacts
 overlap_report.json
 system.json
