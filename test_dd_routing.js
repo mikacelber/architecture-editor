@@ -410,6 +410,25 @@ check('every in-group connection carries a routing lane',
     !doc.getElementById('nodesG').innerHTML.includes('x="0" y="0" width="'+(n.w/2)+'"'));
 }
 
+/* ---- rule 14: a new IC lands clear of every block (end to end) ---- */
+{
+  doc.getElementById('btnAddIC').onclick();
+  doc.getElementById('fPN').value='ADDTEST-1';
+  doc.getElementById('fType').value='Test IC with a fairly long type text';
+  doc.getElementById('fDesc').value='placement test';
+  doc.getElementById('mOk').onclick();
+  const added=T.nodeById('ADDTEST-1');
+  const rects=T.drillSheet().obstacles.filter(r=>r.id!=='ADDTEST-1');
+  const hit=added && rects.find(r=>added.x<r.x+r.w && added.x+added.w>r.x && added.y<r.y+r.h && added.y+added.h>r.y);
+  check('a new IC added in Open Group lands clear of every block and portal'+(hit?' [over '+hit.id+']':''), !!added && !hit);
+  check('the placement uses the block\'s REAL rendered size', !!added && added.h>64);
+  check('the new IC joined the open group',
+    T.groupsWithUngrouped().find(x=>x.id===best.id).members.includes('ADDTEST-1'));
+  S.nodes=S.nodes.filter(n=>n.id!=='ADDTEST-1');
+  S.groups.forEach(g=>{ g.members=g.members.filter(m=>m!=='ADDTEST-1'); });
+  S.sel=null; T.render();
+}
+
 T.closeGroupView();
 console.log('\n'+pass+' passed, '+fail+' failed');
 process.exit(fail?1:0);
