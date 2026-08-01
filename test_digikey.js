@@ -12,7 +12,8 @@ window.SVGElement.prototype.getBoundingClientRect=()=>({left:0,top:0,width:1600,
 window.Element.prototype.setPointerCapture=()=>{};
 window.eval(fs.readFileSync('app.js','utf8')+`
 window.__T={get S(){return S;},loadFromContract,render,dkNormalizeProducts,dkSearch,dkRenderResults,
- dkConfig,dkSaveConfig,buildSessionJSON,nodeById};`);
+ dkConfig,dkSaveConfig,buildSessionJSON,nodeById,findFreeSpot,openReplaceICModal,renameNodeId,
+ nodePortRowsFor,GRID:GRID};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -93,6 +94,50 @@ const FIX={Products:[
     check('loading the file fills and saves the credentials',
       T.dkConfig().id===CREDFILE.client_id && T.dkConfig().secret===CREDFILE.client_secret);
     check('the credential file carries both keys', !!CREDFILE.client_id && !!CREDFILE.client_secret);
+
+    /* ---- a new IC never lands on top of an existing block ---- */
+    {
+      const blk={ id:'B', x:0, y:0, w:176, h:64 };
+      const free=T.findFreeSpot(400, 400, 176, 64, [blk]);
+      check('an empty center is used as-is (snapped to the grid)',
+        free.x%T.GRID===0 && free.y%T.GRID===0 && Math.abs(free.x-(400-88))<T.GRID);
+      const dodged=T.findFreeSpot(88, 32, 176, 64, [blk]);   // center ON the block
+      const overlaps=(x,y)=>x<blk.x+blk.w && x+176>blk.x && y<blk.y+blk.h && y+64>blk.y;
+      check('an occupied center pushes the new IC to the nearest clear spot', !overlaps(dodged.x, dodged.y));
+      check('the dodged spot still sits on the grid', dodged.x%T.GRID===0 && dodged.y%T.GRID===0);
+    }
+
+    /* ---- Replace IC: identity swaps, engineering judgement carries over ---- */
+    {
+      const old=S.nodes.find(n=>n.kind==='ic' && S.edges.some(e=>e.source===n.id||e.target===n.id));
+      const oldId=old.id, oldDesc=old.data.description;
+      const touching=S.edges.filter(e=>e.source===oldId||e.target===oldId).length;
+      const rowsBefore=T.nodePortRowsFor(oldId).length;
+      const grp=S.groups.find(g=>g.members.includes(oldId));
+      // the inspector offers Replace ABOVE Delete
+      S.sel={ type:'node', id:oldId }; T.render();
+      const bodyHtml=doc.getElementById('insBody').innerHTML;
+      check('the IC inspector offers "Replace IC…" above the delete button',
+        bodyHtml.indexOf('btnReplaceIC')>=0 && bodyHtml.indexOf('btnReplaceIC')<bodyHtml.indexOf('btnDelNode'));
+      T.openReplaceICModal(old);
+      check('the replace form carries over function and rationale (editable)',
+        doc.getElementById('fDesc').value===oldDesc &&
+        doc.getElementById('fPN').value===(old.data.ic_part_number||oldId));
+      doc.getElementById('fPN').value='NEWPART-123';
+      doc.getElementById('fType').value='Newer LDO, pin-compatible';
+      doc.getElementById('fMan').value='TEXAS INSTRUMENTS';
+      doc.getElementById('fUrl').value='https://x/new.pdf';
+      doc.getElementById('mOk').onclick();
+      const rep=T.nodeById('NEWPART-123');
+      check('the node identity switches to the new part', !!rep && rep.label==='NEWPART-123' &&
+        rep.data.ic_type==='Newer LDO, pin-compatible' && rep.data.DatasheetUrl==='https://x/new.pdf' && !T.nodeById(oldId));
+      check('function and rationale survive the swap', rep.data.description===oldDesc);
+      check('every connection follows the new part',
+        S.edges.filter(e=>e.source==='NEWPART-123'||e.target==='NEWPART-123').length===touching &&
+        !S.edges.some(e=>e.source===oldId||e.target===oldId));
+      check('group membership follows the new part', grp.members.includes('NEWPART-123') && !grp.members.includes(oldId));
+      check('the port index resolves the new id', T.nodePortRowsFor('NEWPART-123').length===rowsBefore && rowsBefore>0);
+    }
 
     console.log('\n'+pass+' passed, '+fail+' failed');
     process.exit(fail?1:0);
