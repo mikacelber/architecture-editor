@@ -1254,15 +1254,21 @@ function polyHandleMarkup(pts, eid, extraAttrs, w){
 function translateWireSegment(pts, i, axis, want, obstacles, dir){
   const first = pts[0], last = pts[pts.length-1];
   const atStart = i===0, atEnd = i+1===pts.length-1;
-  let v = axis==='v' ? snapPastVertical(want, pts[i][1], pts[i+1][1], obstacles, dir)
-                     : snapPastHorizontal(want, pts[i][0], pts[i+1][0], obstacles, dir);
+  const s = Math.sign(pts[i+1][0]-pts[i][0]) || Math.sign(pts[i+1][1]-pts[i][1]) || 1;
+  // For a port-adjacent horizontal the collision span EXCLUDES the stub that
+  // stays behind at the port: the moved run stops one grid short of the block,
+  // so the port's own block can never be hit — its footprint limits the drag
+  // in X only, never in Y. Other blocks along the span still cause hops.
+  const spanA = axis==='v' ? pts[i][1] : (atStart ? first[0] + s*GROUP_PORT_STUB : pts[i][0]);
+  const spanB = axis==='v' ? pts[i+1][1] : (atEnd ? last[0] - s*GROUP_PORT_STUB : pts[i+1][0]);
+  let v = axis==='v' ? snapPastVertical(want, spanA, spanB, obstacles, dir)
+                     : snapPastHorizontal(want, spanA, spanB, obstacles, dir);
   // The port stubs at both ends must survive (≥12px, same direction), so the
   // arrow keeps entering the block perpendicular to its edge.
   if (axis==='v'){
     if (i===1) v = pts[1][0] >= first[0] ? Math.max(v, first[0]+12) : Math.min(v, first[0]-12);
     if (i+1===pts.length-2) v = pts[pts.length-2][0] >= last[0] ? Math.max(v, last[0]+12) : Math.min(v, last[0]-12);
   }
-  const s = Math.sign(pts[i+1][0]-pts[i][0]) || Math.sign(pts[i+1][1]-pts[i][1]) || 1;
   const shapeFor = nv => {
     if (axis==='v'){
       const out = pts.map(p=>p.slice());
@@ -1289,8 +1295,8 @@ function translateWireSegment(pts, i, axis, want, obstacles, dir){
   for (let hop=0; hop<12; hop++){
     const simp = shapeFor(v);
     if (!ptsInsideAnyBlock(simp, obstacles)) return simp;
-    const next = axis==='v' ? snapPastVertical(v + (dir||1)*GRID, pts[i][1], pts[i+1][1], obstacles, dir||1)
-                            : snapPastHorizontal(v + (dir||1)*GRID, pts[i][0], pts[i+1][0], obstacles, dir||1);
+    const next = axis==='v' ? snapPastVertical(v + (dir||1)*GRID, spanA, spanB, obstacles, dir||1)
+                            : snapPastHorizontal(v + (dir||1)*GRID, spanA, spanB, obstacles, dir||1);
     if (next===v) return null;
     v = next;
   }
