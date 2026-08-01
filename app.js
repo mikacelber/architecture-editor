@@ -2996,14 +2996,31 @@ $('btnAddIC').onclick=()=>{
     const pn=$('fPN').value.trim();
     if (!pn || !$('fType').value.trim() || !$('fDesc').value.trim()){ toast('Part number, type and function are required'); return; }
     if (nodeById(pn)){ toast('A block with this part number already exists'); return; }
-    const r=svg.getBoundingClientRect();
-    const c=toWorld(r.left+r.width/2, r.top+r.height/2);
-    const spot=findFreeSpot(c.x, c.y, NODE_W_IC, NODE_H_IC, newIcObstacles());
-    S.nodes.push({ id:pn, kind:'ic', label:pn, x:spot.x, y:spot.y,
-      w:NODE_W_IC, h:NODE_H_IC,
+    const node = { id:pn, kind:'ic', label:pn, x:0, y:0, w:NODE_W_IC, h:NODE_H_IC,
       data:{ ic_part_number:pn, ic_type:$('fType').value.trim(), manufacturer:$('fMan').value.trim(),
              description:$('fDesc').value.trim(), selection_rationale:$('fRat').value.trim(),
-             DatasheetUrl:$('fUrl').value.trim() } });
+             DatasheetUrl:$('fUrl').value.trim() } };
+    // Measure the block as it will ACTUALLY render (header texts + the empty
+    // port zone make it larger than the nominal constants) — searching with
+    // the nominal size used to let the grown block overlap its neighbours.
+    node.w = nodeBlockWidth(node);
+    node.h = nodeBlockHeight(node);
+    const obstacles = newIcObstacles();
+    // Anchor on the sheet the block will appear on: the visible view center in
+    // the drill-down, or the UNGROUPED members' midpoint at the top level
+    // (the top-level view shows groups — its center means nothing there).
+    let cx, cy;
+    if (isTopLevel() && obstacles.length){
+      cx = (Math.min(...obstacles.map(o=>o.x)) + Math.max(...obstacles.map(o=>o.x+o.w)))/2;
+      cy = (Math.min(...obstacles.map(o=>o.y)) + Math.max(...obstacles.map(o=>o.y+o.h)))/2;
+    } else {
+      const r=svg.getBoundingClientRect();
+      const c=toWorld(r.left+r.width/2, r.top+r.height/2);
+      cx=c.x; cy=c.y;
+    }
+    const spot=findFreeSpot(cx, cy, node.w, node.h, obstacles);
+    node.x=spot.x; node.y=spot.y;
+    S.nodes.push(node);
     if (openGroup){ openGroup.members.push(pn); openGroup.members.sort(); }
     closeModal(); S.sel={type:'node',id:pn}; render();
   };
