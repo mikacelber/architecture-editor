@@ -1226,8 +1226,9 @@ function polyHandleMarkup(pts, eid, extraAttrs, w){
   let html='';
   segs.forEach((s,i)=>{
     if (s.x1===s.x2 && s.y1===s.y2) return;
-    if (i===0 && !s.vert) return;                 // stub pinned to the port
-    if (i===segs.length-1 && !s.vert) return;     // final approach pinned to the port
+    // Port-adjacent horizontals are draggable too: pulling one vertically
+    // SPLITS it — a minimal stub stays pinned to the port and a new vertical
+    // jog absorbs the offset (see translateWireSegment).
     const mx=(s.x1+s.x2)/2, my=(s.y1+s.y2)/2;
     html += `
       <path class="${s.vert?'seg-v':'seg-h'}" data-eid="${esc(eid)}" data-axis="${s.vert?'v':'h'}" data-mx="${mx}" data-my="${my}"${extraAttrs} d="M ${s.x1} ${s.y1} L ${s.x2} ${s.y2}" fill="none" stroke="transparent" stroke-width="${w}" style="cursor:${s.vert?'ew-resize':'ns-resize'}"/>`;
@@ -1242,12 +1243,17 @@ function polyHandleMarkup(pts, eid, extraAttrs, w){
 // Segment-translation drag: the grabbed run moves along its own axis and its
 // perpendicular neighbours stretch/shrink to absorb the change — NO new
 // segments appear while there is free room (the router is not involved).
-// A block in the way makes the segment hop past it (snapPast*), and if a
+// The one case where geometry NEEDS an extra bend: dragging a PORT-ADJACENT
+// horizontal vertically. The port pins its end's Y, so the segment SPLITS —
+// a minimal stub (GROUP_PORT_STUB) stays at the port and a new vertical jog
+// absorbs the Y offset; the two horizontal parts still add up to the original
+// run. A block in the way makes the segment hop past it (snapPast*), and if a
 // stretched neighbour would land on a block the hop continues — the wire
 // never comes to rest across a block. Returns the new polyline, or null when
 // no legal position exists in the drag direction.
 function translateWireSegment(pts, i, axis, want, obstacles, dir){
   const first = pts[0], last = pts[pts.length-1];
+  const atStart = i===0, atEnd = i+1===pts.length-1;
   let v = axis==='v' ? snapPastVertical(want, pts[i][1], pts[i+1][1], obstacles, dir)
                      : snapPastHorizontal(want, pts[i][0], pts[i+1][0], obstacles, dir);
   // The port stubs at both ends must survive (≥12px, same direction), so the
@@ -1256,10 +1262,32 @@ function translateWireSegment(pts, i, axis, want, obstacles, dir){
     if (i===1) v = pts[1][0] >= first[0] ? Math.max(v, first[0]+12) : Math.min(v, first[0]-12);
     if (i+1===pts.length-2) v = pts[pts.length-2][0] >= last[0] ? Math.max(v, last[0]+12) : Math.min(v, last[0]-12);
   }
+  const s = Math.sign(pts[i+1][0]-pts[i][0]) || Math.sign(pts[i+1][1]-pts[i][1]) || 1;
+  const shapeFor = nv => {
+    if (axis==='v'){
+      const out = pts.map(p=>p.slice());
+      out[i][0]=nv; out[i+1][0]=nv;
+      return simplifyPts(out);
+    }
+    // horizontal drag — split at whichever end is pinned to a port
+    const res = [];
+    for (let k=0;k<=i;k++) res.push(pts[k].slice());
+    if (atStart){
+      res.push([first[0]+s*GROUP_PORT_STUB, first[1]]);
+      res.push([first[0]+s*GROUP_PORT_STUB, nv]);
+    } else res[res.length-1][1]=nv;
+    if (atEnd){
+      res.push([last[0]-s*GROUP_PORT_STUB, nv]);
+      res.push([last[0]-s*GROUP_PORT_STUB, last[1]]);
+      res.push(last.slice());
+    } else {
+      const q = pts[i+1].slice(); q[1]=nv; res.push(q);
+      for (let k=i+2;k<pts.length;k++) res.push(pts[k].slice());
+    }
+    return simplifyPts(res);
+  };
   for (let hop=0; hop<12; hop++){
-    const out = pts.map(p=>p.slice());
-    if (axis==='v'){ out[i][0]=v; out[i+1][0]=v; } else { out[i][1]=v; out[i+1][1]=v; }
-    const simp = simplifyPts(out);
+    const simp = shapeFor(v);
     if (!ptsInsideAnyBlock(simp, obstacles)) return simp;
     const next = axis==='v' ? snapPastVertical(v + (dir||1)*GRID, pts[i][1], pts[i+1][1], obstacles, dir||1)
                             : snapPastHorizontal(v + (dir||1)*GRID, pts[i][0], pts[i+1][0], obstacles, dir||1);
