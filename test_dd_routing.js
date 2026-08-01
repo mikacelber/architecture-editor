@@ -381,12 +381,25 @@ check('every in-group connection carries a routing lane',
     T.nodeBlockWidth(longest) >= 12 + T.textWidth(longest.label, 11.5, false) + 14);
 }
 
-/* ---- rule 13: barrier nodes flip their LV|HV halves ---- */
+/* ---- rule 13: barrier nodes flip their LV|HV halves and pin their ports ---- */
 {
   const g=T.groupsWithUngrouped().find(x=>x.id===best.id);
   const n=T.nodeById(g.members[0]);
   const prevSide=n.hvSide, prevFlip=n.hvFlip;
-  n.hvSide='barrier'; n.hvFlip=true; T.render();
+  n.hvSide='barrier'; n.hvFlip=undefined; T.render();
+  // ports pin by domain: HV rows on the right half, LV rows on the left
+  const rows0=T.nodePortRowsFor(n.id);
+  check('a barrier member pins every port to its domain half',
+    rows0.length>0 && rows0.every(r=>r.pinned && r.side===(r.hv?'right':'left')));
+  const r0=rows0[0];
+  T.setGroupPortSide(n.id, r0.src, r0.tgt, r0.side==='left'?'right':'left'); T.render();
+  check('a stored override cannot move a pinned port across the divider',
+    T.nodePortOf(n.id, r0.src, r0.tgt, r0.dir).side===r0.side);
+  T.resetGroupPortLayout(n.id);
+  // the flip swaps the halves — ports, wash and all
+  n.hvFlip=true; T.render();
+  check('flipping the node moves every port to the opposite half',
+    T.nodePortRowsFor(n.id).every(r=>r.pinned && r.side===(r.hv?'left':'right')));
   check('a flipped barrier node paints its HV wash on the LEFT half',
     doc.getElementById('nodesG').innerHTML.includes('x="0" y="0" width="'+(n.w/2)+'"'));
   S.sel={ type:'node', id:n.id }; T.render();
