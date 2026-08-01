@@ -381,6 +381,22 @@ check('every in-group connection carries a routing lane',
     T.nodeBlockWidth(longest) >= 12 + T.textWidth(longest.label, 11.5, false) + 14);
 }
 
+/* ---- rule 13: barrier nodes flip their LV|HV halves ---- */
+{
+  const g=T.groupsWithUngrouped().find(x=>x.id===best.id);
+  const n=T.nodeById(g.members[0]);
+  const prevSide=n.hvSide, prevFlip=n.hvFlip;
+  n.hvSide='barrier'; n.hvFlip=true; T.render();
+  check('a flipped barrier node paints its HV wash on the LEFT half',
+    doc.getElementById('nodesG').innerHTML.includes('x="0" y="0" width="'+(n.w/2)+'"'));
+  S.sel={ type:'node', id:n.id }; T.render();
+  check('the node inspector offers the LV|HV flip switch below Voltage domain',
+    !!doc.getElementById('fFlip') && doc.getElementById('fFlip').checked);
+  S.sel=null; n.hvSide=prevSide; n.hvFlip=prevFlip; T.render();
+  check('clearing the flip restores the default (HV wash on the right)',
+    !doc.getElementById('nodesG').innerHTML.includes('x="0" y="0" width="'+(n.w/2)+'"'));
+}
+
 T.closeGroupView();
 console.log('\n'+pass+' passed, '+fail+' failed');
 process.exit(fail?1:0);

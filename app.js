@@ -383,14 +383,16 @@ function groupPortIndex(){
       rows.forEach(r=>{ delete r._nat; });
     }
     // On a block that straddles the isolation barrier the halves are physical:
-    // the HV wash is the right half, so HV connections may only attach on the
-    // right and LV ones only on the left. The side is pinned, not merely
-    // defaulted, so a stored override can never place a port in the wrong domain.
+    // HV connections may only attach on the HV half and LV ones on the LV half
+    // (right/left by default, swapped when the block's LV|HV flip is on). The
+    // side is pinned, not merely defaulted, so a stored override can never
+    // place a port in the wrong domain.
     const gside = groupSide(gid);
+    const flip = groupHvFlip(gid);
     rows.forEach((r,i)=>{
       r.row = i;
       r.pinned = gside==='barrier';
-      r.side = r.pinned ? (r.hv ? 'right' : 'left') : groupPortSideOf(gid, r.src, r.tgt, r.dir);
+      r.side = r.pinned ? ((r.hv !== flip) ? 'right' : 'left') : groupPortSideOf(gid, r.src, r.tgt, r.dir);
     });
   }
   _groupPortIdx = idx;
@@ -901,22 +903,28 @@ function groupSide(groupId){
 function safeId(s){ return String(s).replace(/[^A-Za-z0-9_-]/g,'_'); }
 // A translucent red wash over whatever fill the block already has — works
 // the same for IC/external/group styling without needing a bespoke "HV
-// variant" of every block's color. 'barrier' clips the wash to the right
-// half only, so the left half keeps showing the block's original color.
-function hvOverlayMarkup(side, w, h, rx, clipId){
+// variant" of every block's color. 'barrier' clips the wash to ONE half
+// (right by default, left when flipped), so the other half keeps showing
+// the block's original color.
+function hvOverlayMarkup(side, w, h, rx, clipId, flip){
   if (side==='hv') return `<rect width="${w}" height="${h}" rx="${rx}" fill="var(--sig-hv)" opacity=".24" style="pointer-events:none"/>`;
   if (side==='barrier') return `
       <clipPath id="${clipId}"><rect width="${w}" height="${h}" rx="${rx}"/></clipPath>
-      <rect clip-path="url(#${clipId})" x="${w/2}" y="0" width="${w/2}" height="${h}" fill="var(--sig-hv)" opacity=".3" style="pointer-events:none"/>
+      <rect clip-path="url(#${clipId})" x="${flip?0:w/2}" y="0" width="${w/2}" height="${h}" fill="var(--sig-hv)" opacity=".3" style="pointer-events:none"/>
       <line x1="${w/2}" y1="2" x2="${w/2}" y2="${h-2}" stroke="var(--sig-hv)" stroke-width="1.3" opacity=".8" style="pointer-events:none"/>`;
   return '';
 }
-function hvSideTag(side, w){
+function hvSideTag(side, w, flip){
   if (side==='hv') return `<text x="${w-6}" y="11" text-anchor="end" font-family="var(--mono)" font-size="7.5" font-weight="700" letter-spacing=".04em" fill="var(--sig-hv)" style="pointer-events:none">HV</text>`;
-  if (side==='barrier') return `<text x="${w-6}" y="11" text-anchor="end" font-family="var(--mono)" font-size="7.5" font-weight="700" letter-spacing=".04em" fill="var(--sig-hv)" style="pointer-events:none">HV</text>
-      <text x="6" y="11" font-family="var(--mono)" font-size="7.5" font-weight="700" letter-spacing=".04em" fill="var(--ink-soft)" style="pointer-events:none">LV</text>`;
-  return '';
+  if (side!=='barrier') return '';
+  const hvX = flip ? 6 : w-6, lvX = flip ? w-6 : 6;
+  return `<text x="${hvX}" y="11" ${flip?'':'text-anchor="end" '}font-family="var(--mono)" font-size="7.5" font-weight="700" letter-spacing=".04em" fill="var(--sig-hv)" style="pointer-events:none">HV</text>
+      <text x="${lvX}" y="11" ${flip?'text-anchor="end" ':''}font-family="var(--mono)" font-size="7.5" font-weight="700" letter-spacing=".04em" fill="var(--ink-soft)" style="pointer-events:none">LV</text>`;
 }
+// Which half is HV on a barrier block: right by default, left when the user
+// flipped it. Stored on the group / node object itself, so a fresh import
+// always starts unflipped (LV left · HV right).
+function groupHvFlip(gid){ const g = S.groups.find(x=>x.id===gid); return !!(g && g.hvFlip); }
 
 // Path for the 5-segment schematic elbow produced by sidedGeometry below: out
 // from the source port, vertical jog at bendX, horizontal plateau at bendY,
@@ -1816,11 +1824,11 @@ function renderDrillDown(){
         <rect x="-3" y="4" width="${n.w+6}" height="${n.h}" rx="5" fill="#00000018"/>
         <rect width="${n.w}" height="${n.h}" rx="5" fill="var(--epoxy)"
           stroke="${selected?'var(--probe)':(side==='lv'?'var(--epoxy-edge)':'var(--sig-hv)')}" stroke-width="${selected?2.5:1.4}"/>
-        ${hvOverlayMarkup(side, n.w, n.h, 5, 'hvclip-'+safeId(n.id))}
+        ${hvOverlayMarkup(side, n.w, n.h, 5, 'hvclip-'+safeId(n.id), n.hvFlip)}
         <circle cx="13" cy="13" r="3.6" fill="var(--silk)"/>
         <text x="26" y="26" font-family="var(--mono)" font-size="13.5" font-weight="600" fill="var(--silk)">${esc(n.label)}</text>
         <text x="26" y="44" font-family="var(--sans)" font-size="10" fill="#B9BEC4">${esc((n.data.ic_type||'').slice(0,30))}</text>
-        ${hvSideTag(side, n.w)}
+        ${hvSideTag(side, n.w, n.hvFlip)}
         <line x1="10" y1="${sepY}" x2="${n.w-10}" y2="${sepY}" stroke="var(--silk)" stroke-width="1" opacity=".25"/>
         ${portRows}
       </g>`;
@@ -1828,10 +1836,10 @@ function renderDrillDown(){
     return `<g class="node" data-nid="${esc(n.id)}" transform="translate(${n.x},${n.y})" style="cursor:move">
       <rect width="${n.w}" height="${n.h}" rx="4" fill="var(--paper)"
         stroke="${selected?'var(--probe)':(side==='lv'?'var(--ink-soft)':'var(--sig-hv)')}" stroke-width="${selected?2.5:1.4}" stroke-dasharray="${selected?'none':'5 4'}"/>
-      ${hvOverlayMarkup(side, n.w, n.h, 4, 'hvclip-'+safeId(n.id))}
+      ${hvOverlayMarkup(side, n.w, n.h, 4, 'hvclip-'+safeId(n.id), n.hvFlip)}
       <text x="12" y="20" font-family="var(--mono)" font-size="10" letter-spacing=".08em" fill="var(--ink-soft)">EXTERNAL</text>
       <text x="12" y="36" font-family="var(--sans)" font-size="11.5" font-weight="500" fill="var(--ink)">${esc(n.label)}</text>
-      ${hvSideTag(side, n.w)}
+      ${hvSideTag(side, n.w, n.hvFlip)}
       <line x1="10" y1="${sepY}" x2="${n.w-10}" y2="${sepY}" stroke="var(--ink)" stroke-width="1" opacity=".25"/>
       ${portRows}
     </g>`;
@@ -2019,12 +2027,12 @@ function renderTopLevel(){
       <rect x="-4" y="6" width="${W+8}" height="${h}" rx="6" fill="#00000018"/>
       <rect width="${W}" height="${h}" rx="6" fill="var(--vellum)"
         stroke="${selected?'var(--probe)':(side==='lv'?'var(--ink)':'var(--sig-hv)')}" stroke-width="${selected?3:2}"/>
-      ${hvOverlayMarkup(side, W, h, 6, 'hvclip-'+safeId(g.id))}
+      ${hvOverlayMarkup(side, W, h, 6, 'hvclip-'+safeId(g.id), groupHvFlip(g.id))}
       <line x1="${GROUP_PAD_X}" y1="30" x2="${W-GROUP_PAD_X}" y2="30" stroke="var(--ink)" stroke-width="1" opacity=".18"/>
       <text x="${GROUP_PAD_X}" y="20" font-family="var(--mono)" font-size="9.5" letter-spacing=".1em" fill="var(--ink-soft)">${eyebrow}</text>
       <text x="${GROUP_PAD_X}" y="54" font-family="var(--mono)" font-size="15" font-weight="600" fill="var(--ink)">${esc(g.title)}</text>
       <text x="${GROUP_PAD_X}" y="${GROUP_HEAD_H}" font-family="var(--sans)" font-size="11" font-weight="600" fill="var(--ink-soft)">${g.members.length} block${g.members.length===1?'':'s'}</text>
-      ${hvSideTag(side, W)}
+      ${hvSideTag(side, W, groupHvFlip(g.id))}
       ${memberLines}
       <line x1="10" y1="${sepY}" x2="${W-10}" y2="${sepY}" stroke="var(--ink)" stroke-width="1.2" opacity=".4"/>
       ${portRows}
@@ -2120,7 +2128,12 @@ function renderInspector(){
       ${isUngrouped
         ? `<p>${esc(g.description||'')}</p>`
         : `<div class="kv"><label>Title</label><input type="text" id="gTitle" value="${esc(g.title)}"></div>
-           <div class="kv"><label>Description</label><textarea id="gDesc">${esc(g.description)}</textarea></div>`}
+           <div class="kv"><label>Description</label><textarea id="gDesc">${esc(g.description)}</textarea></div>
+           ${groupSide(g.id)==='barrier'?`
+           <div class="kv"><label>LV | HV halves</label>
+             <label class="switch"><input type="checkbox" id="gFlip" ${groupHvFlip(g.id)?'checked':''}><span class="knob"></span>
+               <span class="swlabel">${groupHvFlip(g.id)?'HV left · LV right':'LV left · HV right'}</span></label>
+           </div>`:''}`}
       <div class="kv"><label>Members (${g.members.length}) — move to group</label></div>
       ${memberRows}
       <div class="btnrow">
@@ -2131,6 +2144,10 @@ function renderInspector(){
       <p class="hint">${groupPortRowsFor(g.id).length} port${groupPortRowsFor(g.id).length===1?'':'s'} in this block's port zone. Drag a port's net-count badge sideways to switch which edge it attaches to, or up/down to reorder it.</p>
       ${isUngrouped?'':'<p style="margin-top:10px;color:var(--ink-soft);font-size:11.5px">Deleting a group moves its members to Ungrouped — blocks are never deleted.</p>'}`;
     $('btnOpenGroup').onclick=()=>openGroupView(g.id);
+    const gf=$('gFlip'); if (gf) gf.onchange=()=>{
+      const grp=S.groups.find(x=>x.id===g.id);
+      if (grp){ commit(); grp.hvFlip = gf.checked || undefined; render(); }
+    };
     const rp=$('btnResetPorts'); if (rp) rp.onclick=()=>{ commit(); resetGroupPortLayout(g.id); render(); };
     if (!isUngrouped){
       $('gTitle').onchange=()=>{
@@ -2218,7 +2235,12 @@ function renderInspector(){
           <option value="barrier" ${n.hvSide==='barrier'?'selected':''}>Isolation barrier (half/half)</option>
           <option value="hv" ${n.hvSide==='hv'?'selected':''}>High voltage</option>
         </select>
-      </div>`;
+      </div>
+      ${nodeSide(n.id)==='barrier'?`
+      <div class="kv"><label>LV | HV halves</label>
+        <label class="switch"><input type="checkbox" id="fFlip" ${n.hvFlip?'checked':''}><span class="knob"></span>
+          <span class="swlabel">${n.hvFlip?'HV left · LV right':'LV left · HV right'}</span></label>
+      </div>`:''}`;
     const customPorts = !!S.groupPortOrder[n.id] || Object.keys(S.groupPortSides).some(k=>k.startsWith(n.id+'|'));
     const portHint = `<p class="hint">${nodePortRowsFor(n.id).length} port${nodePortRowsFor(n.id).length===1?'':'s'} in this block's port zone. Drag a port's net-count badge sideways to switch which edge it attaches to, or up/down to reorder it.</p>`;
     if (n.kind==='ic'){
@@ -2239,6 +2261,7 @@ function renderInspector(){
         <div class="btnrow">${customPorts?'<button id="btnResetNodePorts">Reset port layout</button>':''}<button class="danger" id="btnDelNode">Delete block and its connections</button></div>`;
     }
     $('fSide').onchange=()=>{ n.hvSide = $('fSide').value || undefined; render(); };
+    const ff=$('fFlip'); if (ff) ff.onchange=()=>{ commit(); n.hvFlip = ff.checked || undefined; render(); };
     const rp=$('btnResetNodePorts'); if (rp) rp.onclick=()=>{ commit(); resetGroupPortLayout(n.id); render(); };
     const del=$('btnDelNode'); if (del) del.onclick=()=>deleteNode(n.id);
     return;
