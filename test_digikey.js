@@ -47,7 +47,7 @@ const FIX={Products:[
 /* ---- OAuth + search plumbing over a mocked network ---- */
 {
   let calls=[];
-  const CREDFILE=JSON.parse(fs.readFileSync('digikey_credentials.json','utf8'));
+  const CREDFILE=JSON.parse(fs.readFileSync('credential/digikey_credentials.json','utf8'));
   window.fetch=async (url,opts)=>{
     calls.push(url);
     if (String(url).includes('digikey_credentials.json'))
@@ -88,7 +88,7 @@ const FIX={Products:[
     check('the picked row is highlighted', rows[0].classList.contains('on'));
 
     /* ---- repo-side credential file, selectable from the settings pane ---- */
-    check('settings pane offers "Load from digikey_credentials.json"', !!doc.getElementById('dkLoadFile'));
+    check('settings pane offers "Load from credential/digikey_credentials.json"', !!doc.getElementById('dkLoadFile'));
     await doc.getElementById('dkLoadFile').onclick();
     check('loading the file fills and saves the credentials',
       T.dkConfig().id===CREDFILE.client_id && T.dkConfig().secret===CREDFILE.client_secret);

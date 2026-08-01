@@ -2589,11 +2589,11 @@ function dkSaveConfig(id, secret, proxy){
   } catch(e){ /* storage unavailable — config just won't persist */ }
   _dkToken = null;
 }
-// Optional repo-side credential file (digikey_credentials.json next to
-// index.html) so the keys can be picked up with one click instead of pasting.
+// Optional repo-side credential file (credential/digikey_credentials.json)
+// so the keys can be picked up with one click instead of pasting.
 async function dkLoadCredentialFile(){
-  const res = await fetch('digikey_credentials.json', { cache:'no-store' });
-  if (!res.ok) throw new Error('digikey_credentials.json not found (HTTP '+res.status+')');
+  const res = await fetch('credential/digikey_credentials.json', { cache:'no-store' });
+  if (!res.ok) throw new Error('credential/digikey_credentials.json not found (HTTP '+res.status+')');
   const j = await res.json();
   if (!j.client_id || !j.client_secret) throw new Error('digikey_credentials.json is missing client_id / client_secret');
   return { id:String(j.client_id), secret:String(j.client_secret), proxy:String(j.cors_proxy||'') };
@@ -2694,7 +2694,7 @@ $('btnAddIC').onclick=()=>{
           If your browser blocks the request (CORS), route it through a proxy prefix — the full DigiKey URL is appended to it.</p>
         <div class="btnrow" style="margin-top:0">
           <button id="dkSave">Save settings</button>
-          <button id="dkLoadFile" title="Read digikey_credentials.json from the app folder">Load from digikey_credentials.json</button>
+          <button id="dkLoadFile" title="Read credential/digikey_credentials.json from the app folder">Load from credential/digikey_credentials.json</button>
         </div>
       </div>
     </div>
