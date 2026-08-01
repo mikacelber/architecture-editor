@@ -337,6 +337,23 @@ check('every in-group connection carries a routing lane',
     check('port-adjacent horizontals expose drag handles too ('+hCount+' handles)',
       g2.querySelectorAll('.seg-h').length===hCount);
   }
+
+  // the port's OWN block limits the drag in X only, never in Y: dragging a
+  // horizontal port wire to a Y INSIDE the block's vertical span must land
+  // exactly there (the split run stops a grid short of the block, so no hop)
+  {
+    const blk={ id:'SYNTH', x:400, y:0, w:176, h:96 };
+    const straight=[[100,48],[400,48]];         // straight run into a port at y=48
+    const m=T.translateWireSegment(straight.map(p=>p.slice()), 0, 'h', 72, [blk], 1);
+    check('vertical drag of a port wire is NOT vetoed by its own block (X-only limits)',
+      !!m && m.some((p,k)=>k<m.length-1 && p[1]===72 && m[k+1][1]===72));
+    check('the moved run stops one grid short of the block (never touches it)',
+      !!m && Math.max(...m.filter(p=>p[1]===72).map(p=>p[0])) <= blk.x - T.GRID + 0.01);
+    // ...but a DIFFERENT block sitting across the corridor still causes a hop
+    const other={ id:'OTHER', x:200, y:60, w:120, h:48 };
+    const m2=T.translateWireSegment(straight.map(p=>p.slice()), 0, 'h', 72, [blk, other], 1);
+    check('an unrelated block in the corridor still makes the wire hop past', !!m2 && !m2.some(p=>p[1]===72));
+  }
 }
 
 /* ---- rule 11: external blocks widen to fit their full name ---- */
