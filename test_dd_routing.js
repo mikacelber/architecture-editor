@@ -12,7 +12,8 @@ window.eval(fs.readFileSync('app.js','utf8')+`
 window.__T={get S(){return S;},loadFromContract,render,openGroupView,closeGroupView,diagramEdges,
  groupsWithUngrouped,nodeById,openGroupObstacleRects,nodeEdgeLaneKey,commit,undo,_routeCache,
  nodePortRowsFor,nodePortOf,nodePortRowY,setGroupPortSide,moveNodePortToRow,resetGroupPortLayout,GRID:GRID,
- drillSheet,portalOffsetOf,setPortalOffset,PORTAL_MARGIN:PORTAL_MARGIN,LANE_PITCH:LANE_PITCH,PORTAL_H:PORTAL_H};`);
+ drillSheet,portalOffsetOf,setPortalOffset,PORTAL_MARGIN:PORTAL_MARGIN,LANE_PITCH:LANE_PITCH,PORTAL_H:PORTAL_H,
+ translateWireSegment,nodeBlockWidth,textWidth};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -251,6 +252,69 @@ check('every in-group connection carries a routing lane',
   const lit=[...doc.querySelectorAll('#edgesG .netbadge')].find(b=>b.dataset.eid===bEdge.e.id);
   check('selecting a boundary connection lights its badge', !!lit && lit.querySelector('rect').getAttribute('fill')==='var(--probe)');
   S.sel=null; T.render();
+}
+
+/* ---- rule 10: segment drags translate in place — no surprise segments ---- */
+{
+  T.render();
+  const obstacles=T.openGroupObstacleRects();
+  let tried=0, sameShape=0, badMove=null;
+  for (const w of wirePts()){
+    const pts=w.pts;
+    for (let k=1;k<pts.length-2;k++){
+      const vert = pts[k][0]===pts[k+1][0];
+      const axis = vert?'v':'h';
+      for (const d of [T.GRID,-T.GRID,2*T.GRID,-2*T.GRID]){
+        const want=(vert?pts[k][0]:pts[k][1])+d;
+        const moved=T.translateWireSegment(pts.map(p=>p.slice()), k, axis, want, obstacles, Math.sign(d));
+        if (!moved) continue;
+        tried++;
+        if (moved.length<=pts.length) sameShape++; else badMove=w.eid+' seg'+k+' grew '+pts.length+'→'+moved.length;
+        break;
+      }
+    }
+  }
+  console.log('   '+tried+' free segment translations exercised');
+  check('free segment drags are exercised (test is meaningful)', tried>=5);
+  check('a free drag NEVER adds segments to the wire'+(badMove?' ['+badMove+']':''), sameShape===tried);
+
+  // the stored {pts} shape is honoured verbatim by the renderer
+  const w0=wirePts().find(w=>w.pts.length>=4);
+  const e0=S.edges.find(x=>x.id===w0.eid);
+  let k0=1; while (k0<w0.pts.length-2 && !(w0.pts[k0][0]===w0.pts[k0+1][0])) k0++;
+  const moved0=T.translateWireSegment(w0.pts.map(p=>p.slice()), k0, 'v', w0.pts[k0][0]+T.GRID, obstacles, 1)
+            || T.translateWireSegment(w0.pts.map(p=>p.slice()), k0, 'v', w0.pts[k0][0]-T.GRID, obstacles, -1);
+  if (moved0){
+    e0.route={ pts: moved0 }; T.render();
+    const drawn=wirePts().find(w=>w.eid===w0.eid);
+    check('a stored polyline route renders verbatim', JSON.stringify(drawn.pts)===JSON.stringify(moved0));
+    check('and stays clear of every block', !crossesAny(drawn.pts, T.openGroupObstacleRects()));
+    delete e0.route; T.render();
+  } else {
+    check('a translatable vertical segment exists for the pts-route check', false);
+  }
+
+  // port stubs survive: translating the vertical next to a port keeps a
+  // horizontal final run (the arrow still enters perpendicular to the edge)
+  const wStub=wirePts().find(w=>w.pts.length>=4);
+  const pv=wStub.pts;
+  const movedStub=T.translateWireSegment(pv.map(p=>p.slice()), pv.length-3, 'v',
+    pv[pv.length-1][0], obstacles, Math.sign(pv[pv.length-1][0]-pv[pv.length-3][0])||1);
+  if (movedStub){
+    const a=movedStub[movedStub.length-2], b=movedStub[movedStub.length-1];
+    check('dragging into the port keeps a horizontal entry stub', Math.abs(a[1]-b[1])<0.5 && Math.abs(a[0]-b[0])>=12);
+  } else {
+    check('dragging into the port keeps a horizontal entry stub (blocked move is fine too)', true);
+  }
+}
+
+/* ---- rule 11: external blocks widen to fit their full name ---- */
+{
+  const ext=S.nodes.filter(n=>n.kind==='external');
+  check('external blocks exist to verify', ext.length>0);
+  const longest=ext.slice().sort((a,b)=>b.label.length-a.label.length)[0];
+  check('block width fits the whole label (no truncation)',
+    T.nodeBlockWidth(longest) >= 12 + T.textWidth(longest.label, 11.5, false) + 14);
 }
 
 T.closeGroupView();
