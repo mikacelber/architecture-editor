@@ -20,10 +20,16 @@ const obs=()=>T.visibleGroups().map(g=>T.groupBlockRect(g.id));
 /* ---- the grid is the port pitch ---- */
 check('GRID equals the minimum Y distance between two ports ('+T.GRID+'px = port row pitch)', T.GRID===T.GROUP_PORT_ROW_H);
 {
+  // Per SIDE: on barrier blocks the LV and HV columns deliberately share
+  // lines, so spacing is only meaningful within one column.
   let minDy=Infinity;
   for (const g of T.visibleGroups()){
-    const ys=T.groupPortRowsFor(g.id).map(r=>T.groupPortRowY(T.groupsWithUngrouped().find(x=>x.id===g.id), r.row)).sort((a,b)=>a-b);
-    for(let i=1;i<ys.length;i++) minDy=Math.min(minDy, ys[i]-ys[i-1]);
+    const gg=T.groupsWithUngrouped().find(x=>x.id===g.id);
+    for (const side of ['left','right']){
+      const ys=T.groupPortRowsFor(g.id).filter(r=>r.side===side)
+        .map(r=>T.groupPortRowY(gg, r.row)).sort((a,b)=>a-b);
+      for(let i=1;i<ys.length;i++) minDy=Math.min(minDy, ys[i]-ys[i-1]);
+    }
   }
   check('measured min port spacing equals GRID ('+minDy+')', Math.abs(minDy-T.GRID)<0.01);
 }

@@ -87,12 +87,31 @@ const key=e=>T.groupEdgeRouteKey(e.source,e.target);
   T.render();
   const after=T.groupPortOf(g.id, hvRow.src, hvRow.tgt, hvRow.dir);
   check('even a stored override cannot move an HV port to the LV half', after.side==='right');
-  // vertical reordering still allowed on barrier blocks
-  const rows=T.groupPortRowsFor(g.id);
-  const last=rows[rows.length-1];
-  check('vertical reordering still works on a barrier block',
-    T.moveGroupPortToRow(g.id, last.src+'\u2192'+last.tgt, 0)===true &&
-    (T.render(), T.groupPortRowsFor(g.id)[0].src===last.src && T.groupPortRowsFor(g.id)[0].tgt===last.tgt));
+  // vertical reordering still allowed on barrier blocks \u2014 within the port's
+  // own column (rows are per-side now). Search every barrier group for a
+  // column with 2+ ports; a 1-port column correctly has nothing to reorder.
+  let reorderTarget=null;
+  for (const bg of barrierGroups){
+    const rs=T.groupPortRowsFor(bg.id);
+    for (const side of ['left','right']){
+      const col=rs.filter(r=>r.side===side);
+      if (col.length>=2){ reorderTarget={ gid:bg.id, col }; break; }
+    }
+    if (reorderTarget) break;
+  }
+  if (reorderTarget){
+    const mv=reorderTarget.col[reorderTarget.col.length-1];
+    check('vertical reordering still works on a barrier block (within its column)',
+      T.moveGroupPortToRow(reorderTarget.gid, mv.src+'\u2192'+mv.tgt, 0)===true &&
+      (T.render(), (x=>!!x && x.src===mv.src && x.tgt===mv.tgt)(
+        T.groupPortRowsFor(reorderTarget.gid).find(r=>r.side===mv.side && r.row===0))));
+    T.resetGroupPortLayout(reorderTarget.gid); T.render();
+  } else {
+    const rows1=T.groupPortRowsFor(g.id);
+    const solo=rows1[rows1.length-1];
+    check('a 1-port barrier column correctly has nothing to reorder',
+      T.moveGroupPortToRow(g.id, solo.src+'\u2192'+solo.tgt, 0)===false);
+  }
   // non-barrier blocks still flip freely
   const lvG=T.visibleGroups().find(x=>T.groupSide(x.id)!=='barrier' && T.groupPortRowsFor(x.id).length);
   const r0=T.groupPortRowsFor(lvG.id)[0];
@@ -101,6 +120,15 @@ const key=e=>T.groupEdgeRouteKey(e.source,e.target);
   check('non-barrier blocks still allow side flips',
     T.groupPortOf(lvG.id, r0.src, r0.tgt, r0.dir).side!==before);
   T.resetGroupPortLayout(lvG.id); T.resetGroupPortLayout(g.id); T.render();
+
+  // compactness: the two halves are parallel COLUMNS — rows numbered 0..n-1
+  // independently per side, so an LV and an HV port share the same line
+  const rowsC=T.groupPortRowsFor(g.id);
+  const lC=rowsC.filter(r=>r.side==='left'), rC=rowsC.filter(r=>r.side!=='left');
+  const seq=a=>a.map(r=>r.row).sort((x,y)=>x-y).every((v,i)=>v===i);
+  check('barrier halves number their rows independently (parallel columns)', seq(lC)&&seq(rC));
+  check('an LV and an HV port share the first line (compact in Y)',
+    lC.some(r=>r.row===0) && rC.some(r=>r.row===0));
 
   // the LV|HV flip swaps the halves: HV ports move to the LEFT, still pinned
   const grp=S.groups.find(x=>x.id===g.id);
