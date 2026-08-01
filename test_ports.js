@@ -60,9 +60,14 @@ for (const g of groups){
   const rows = T.groupPortRowsFor(g.id);
   const touching = gEdges.filter(e=>e.source===g.id||e.target===g.id).length;
   if (rows.length !== touching) rowsOk = false;
-  if (new Set(rows.map(r=>r.row)).size !== rows.length) rowsOk = false;
+  // rows are unique WITHIN a side; barrier blocks deliberately share lines
+  // across the divider (LV column left, HV column right — compact in Y)
+  for (const side of ['left','right']){
+    const sideRows = rows.filter(r=>r.side===side);
+    if (new Set(sideRows.map(r=>r.row)).size !== sideRows.length) rowsOk = false;
+  }
 }
-check('exactly one port row per connection, no shared rows', rowsOk);
+check('exactly one port row per connection, no shared rows within a side', rowsOk);
 
 /* ---- (2) the written count matches the wire's midpoint count ---- */
 const nodesHTML = window.document.getElementById('nodesG').innerHTML;
@@ -170,13 +175,17 @@ check('no port label overflows the block width'+(textOverflow.length?' ['+textOv
 check('no port label overlaps its badge', badgeClash.length===0);
 check('every badge sits inside the port zone', outsideBlock.length===0);
 
-// badges never collide vertically
+// badges never collide vertically — per SIDE: on barrier blocks the LV and
+// HV columns share lines by design (their badges sit on opposite halves)
 let vClash=false;
 for (const g of T.visibleGroups()){
-  const ys=T.groupPortRowsFor(g.id).map(r=>T.groupPortRowY(g,r.row)).sort((a,b)=>a-b);
-  for (let i=1;i<ys.length;i++) if (ys[i]-ys[i-1] < 17) vClash=true;
+  for (const side of ['left','right']){
+    const ys=T.groupPortRowsFor(g.id).filter(r=>r.side===side)
+      .map(r=>T.groupPortRowY(g,r.row)).sort((a,b)=>a-b);
+    for (let i=1;i<ys.length;i++) if (ys[i]-ys[i-1] < 17) vClash=true;
+  }
 }
-check('badge rows are vertically clear of each other', !vClash);
+check('badge rows are vertically clear of each other (within their side)', !vClash);
 
 // worst case: the widest possible label still fits
 // widths are now computed from the text itself, so the invariant is per-group

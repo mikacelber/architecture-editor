@@ -123,8 +123,16 @@ function groupPortZoneTop(g){
   return Math.ceil((raw - GRID/2)/GRID)*GRID + GRID/2;
 }
 function groupPortRowY(g, row){ return groupPortZoneTop(g) + row*GROUP_PORT_ROW_H + GROUP_PORT_ROW_H/2; }
+// Visible row count of the port zone: barrier blocks stack their two sides in
+// parallel columns, so only the taller column counts.
+function groupPortRowCount(gid){
+  const rows = groupPortRowsFor(gid);
+  if (groupSide(gid)!=='barrier') return rows.length;
+  const left = rows.filter(r=>r.side==='left').length;
+  return Math.max(left, rows.length-left);
+}
 function groupBlockHeight(g){
-  const rows = g ? groupPortRowsFor(g.id).length : 0;
+  const rows = g ? groupPortRowCount(g.id) : 0;
   const h = groupPortZoneTop(g) + Math.max(rows, 1)*GROUP_PORT_ROW_H + GROUP_FOOT_PAD;
   return Math.ceil(h/GRID)*GRID;   // bottom edge on the grid too
 }
@@ -330,15 +338,30 @@ function groupPortKey(gid, src, tgt){ return gid+'|'+groupEdgeRouteKey(src,tgt);
 function portRowKey(r){ return groupEdgeRouteKey(r.src, r.tgt); }
 // Drop a port at a given row, pushing whatever was there (and below) down — or up
 // if the port came from lower down. Row count is unchanged, so the block keeps
-// its height and nothing else in the sheet moves.
-function moveGroupPortToRow(gid, key, newRow){
-  const keys = groupPortRowsFor(gid).map(portRowKey);
+// its height and nothing else in the sheet moves. On a barrier block rows are
+// per-SIDE columns, so the move reorders only within the port's own column.
+function movePortRowOrder(rows, key, newRow, barrier){
+  const keys = rows.map(portRowKey);
   const from = keys.indexOf(key);
-  if (from < 0) return false;
+  if (from < 0) return null;
+  if (barrier){
+    const side = rows[from].side;
+    const sub = rows.filter(r=>r.side===side).map(portRowKey);
+    const sFrom = sub.indexOf(key);
+    const sTo = Math.max(0, Math.min(sub.length-1, newRow));
+    if (sFrom === sTo) return null;
+    sub.splice(sTo, 0, sub.splice(sFrom, 1)[0]);
+    return [...sub, ...rows.filter(r=>r.side!==side).map(portRowKey)];
+  }
   const to = Math.max(0, Math.min(keys.length-1, newRow));
-  if (from === to) return false;
+  if (from === to) return null;
   keys.splice(to, 0, keys.splice(from, 1)[0]);
-  S.groupPortOrder[gid] = keys;
+  return keys;
+}
+function moveGroupPortToRow(gid, key, newRow){
+  const order = movePortRowOrder(groupPortRowsFor(gid), key, newRow, groupSide(gid)==='barrier');
+  if (!order) return false;
+  S.groupPortOrder[gid] = order;
   invalidateGroupPorts();
   return true;
 }
@@ -390,11 +413,20 @@ function groupPortIndex(){
     // place a port in the wrong domain.
     const gside = groupSide(gid);
     const flip = groupHvFlip(gid);
-    rows.forEach((r,i)=>{
-      r.row = i;
+    rows.forEach(r=>{
       r.pinned = gside==='barrier';
       r.side = r.pinned ? ((r.hv !== flip) ? 'right' : 'left') : groupPortSideOf(gid, r.src, r.tgt, r.dir);
     });
+    // On a barrier block the two halves hold independent COLUMNS of rows: an
+    // LV and an HV port can share the same line, because the width rule
+    // guarantees each label fits entirely inside its own half. The block then
+    // needs only max(left,right) rows — much more compact vertically.
+    if (gside==='barrier'){
+      let li=0, ri=0;
+      rows.forEach(r=>{ r.row = r.side==='left' ? li++ : ri++; });
+    } else {
+      rows.forEach((r,i)=>{ r.row = i; });
+    }
   }
   _groupPortIdx = idx;
   return idx;
@@ -462,11 +494,18 @@ function nodePortIndex(){
     const nside = nodeSide(nid);
     const n = nodeById(nid);
     const flip = !!(n && n.hvFlip);
-    rows.forEach((r,i)=>{
-      r.row = i;
+    rows.forEach(r=>{
       r.pinned = nside==='barrier';
       r.side = r.pinned ? ((r.hv !== flip) ? 'right' : 'left') : groupPortSideOf(nid, r.src, r.tgt, r.dir);
     });
+    // Barrier members stack their two sides in parallel columns (same rule as
+    // the barrier group blocks) — an LV and an HV port share the line.
+    if (nside==='barrier'){
+      let li=0, ri=0;
+      rows.forEach(r=>{ r.row = r.side==='left' ? li++ : ri++; });
+    } else {
+      rows.forEach((r,i)=>{ r.row = i; });
+    }
   }
   _nodePortIdx = idx;
   return idx;
@@ -476,15 +515,18 @@ function nodePortOf(id, src, tgt, dir){
   return nodePortRowsFor(id).find(r=>r.src===src && r.tgt===tgt && r.dir===dir);
 }
 function moveNodePortToRow(nid, key, newRow){
-  const keys = nodePortRowsFor(nid).map(portRowKey);
-  const from = keys.indexOf(key);
-  if (from < 0) return false;
-  const to = Math.max(0, Math.min(keys.length-1, newRow));
-  if (from === to) return false;
-  keys.splice(to, 0, keys.splice(from, 1)[0]);
-  S.groupPortOrder[nid] = keys;
+  const order = movePortRowOrder(nodePortRowsFor(nid), key, newRow, nodeSide(nid)==='barrier');
+  if (!order) return false;
+  S.groupPortOrder[nid] = order;
   invalidateGroupPorts();
   return true;
+}
+// Visible row count of a member block's port zone (parallel columns on barrier).
+function nodePortRowCount(id){
+  const rows = nodePortRowsFor(id);
+  if (nodeSide(id)!=='barrier') return rows.length;
+  const left = rows.filter(r=>r.side==='left').length;
+  return Math.max(left, rows.length-left);
 }
 // Same geometry as the group blocks: a header, a separator, then the port zone
 // with one GRID-pitch row per connection — the block grows to fit, and rows are
@@ -496,7 +538,7 @@ function nodePortZoneTop(n){
 }
 function nodePortRowY(n, row){ return nodePortZoneTop(n) + row*GROUP_PORT_ROW_H + GROUP_PORT_ROW_H/2; }
 function nodeBlockHeight(n){
-  const rows = nodePortRowsFor(n.id).length;
+  const rows = nodePortRowCount(n.id);
   const h = nodePortZoneTop(n) + Math.max(rows, 1)*GROUP_PORT_ROW_H + GROUP_FOOT_PAD;
   return Math.ceil(h/GRID)*GRID;
 }
