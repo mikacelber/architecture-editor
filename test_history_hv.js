@@ -101,6 +101,21 @@ const key=e=>T.groupEdgeRouteKey(e.source,e.target);
   check('non-barrier blocks still allow side flips',
     T.groupPortOf(lvG.id, r0.src, r0.tgt, r0.dir).side!==before);
   T.resetGroupPortLayout(lvG.id); T.resetGroupPortLayout(g.id); T.render();
+
+  // the LV|HV flip swaps the halves: HV ports move to the LEFT, still pinned
+  const grp=S.groups.find(x=>x.id===g.id);
+  grp.hvFlip=true; T.render();
+  check('flipping the barrier moves HV ports to the left half (still pinned)',
+    T.groupPortRowsFor(g.id).every(r=>r.pinned && r.side===(r.hv?'left':'right')));
+  const W=T.groupBlockRect(g.id).w;
+  check('the flipped HV wash paints the LEFT half',
+    window.document.getElementById('nodesG').innerHTML.includes('x="0" y="0" width="'+(W/2)+'"'));
+  S.sel={type:'group', id:g.id}; T.render();
+  check('the barrier group inspector offers the LV|HV flip switch', !!window.document.getElementById('gFlip'));
+  S.sel=null;
+  delete grp.hvFlip; T.render();
+  check('unflipped default restored: HV ports back on the right half',
+    T.groupPortRowsFor(g.id).every(r=>r.side===(r.hv?'right':'left')));
 }
 
 /* ============ 3. undo / redo ============ */
