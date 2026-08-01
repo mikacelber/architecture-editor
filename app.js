@@ -2252,6 +2252,13 @@ function renderInspector(){
   // summarised here instead of listed. Delete buttons carry the ORIGINAL index.
   const shown = e.nets.map((n,i)=>({n,i})).filter(x=>!isGroundNet(x.n));
   const gndCount = e.nets.length - shown.length;
+  // Datasheets of the connection's endpoint ICs — the driver (source) first —
+  // so what the connection actually does is one click away.
+  const dsLinks = [{id:e.source, role:'source'}, {id:e.target, role:'target'}].map(x=>{
+    const n = nodeById(x.id);
+    return (n && n.kind==='ic' && n.data && n.data.DatasheetUrl)
+      ? { label:n.label, url:n.data.DatasheetUrl, role:x.role } : null;
+  }).filter(Boolean);
   body.innerHTML = `
     ${e.nets.length?'':'<p style="color:var(--warn)">This connection has no nets yet — add at least one, or it will be dropped on export.</p>'}
     ${shown.map(({n,i})=>`
@@ -2264,6 +2271,8 @@ function renderInspector(){
         ${n.description?`<div class="netdesc">${esc(n.description)}</div>`:''}
       </div>`).join('')}
     ${gndCount?`<p class="hint">${gndCount} ground net${gndCount>1?'s':''} on this connection — kept in the export, never drawn.</p>`:''}
+    ${dsLinks.length?`<div class="kv" style="margin-top:12px"><label>Datasheets</label><div class="val">${dsLinks.map(d=>
+      `<a href="${esc(d.url)}" target="_blank" rel="noopener">${esc(d.label)}</a> <span style="color:var(--ink-soft)">(${d.role})</span>`).join('<br>')}</div></div>`:''}
     <div class="addnet">
       <div class="kv"><label>Net name</label><input type="text" id="newNetName" placeholder="MY_NEW_NET"></div>
       <div class="row">

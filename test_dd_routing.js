@@ -356,6 +356,22 @@ check('every in-group connection carries a routing lane',
   }
 }
 
+/* ---- rule 12: the connection inspector links the endpoint datasheets ---- */
+{
+  const g=T.groupsWithUngrouped().find(x=>x.id===best.id);
+  const m=new Set(g.members);
+  const e=T.diagramEdges(S.edges).find(x=>m.has(x.source)&&m.has(x.target)&&T.nodeById(x.source).kind==='ic');
+  const src=T.nodeById(e.source);
+  const hadUrl=src.data.DatasheetUrl;
+  if (!hadUrl) src.data.DatasheetUrl='https://example.com/ds.pdf';
+  S.sel={ type:'edge', id:e.id }; T.render();
+  const bodyHtml=doc.getElementById('insBody').innerHTML;
+  check('selecting a connection lists its endpoint datasheets',
+    bodyHtml.includes('Datasheets') && bodyHtml.includes(src.data.DatasheetUrl) && bodyHtml.includes('(source)'));
+  if (!hadUrl) delete src.data.DatasheetUrl;
+  S.sel=null; T.render();
+}
+
 /* ---- rule 11: external blocks widen to fit their full name ---- */
 {
   const ext=S.nodes.filter(n=>n.kind==='external');
