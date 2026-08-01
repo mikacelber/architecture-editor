@@ -120,12 +120,14 @@ const res=T.groupEdgePts(A2,B2,T.groupEdgeRouteOf(e0.source,e0.target),obstacles
 check('a block dropped onto a manual route is routed around when drawn', !crossesAny(res.pts,obstacles()));
 mv.x=ox; mv.y=oy; delete S.groupEdgeRoutes[key]; T._routeCache.clear(); T.render();
 
-/* ---------- drill-down shares the top-level drag pipeline ---------- */
+/* ---------- both levels share one segment-translation drag pipeline ---------- */
 {
   const src = fs.readFileSync('app.js','utf8');
-  check('drill-down segment drags write the same waypoint model as the top level',
-    /if \(drag\.topLevel\) setGroupEdgeRoute\(drag\.src, drag\.tgt, wp\);/.test(src) &&
-    /if \(e\) e\.route = wp;/.test(src));
+  check('drill-down segment drags share the top-level route store write',
+    /if \(drag\.topLevel\) setGroupEdgeRoute\(drag\.src, drag\.tgt, route\);/.test(src) &&
+    /if \(e\) e\.route = route;/.test(src));
+  check('the drag translates the grabbed segment in place',
+    /translateWireSegment\(drag\.pts, drag\.segIdx, drag\.axis, raw, obstacles, dir\)/.test(src));
   check('the raw elbow patch \\{x,y,x2\\} is gone from the drag handler',
     !/drag\.mode==='routeE'/.test(src));
 }

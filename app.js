@@ -498,7 +498,8 @@ function nodeBlockWidth(n){
     fit(26 + textWidth((n.data.ic_type||'').slice(0,30), 10, false) + GROUP_PAD_X);
   } else {
     fit(12 + textWidth('EXTERNAL', 10, true, 0.08) + GROUP_PAD_X + GROUP_SIDE_TAG_W);
-    fit(12 + textWidth(n.label.slice(0,26), 11.5, false) + GROUP_PAD_X);
+    // the full label — the block widens instead of cutting the name
+    fit(12 + textWidth(n.label, 11.5, false) + GROUP_PAD_X);
   }
   for (const r of nodePortRowsFor(n.id))
     fit(GROUP_PAD_X + 26 + 6 + textWidth(nodePortRowLabel(r), 9, true) + GROUP_PAD_X);
@@ -1176,10 +1177,23 @@ function groupEdgePts(pa, pb, route, obstacles, lane){
     for (let l=lane||0; l>=0; l--){ const r = fn(l, anchorsAt(l)); if (r) return r; }
     return null;
   };
-  // A hand-routed wire is defined by the WAYPOINT the user dragged it to, not by a
-  // rigid elbow: the router then finds a legal path in and out of that point. That
-  // keeps every drag responsive (a point has far more legal positions than a
-  // full-width segment) while still never crossing a block.
+  // A segment-translated wire stores its FULL polyline (route.pts): it is
+  // honoured verbatim while its endpoints still meet the ports and no block has
+  // landed on it. When either stops being true (a port dragged elsewhere, a
+  // block dropped on the shape) it degrades to a waypoint at its longest
+  // segment, so the router finds a legal shape again instead of drawing a lie.
+  if (route && route.pts && route.pts.length>=2){
+    const mp = route.pts;
+    const endsOk =
+      Math.abs(mp[0][0]-pa.x)<0.01 && Math.abs(mp[0][1]-pa.y)<0.01 &&
+      Math.abs(mp[mp.length-1][0]-pb.x)<0.01 && Math.abs(mp[mp.length-1][1]-pb.y)<0.01;
+    if (endsOk && !ptsInsideAnyBlock(mp, obstacles)) return { pts: mp, geo, manual:true };
+    const at = ptsBadgePos(mp);
+    route = { wx: at.x, wy: at.y };
+  }
+  // A waypoint route ({wx,wy}) reroutes the wire THROUGH that point: the router
+  // finds a legal path in and out of it. Used when a stored shape has to be
+  // abandoned (above) — a point has far more legal positions than a shape.
   if (route && route.wx!=null && route.wy!=null){
     const wp = { x: route.wx, y: route.wy };
     const manual = tryLanes((l,{start,goal})=>{
@@ -1225,6 +1239,36 @@ function polyHandleMarkup(pts, eid, extraAttrs, w){
 // of travel (so dragging a wire into a block makes it hop to the far side). A
 // POINT has far more legal positions than a full-width segment, which is why the
 // waypoint model below keeps dragging responsive everywhere on the sheet.
+// Segment-translation drag: the grabbed run moves along its own axis and its
+// perpendicular neighbours stretch/shrink to absorb the change — NO new
+// segments appear while there is free room (the router is not involved).
+// A block in the way makes the segment hop past it (snapPast*), and if a
+// stretched neighbour would land on a block the hop continues — the wire
+// never comes to rest across a block. Returns the new polyline, or null when
+// no legal position exists in the drag direction.
+function translateWireSegment(pts, i, axis, want, obstacles, dir){
+  const first = pts[0], last = pts[pts.length-1];
+  let v = axis==='v' ? snapPastVertical(want, pts[i][1], pts[i+1][1], obstacles, dir)
+                     : snapPastHorizontal(want, pts[i][0], pts[i+1][0], obstacles, dir);
+  // The port stubs at both ends must survive (≥12px, same direction), so the
+  // arrow keeps entering the block perpendicular to its edge.
+  if (axis==='v'){
+    if (i===1) v = pts[1][0] >= first[0] ? Math.max(v, first[0]+12) : Math.min(v, first[0]-12);
+    if (i+1===pts.length-2) v = pts[pts.length-2][0] >= last[0] ? Math.max(v, last[0]+12) : Math.min(v, last[0]-12);
+  }
+  for (let hop=0; hop<12; hop++){
+    const out = pts.map(p=>p.slice());
+    if (axis==='v'){ out[i][0]=v; out[i+1][0]=v; } else { out[i][1]=v; out[i+1][1]=v; }
+    const simp = simplifyPts(out);
+    if (!ptsInsideAnyBlock(simp, obstacles)) return simp;
+    const next = axis==='v' ? snapPastVertical(v + (dir||1)*GRID, pts[i][1], pts[i+1][1], obstacles, dir||1)
+                            : snapPastHorizontal(v + (dir||1)*GRID, pts[i][0], pts[i+1][0], obstacles, dir||1);
+    if (next===v) return null;
+    v = next;
+  }
+  return null;
+}
+
 function pointOutOfBlocks(x, y, obstacles, axis, dir){
   let v = axis==='v' ? x : y;
   for (let i=0;i<12;i++){
@@ -1505,10 +1549,16 @@ function memberBounds(members){
 // corridor, waypoint drags, and the incremental route cache.
 const NODE_ROUTE_PREFIX = 'n|';
 function nodeEdgeLaneKey(e){ return 'n:'+e.source+'→'+e.target; }
-// A manual node-edge route is the same single waypoint {wx,wy} the top level
-// uses (stored on the edge itself so history/serialisation carry it for free);
-// legacy {x,y,x2} elbow patches from older sessions simply mean "auto".
-function nodeEdgeRouteOf(e){ return (e.route && e.route.wx!=null && e.route.wy!=null) ? e.route : undefined; }
+// A manual node-edge route is either a full polyline {pts} (segment drags) or
+// a single waypoint {wx,wy}, the same forms the top level stores (kept on the
+// edge itself so history/serialisation carry it for free); legacy {x,y,x2}
+// elbow patches from older sessions simply mean "auto".
+function nodeEdgeRouteOf(e){
+  const r = e.route;
+  if (!r) return undefined;
+  if (r.pts && r.pts.length>=2) return r;
+  return (r.wx!=null && r.wy!=null) ? r : undefined;
+}
 // Fallback lane cap for boundary wires when a spec carries no computed
 // per-side cap (drillSheet derives the real one from its corridor width).
 const BOUNDARY_LANE_MAX = 3;
@@ -1746,7 +1796,7 @@ function renderDrillDown(){
         stroke="${selected?'var(--probe)':(side==='lv'?'var(--ink-soft)':'var(--sig-hv)')}" stroke-width="${selected?2.5:1.4}" stroke-dasharray="${selected?'none':'5 4'}"/>
       ${hvOverlayMarkup(side, n.w, n.h, 4, 'hvclip-'+safeId(n.id))}
       <text x="12" y="20" font-family="var(--mono)" font-size="10" letter-spacing=".08em" fill="var(--ink-soft)">EXTERNAL</text>
-      <text x="12" y="36" font-family="var(--sans)" font-size="11.5" font-weight="500" fill="var(--ink)">${esc(n.label.slice(0,26))}</text>
+      <text x="12" y="36" font-family="var(--sans)" font-size="11.5" font-weight="500" fill="var(--ink)">${esc(n.label)}</text>
       ${hvSideTag(side, n.w)}
       <line x1="10" y1="${sepY}" x2="${n.w-10}" y2="${sepY}" stroke="var(--ink)" stroke-width="1" opacity=".25"/>
       ${portRows}
@@ -2287,16 +2337,28 @@ svg.addEventListener('pointerdown', ev=>{
 
   if (segEl){
     const cls = segEl.classList;
-    // seg-v (vertical run) drags sideways, seg-h (horizontal run) drags up/down;
-    // either converts the wire to a waypoint route seeded by that drag.
+    // seg-v (vertical run) drags sideways, seg-h (horizontal run) drags up/down.
+    // The wire's CURRENT shape and which of its segments was grabbed are
+    // captured here, so the drag can TRANSLATE that segment in place.
     const mode = cls.contains('seg-v') ? 'routeV' : 'routeH';
     const topLevel = isTopLevel();
     const mx = segEl.dataset.mx!=null ? +segEl.dataset.mx : null;
     const my = segEl.dataset.my!=null ? +segEl.dataset.my : null;
     const axis = segEl.dataset.axis || (cls.contains('seg-h') ? 'h' : 'v');
+    const key = topLevel ? groupEdgeRouteKey(segEl.dataset.src, segEl.dataset.tgt)
+                         : NODE_ROUTE_PREFIX + segEl.dataset.eid;
+    const cached = _routeCache.get(key);
+    let pts = cached ? cached.pts.map(p=>p.slice()) : null, segIdx = -1;
+    if (pts && mx!=null && my!=null){
+      for (let k=0;k<pts.length-1;k++){
+        if ((axis==='v') !== (pts[k][0]===pts[k+1][0])) continue;
+        if (Math.abs((pts[k][0]+pts[k+1][0])/2-mx)<0.5 && Math.abs((pts[k][1]+pts[k+1][1])/2-my)<0.5){ segIdx=k; break; }
+      }
+    }
     S.sel = { type: topLevel?'groupEdge':'edge', id: segEl.dataset.eid };
     drag = { mode, eid: segEl.dataset.eid, axis, mx, my, snap:snapshotState(),
-      topLevel, src: segEl.dataset.src, tgt: segEl.dataset.tgt };
+      topLevel, src: segEl.dataset.src, tgt: segEl.dataset.tgt,
+      pts: segIdx>=0 ? pts : null, segIdx };
     render();
     return;
   }
@@ -2440,11 +2502,11 @@ svg.addEventListener('pointermove', ev=>{
     return;
   }
   if (drag.mode==='routeV' || drag.mode==='routeH'){
-    // Vertical segments only move in X; horizontal segments only move in Y.
-    // Both view levels snap to the visible grid pitch — what you see is what you
-    // snap to — and share the SAME waypoint model: the drag places a point, the
-    // lattice router finds a legal path through it. Only where the waypoint is
-    // stored differs (S.groupEdgeRoutes per group pair vs. the edge's .route).
+    // Vertical segments only move in X; horizontal segments only move in Y,
+    // snapped to the visible grid pitch at both view levels. The grabbed
+    // segment is TRANSLATED in place — its perpendicular neighbours absorb the
+    // change, so no new segments appear while there is free room. Only where
+    // the shape is stored differs (S.groupEdgeRoutes vs. the edge's .route).
     const raw = drag.axis==='h' ? snapView(w.y) : snapView(w.x);
     // Direction is taken from the POINTER (not from the snapped result), so once
     // the wire has hopped past a block, continuing the same way keeps going and
@@ -2453,15 +2515,22 @@ svg.addEventListener('pointermove', ev=>{
     if (dir) drag.lastDir = dir;
     drag.lastRaw = raw;
     const obstacles = drag.topLevel ? visibleGroups().map(g=>groupBlockRect(g.id)) : openGroupObstacleRects();
-    // The dragged segment only moves along its own axis; the other coordinate
-    // stays where the segment already was.
-    const wx = drag.axis==='v' ? raw : (drag.mx!=null ? snapView(drag.mx) : snapView(w.x));
-    const wy = drag.axis==='v' ? (drag.my!=null ? snapView(drag.my) : snapView(w.y)) : raw;
-    const fixed = pointOutOfBlocks(wx, wy, obstacles, drag.axis, dir);
-    const wp = drag.axis==='v' ? { wx: fixed, wy } : { wx, wy: fixed };
+    let route;
+    if (drag.pts){
+      const moved = translateWireSegment(drag.pts, drag.segIdx, drag.axis, raw, obstacles, dir);
+      if (!moved) return;   // nowhere legal in this direction — the wire stays
+      route = { pts: moved };
+    } else {
+      // no captured shape (stale cache) — waypoint fallback: reroute through
+      // the dragged point, keeping the segment's other coordinate.
+      const wx = drag.axis==='v' ? raw : (drag.mx!=null ? snapView(drag.mx) : snapView(w.x));
+      const wy = drag.axis==='v' ? (drag.my!=null ? snapView(drag.my) : snapView(w.y)) : raw;
+      const fixed = pointOutOfBlocks(wx, wy, obstacles, drag.axis, dir);
+      route = drag.axis==='v' ? { wx: fixed, wy } : { wx, wy: fixed };
+    }
     commitGesture(drag);
-    if (drag.topLevel) setGroupEdgeRoute(drag.src, drag.tgt, wp);
-    else { const e=S.edges.find(x=>x.id===drag.eid); if (e) e.route = wp; }
+    if (drag.topLevel) setGroupEdgeRoute(drag.src, drag.tgt, route);
+    else { const e=S.edges.find(x=>x.id===drag.eid); if (e) e.route = route; }
     render();
     return;
   }
