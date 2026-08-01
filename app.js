@@ -18,6 +18,7 @@ const S = {
   groupEdgeLanes: {}, // {[srcId+'→'+tgtId]: laneIndex} — routing lane frozen at layout time
   groupPortOrder: {}, // {[gid]: ['srcId→tgtId', ...]} — port rows dragged into a manual vertical order
   portalOffsets: {}, // {[gid]: {in:{dx,dy}, out:{dx,dy}}} — each portal COLUMN dragged as a whole (in: dx≤0, out: dx≥0)
+  ungroupedHvFlip: undefined, // LV|HV flip of the implicit UNGROUPED block (real groups keep g.hvFlip on themselves)
   openGroup: null, // null = top-level view; groupId = drilled into that group (phase c)
   view: { tx:60, ty:40, k:1 },
   sel: null,   // {type:'node'|'edge'|'group'|'groupEdge'|'portal', id}
@@ -435,8 +436,9 @@ function nodePortIndex(){
   if (_nodePortIdx) return _nodePortIdx;
   const idx = new Map(S.nodes.map(n=>[n.id, []]));
   for (const e of diagramEdges(S.edges)){
-    if (idx.has(e.source)) idx.get(e.source).push({ eid:e.id, src:e.source, tgt:e.target, dir:'out', other:e.target, nets:e.nets.length });
-    if (idx.has(e.target)) idx.get(e.target).push({ eid:e.id, src:e.source, tgt:e.target, dir:'in',  other:e.source, nets:e.nets.length });
+    const hv = e.nets.some(isHvNetType);   // the connection's insulation domain
+    if (idx.has(e.source)) idx.get(e.source).push({ eid:e.id, src:e.source, tgt:e.target, dir:'out', other:e.target, nets:e.nets.length, hv });
+    if (idx.has(e.target)) idx.get(e.target).push({ eid:e.id, src:e.source, tgt:e.target, dir:'in',  other:e.source, nets:e.nets.length, hv });
   }
   const labelOf = id => { const n=nodeById(id); return n ? n.label : id; };
   for (const [nid, rows] of idx){
@@ -454,7 +456,17 @@ function nodePortIndex(){
         || a._nat - b._nat);
       rows.forEach(r=>{ delete r._nat; });
     }
-    rows.forEach((r,i)=>{ r.row = i; r.side = groupPortSideOf(nid, r.src, r.tgt, r.dir); });
+    // A member block that straddles the isolation barrier pins its ports by
+    // domain, exactly like a barrier group block: HV connections on the HV
+    // half, LV on the LV half (right/left by default, swapped by n.hvFlip).
+    const nside = nodeSide(nid);
+    const n = nodeById(nid);
+    const flip = !!(n && n.hvFlip);
+    rows.forEach((r,i)=>{
+      r.row = i;
+      r.pinned = nside==='barrier';
+      r.side = r.pinned ? ((r.hv !== flip) ? 'right' : 'left') : groupPortSideOf(nid, r.src, r.tgt, r.dir);
+    });
   }
   _nodePortIdx = idx;
   return idx;
@@ -503,8 +515,15 @@ function nodeBlockWidth(n){
     // the full label — the block widens instead of cutting the name
     fit(12 + textWidth(n.label, 11.5, false) + GROUP_PAD_X);
   }
-  for (const r of nodePortRowsFor(n.id))
-    fit(GROUP_PAD_X + 26 + 6 + textWidth(nodePortRowLabel(r), 9, true) + GROUP_PAD_X);
+  // On a barrier block the midline is a physical boundary: a port row must fit
+  // ENTIRELY inside its own half, so the block is at least twice the widest
+  // row (same rule as groupBlockWidth).
+  const barrier = nodeSide(n.id)==='barrier';
+  const HALF_MARGIN = 8;
+  for (const r of nodePortRowsFor(n.id)){
+    const rowNeed = GROUP_PAD_X + 26 + 6 + textWidth(nodePortRowLabel(r), 9, true);
+    fit(barrier ? 2*(rowNeed + HALF_MARGIN) : rowNeed + GROUP_PAD_X);
+  }
   return Math.ceil(need/GRID)*GRID;
 }
 // n.w/n.h are stored on the node (legacy of the flat editor), so they're
@@ -922,9 +941,19 @@ function hvSideTag(side, w, flip){
       <text x="${lvX}" y="11" ${flip?'text-anchor="end" ':''}font-family="var(--mono)" font-size="7.5" font-weight="700" letter-spacing=".04em" fill="var(--ink-soft)" style="pointer-events:none">LV</text>`;
 }
 // Which half is HV on a barrier block: right by default, left when the user
-// flipped it. Stored on the group / node object itself, so a fresh import
-// always starts unflipped (LV left · HV right).
-function groupHvFlip(gid){ const g = S.groups.find(x=>x.id===gid); return !!(g && g.hvFlip); }
+// flipped it. Stored on the group / node object itself (the implicit UNGROUPED
+// bucket keeps its flag in S.ungroupedHvFlip, since its object is derived), so
+// a fresh import always starts unflipped (LV left · HV right).
+function groupHvFlip(gid){
+  if (gid===UNGROUPED_ID) return !!S.ungroupedHvFlip;
+  const g = S.groups.find(x=>x.id===gid);
+  return !!(g && g.hvFlip);
+}
+function setGroupHvFlip(gid, on){
+  if (gid===UNGROUPED_ID){ S.ungroupedHvFlip = on || undefined; return; }
+  const g = S.groups.find(x=>x.id===gid);
+  if (g) g.hvFlip = on || undefined;
+}
 
 // Path for the 5-segment schematic elbow produced by sidedGeometry below: out
 // from the source port, vertical jog at bendX, horizontal plateau at bendY,
@@ -1483,6 +1512,7 @@ function restoreState(json){
   S.groupPortOrder = s.groupPortOrder || {};
   S.groupEdgeLanes = s.groupEdgeLanes || {};
   S.portalOffsets = s.portalOffsets || {};
+  S.ungroupedHvFlip = s.ungroupedHvFlip || undefined;
   S.openGroup = s.openGroup ?? null;
   S.edgeSeq = Math.max(0, ...S.edges.map(e=>+String(e.id).replace(/^e/,'')||0)) + 1;
   S.sel = null; S.link = null;
@@ -2128,12 +2158,12 @@ function renderInspector(){
       ${isUngrouped
         ? `<p>${esc(g.description||'')}</p>`
         : `<div class="kv"><label>Title</label><input type="text" id="gTitle" value="${esc(g.title)}"></div>
-           <div class="kv"><label>Description</label><textarea id="gDesc">${esc(g.description)}</textarea></div>
-           ${groupSide(g.id)==='barrier'?`
-           <div class="kv"><label>LV | HV halves</label>
-             <label class="switch"><input type="checkbox" id="gFlip" ${groupHvFlip(g.id)?'checked':''}><span class="knob"></span>
-               <span class="swlabel">${groupHvFlip(g.id)?'HV left · LV right':'LV left · HV right'}</span></label>
-           </div>`:''}`}
+           <div class="kv"><label>Description</label><textarea id="gDesc">${esc(g.description)}</textarea></div>`}
+      ${groupSide(g.id)==='barrier'?`
+      <div class="kv"><label>LV | HV halves</label>
+        <label class="switch"><input type="checkbox" id="gFlip" ${groupHvFlip(g.id)?'checked':''}><span class="knob"></span>
+          <span class="swlabel">${groupHvFlip(g.id)?'HV left · LV right':'LV left · HV right'}</span></label>
+      </div>`:''}
       <div class="kv"><label>Members (${g.members.length}) — move to group</label></div>
       ${memberRows}
       <div class="btnrow">
@@ -2145,8 +2175,7 @@ function renderInspector(){
       ${isUngrouped?'':'<p style="margin-top:10px;color:var(--ink-soft);font-size:11.5px">Deleting a group moves its members to Ungrouped — blocks are never deleted.</p>'}`;
     $('btnOpenGroup').onclick=()=>openGroupView(g.id);
     const gf=$('gFlip'); if (gf) gf.onchange=()=>{
-      const grp=S.groups.find(x=>x.id===g.id);
-      if (grp){ commit(); grp.hvFlip = gf.checked || undefined; render(); }
+      commit(); setGroupHvFlip(g.id, gf.checked); render();
     };
     const rp=$('btnResetPorts'); if (rp) rp.onclick=()=>{ commit(); resetGroupPortLayout(g.id); render(); };
     if (!isUngrouped){
@@ -2538,12 +2567,20 @@ svg.addEventListener('pointermove', ev=>{
   }
   if (drag.mode==='nodeportside'){
     // The drill-down twin of 'portside': X picks the edge of the member block
-    // the port attaches to, Y picks its row. Same live feel, same stores.
+    // the port attaches to, Y picks its row. Same live feel, same stores —
+    // including the barrier rule: a pinned port never crosses the LV|HV
+    // divider, only its row can change.
     const n = nodeById(drag.nid);
     if (!n) return;
     let changed = false;
+    const row = nodePortOf(drag.nid, drag.src, drag.tgt, drag.dir);
     const wantedSide = w.x > n.x + n.w/2 ? 'right' : 'left';
-    if (groupPortSideOf(drag.nid, drag.src, drag.tgt, drag.dir) !== wantedSide){
+    if (row && row.pinned){
+      if (wantedSide !== row.side && !drag.warned){
+        drag.warned = true;
+        toast(`${row.hv?'HV':'LV'} connections stay on the ${row.hv?'HV':'LV'} side of this block`);
+      }
+    } else if (groupPortSideOf(drag.nid, drag.src, drag.tgt, drag.dir) !== wantedSide){
       setGroupPortSide(drag.nid, drag.src, drag.tgt, wantedSide);
       changed = true;
     }
@@ -3023,6 +3060,7 @@ function buildSessionJSON(){
     groupEdgeLanes:{ ...S.groupEdgeLanes },
     groupPortOrder:Object.fromEntries(Object.entries(S.groupPortOrder).map(([k,v])=>[k,[...v]])),
     portalOffsets:JSON.parse(JSON.stringify(S.portalOffsets)),
+    ungroupedHvFlip:S.ungroupedHvFlip,
     openGroup:S.openGroup };
 }
 
@@ -3034,7 +3072,7 @@ function loadFromContract(input, contract, groups){
   S.edgeSeq=0;
   const g = buildGraph(input, contract||{}, groups||[]);
   S.nodes=g.nodes; S.edges=g.edges; S.groups=g.groups;
-  S.groupPos={}; S.groupEdgeRoutes={}; S.groupPortSides={}; S.groupPortOrder={}; S.groupEdgeLanes={}; S.portalOffsets={}; S.openGroup=null; S.sel=null;
+  S.groupPos={}; S.groupEdgeRoutes={}; S.groupPortSides={}; S.groupPortOrder={}; S.groupEdgeLanes={}; S.portalOffsets={}; S.ungroupedHvFlip=undefined; S.openGroup=null; S.sel=null;
   autoLayoutAllGroupMembers();
   autoLayoutGroups();
   assignRouteLanes();   // spread the wires apart before the first paint
