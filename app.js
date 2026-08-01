@@ -2323,7 +2323,8 @@ function renderInspector(){
         <div class="kv"><label>Datasheet</label><div class="val">${n.data.DatasheetUrl?`<a href="${esc(n.data.DatasheetUrl)}" target="_blank" rel="noopener">${esc(n.data.DatasheetUrl)}</a>`:'—'}</div></div>
         ${sideRow}
         ${portHint}
-        <div class="btnrow">${customPorts?'<button id="btnResetNodePorts">Reset port layout</button>':''}<button class="danger" id="btnDelNode">Delete IC and its connections</button></div>`;
+        <div class="btnrow"><button id="btnReplaceIC">Replace IC…</button>${customPorts?'<button id="btnResetNodePorts">Reset port layout</button>':''}</div>
+        <div class="btnrow"><button class="danger" id="btnDelNode">Delete IC and its connections</button></div>`;
     } else {
       body.innerHTML = `
         <div class="kv"><label>Description</label><div class="val">${esc(n.data.description||'')}</div></div>
@@ -2333,6 +2334,7 @@ function renderInspector(){
     }
     $('fSide').onchange=()=>{ n.hvSide = $('fSide').value || undefined; render(); };
     const ff=$('fFlip'); if (ff) ff.onchange=()=>{ commit(); n.hvFlip = ff.checked || undefined; render(); };
+    const rep=$('btnReplaceIC'); if (rep) rep.onclick=()=>openReplaceICModal(n);
     const rp=$('btnResetNodePorts'); if (rp) rp.onclick=()=>{ commit(); resetGroupPortLayout(n.id); render(); };
     const del=$('btnDelNode'); if (del) del.onclick=()=>deleteNode(n.id);
     return;
@@ -2882,14 +2884,15 @@ function dkRenderResults(list){
   });
 }
 
-$('btnAddIC').onclick=()=>{
-  const openGroup = !isTopLevel() && S.openGroup!==UNGROUPED_ID
-    ? S.groups.find(g=>g.id===S.openGroup) : null;
+// The IC identity form (DigiKey search + fields) shared by "Add IC" and
+// "Replace IC" — one markup builder and one handler-wiring, so both modals
+// always look and behave the same.
+function icFormMarkup(v){
   const cfg = dkConfig();
-  openModal('Add IC block', `
+  return `
     <div class="dksearch">
       <div class="kv"><label>Search DigiKey by part number</label>
-        <div class="row"><input type="text" id="dkQuery" placeholder="TPS7A21" autocomplete="off">
+        <div class="row"><input type="text" id="dkQuery" placeholder="TPS7A21" autocomplete="off" value="${esc(v.query||'')}">
         <button id="dkGo" style="flex:0 0 auto">Search</button></div>
       </div>
       <div id="dkStatus" class="hint" style="margin:4px 0"></div>
@@ -2912,16 +2915,14 @@ $('btnAddIC').onclick=()=>{
         </div>
       </div>
     </div>
-    <div class="kv"><label>Part number *</label><input type="text" id="fPN" placeholder="TPS7A21"></div>
-    <div class="kv"><label>IC type *</label><input type="text" id="fType" placeholder="Low-noise LDO regulator"></div>
-    <div class="kv"><label>Manufacturer</label><input type="text" id="fMan" placeholder="TEXAS INSTRUMENTS"></div>
-    <div class="kv"><label>Function in this system *</label><textarea id="fDesc"></textarea></div>
-    <div class="kv"><label>Selection rationale</label><textarea id="fRat"></textarea></div>
-    <div class="kv"><label>Datasheet URL</label><input type="text" id="fUrl" placeholder="https://www.ti.com/lit/ds/symlink/....pdf"></div>
-    <p class="hint">The new block appears at the center of the view. ${openGroup
-      ? `It will join the open group "${esc(openGroup.title)}".`
-      : 'It will be ungrouped — open a group first if it belongs in one.'}</p>
-  `, `<button id="mCancel">Cancel</button><button class="primary" id="mOk">Add IC</button>`);
+    <div class="kv"><label>Part number *</label><input type="text" id="fPN" placeholder="TPS7A21" value="${esc(v.pn||'')}"></div>
+    <div class="kv"><label>IC type *</label><input type="text" id="fType" placeholder="Low-noise LDO regulator" value="${esc(v.type||'')}"></div>
+    <div class="kv"><label>Manufacturer</label><input type="text" id="fMan" placeholder="TEXAS INSTRUMENTS" value="${esc(v.man||'')}"></div>
+    <div class="kv"><label>Function in this system *</label><textarea id="fDesc">${esc(v.desc||'')}</textarea></div>
+    <div class="kv"><label>Selection rationale</label><textarea id="fRat">${esc(v.rat||'')}</textarea></div>
+    <div class="kv"><label>Datasheet URL</label><input type="text" id="fUrl" placeholder="https://www.ti.com/lit/ds/symlink/....pdf" value="${esc(v.url||'')}"></div>`;
+}
+function wireIcFormHandlers(){
   $('mCancel').onclick=closeModal;
   $('dkCfgToggle').onclick=()=>{ const p=$('dkCfgPane'); p.style.display = p.style.display==='none' ? 'block' : 'none'; };
   $('dkSave').onclick=()=>{
@@ -2953,13 +2954,52 @@ $('btnAddIC').onclick=()=>{
   };
   $('dkGo').onclick=runSearch;
   $('dkQuery').addEventListener('keydown', ev=>{ if (ev.key==='Enter'){ ev.preventDefault(); runSearch(); } });
+}
+
+// First free spot for a w×h block near (cx,cy): expanding ring search over the
+// grid, so a new IC never lands on top of an existing block — it appears in
+// the nearest clear space instead, easy to spot.
+function findFreeSpot(cx, cy, w, h, obstacles){
+  const clear = (x,y) => !obstacles.some(r =>
+    x < r.x+r.w+GRID && x+w+GRID > r.x && y < r.y+r.h+GRID && y+h+GRID > r.y);
+  const x0 = snapG(cx - w/2), y0 = snapG(cy - h/2);
+  if (clear(x0, y0)) return { x:x0, y:y0 };
+  const STEP = 2*GRID;
+  for (let ring=1; ring<60; ring++){
+    for (let j=-ring; j<=ring; j++) for (let i=-ring; i<=ring; i++){
+      if (Math.max(Math.abs(i), Math.abs(j)) !== ring) continue;   // perimeter only
+      const x = x0 + i*STEP, y = y0 + j*STEP;
+      if (clear(x, y)) return { x, y };
+    }
+  }
+  return { x:x0, y:y0 };
+}
+// The sheet the new IC will land on: the open group's members (and portals) in
+// the drill-down, or the UNGROUPED bucket's members at the top level.
+function newIcObstacles(){
+  if (!isTopLevel()) return openGroupObstacleRects();
+  const g = groupsWithUngrouped().find(x=>x.id===UNGROUPED_ID);
+  const memberSet = new Set(g ? g.members : []);
+  return memberObstacleRects(S.nodes.filter(n=>memberSet.has(n.id)));
+}
+
+$('btnAddIC').onclick=()=>{
+  const openGroup = !isTopLevel() && S.openGroup!==UNGROUPED_ID
+    ? S.groups.find(g=>g.id===S.openGroup) : null;
+  openModal('Add IC block', icFormMarkup({}) + `
+    <p class="hint">The new block appears in the nearest clear spot to the center of the view. ${openGroup
+      ? `It will join the open group "${esc(openGroup.title)}".`
+      : 'It will be ungrouped — open a group first if it belongs in one.'}</p>
+  `, `<button id="mCancel">Cancel</button><button class="primary" id="mOk">Add IC</button>`);
+  wireIcFormHandlers();
   $('mOk').onclick=()=>{
     const pn=$('fPN').value.trim();
     if (!pn || !$('fType').value.trim() || !$('fDesc').value.trim()){ toast('Part number, type and function are required'); return; }
     if (nodeById(pn)){ toast('A block with this part number already exists'); return; }
     const r=svg.getBoundingClientRect();
     const c=toWorld(r.left+r.width/2, r.top+r.height/2);
-    S.nodes.push({ id:pn, kind:'ic', label:pn, x:snapView(c.x)-NODE_W_IC/2, y:snapView(c.y)-NODE_H_IC/2,
+    const spot=findFreeSpot(c.x, c.y, NODE_W_IC, NODE_H_IC, newIcObstacles());
+    S.nodes.push({ id:pn, kind:'ic', label:pn, x:spot.x, y:spot.y,
       w:NODE_W_IC, h:NODE_H_IC,
       data:{ ic_part_number:pn, ic_type:$('fType').value.trim(), manufacturer:$('fMan').value.trim(),
              description:$('fDesc').value.trim(), selection_rationale:$('fRat').value.trim(),
@@ -2968,6 +3008,74 @@ $('btnAddIC').onclick=()=>{
     closeModal(); S.sel={type:'node',id:pn}; render();
   };
 };
+
+// Renaming a node's id (a replacement changes the part number) has to follow
+// every store that keys by node id or by src→tgt node pairs: edges, group
+// membership, port orders (the keys INSIDE every order too), port sides and
+// per-wire routing lanes. Group-level stores key by group ids — untouched.
+function renameNodeId(oldId, newId){
+  const n = nodeById(oldId);
+  if (!n || oldId===newId) return;
+  const renKey = k => k.split('→').map(p=>p===oldId?newId:p).join('→');
+  n.id = newId;
+  S.edges.forEach(e=>{
+    if (e.source===oldId) e.source=newId;
+    if (e.target===oldId) e.target=newId;
+  });
+  S.groups.forEach(g=>{
+    if (g.members.includes(oldId)){ g.members = g.members.map(m=>m===oldId?newId:m).sort(); }
+  });
+  for (const gid of Object.keys(S.groupPortOrder)){
+    const mapped = S.groupPortOrder[gid].map(renKey);
+    delete S.groupPortOrder[gid];
+    S.groupPortOrder[gid===oldId?newId:gid] = mapped;
+  }
+  for (const k of Object.keys(S.groupPortSides)){
+    const m = k.split(/\|(.+)/);
+    const nk = (m[0]===oldId?newId:m[0])+'|'+renKey(m[1]);
+    if (nk!==k){ S.groupPortSides[nk]=S.groupPortSides[k]; delete S.groupPortSides[k]; }
+  }
+  for (const k of Object.keys(S.groupEdgeLanes)){
+    if (!k.startsWith('n:')) continue;
+    const nk = 'n:'+renKey(k.slice(2));
+    if (nk!==k){ S.groupEdgeLanes[nk]=S.groupEdgeLanes[k]; delete S.groupEdgeLanes[k]; }
+  }
+  invalidateGroupPorts();
+  _routeCache.clear();
+}
+
+// Replace an IC with a newer/different part: same form as Add IC (DigiKey
+// search included), but the function and selection rationale carry over from
+// the old part (still editable) — only the identity really changes. Every
+// connection, port layout and route survives the swap.
+function openReplaceICModal(n){
+  openModal('Replace '+n.label, icFormMarkup({
+    query: n.data.ic_part_number || n.id,
+    pn: n.data.ic_part_number || n.id,
+    type: n.data.ic_type || '',
+    man: n.data.manufacturer || '',
+    desc: n.data.description || '',
+    rat: n.data.selection_rationale || '',
+    url: n.data.DatasheetUrl || ''
+  }) + `
+    <p class="hint">Replacing keeps every connection, port layout and route of "${esc(n.label)}".
+      The function and selection rationale above were carried over from the old part — edit them if the new part changes the story.</p>
+  `, `<button id="mCancel">Cancel</button><button class="primary" id="mOk">Replace IC</button>`);
+  wireIcFormHandlers();
+  $('mOk').onclick=()=>{
+    const pn=$('fPN').value.trim();
+    if (!pn || !$('fType').value.trim() || !$('fDesc').value.trim()){ toast('Part number, type and function are required'); return; }
+    if (pn!==n.id && nodeById(pn)){ toast('A block with this part number already exists'); return; }
+    commit();
+    renameNodeId(n.id, pn);
+    n.label = pn;
+    n.data = { ...n.data, ic_part_number:pn, ic_type:$('fType').value.trim(), manufacturer:$('fMan').value.trim(),
+               description:$('fDesc').value.trim(), selection_rationale:$('fRat').value.trim(),
+               DatasheetUrl:$('fUrl').value.trim() };
+    closeModal(); S.sel={type:'node',id:pn}; render();
+    toast('Replaced — connections and routing kept');
+  };
+}
 
 $('btnImport').onclick=()=>{
   openModal('Import', `
