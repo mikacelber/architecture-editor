@@ -65,6 +65,8 @@ Your task is to define the GLOBAL INTERCONNECT CONTRACT of a multi-IC PCB design
 
 4d. Every net must have exactly ONE driver (its source) and AT LEAST ONE consumer different from the source. A net whose only consumer is its own source, or with an empty consumers list, produces no connection and is forbidden. Never list the source among the consumers; never repeat a consumer.
 
+4e. BIDIRECTIONAL lines (I2C SDA, half-duplex data, shared status): still exactly one source — use the bus master / pull-up owner (normally the MCU) as the source and every other participant as a consumer. The diagram draws source → consumer arrows; a net with an arbitrary or rotating source draws misleading signal flow.
+
 5. For CONTROL and STRAP-sensitive nets (enables, chip-enables, shutdown, mode/select pins, active-low signals), the description MUST state the active polarity and the level required for normal operation (e.g. "active-high enable; driven high by MCU for normal operation"). Downstream designers rely on this to strap or drive pins correctly.
 
 6. BUS PULL-UP OWNERSHIP: for shared buses requiring pull-ups (I2C, open-drain interrupt/status lines), state in the net description which single block owns the pull-up resistors (normally the MCU block). Exactly one owner per bus line.
@@ -88,7 +90,15 @@ Your task is to define the GLOBAL INTERCONNECT CONTRACT of a multi-IC PCB design
    - Each group: id in UPPERCASE_WITH_UNDERSCORES, short title (2-4 words), one-line description. Order groups following the energy/signal flow. Members in alphabetical order.
    - Consistency: the group partition must be coherent with your own nets — a net internal to one function should not need to cross groups; barrier-crossing nets connect exactly the groups on each side of the barrier.
 
-12. Output ONLY the JSON, no commentary, no markdown fences.
+12. Output ONLY the JSON, no commentary, no markdown fences. The output must parse with JSON.parse: double quotes everywhere, no trailing commas, no comments.
+
+13. SELF-CHECK (mandatory, silent): before emitting, verify your own output against this checklist and FIX any violation — do not output the checklist:
+   - Every "source" and every "consumers" entry appears character-for-character in the given IC part-number list, or as "external block: <name>" with <name> present in your external_blocks.
+   - Every net carries "hv" (boolean), a NET_TYPE from the closed enum of rule 8, and at least one consumer different from its source.
+   - No two nets share a name; no consumer is repeated; the source is never among the consumers.
+   - Every ground net either states its tie point or states the isolation barrier that separates it (rule 3).
+   - Every IC part number and every external_blocks name appears in exactly ONE group, spelled exactly; no group member is left over or missing.
+   - No group mixes elements from both sides of a galvanic barrier; nets with "hv": true never have "hv": false counterparts merged into the same net.
 
 ## OUTPUT FORMAT
 
