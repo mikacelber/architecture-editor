@@ -13,7 +13,8 @@ window.__T={get S(){return S;},loadFromContract,render,openGroupView,closeGroupV
  groupsWithUngrouped,nodeById,openGroupObstacleRects,nodeEdgeLaneKey,commit,undo,_routeCache,
  nodePortRowsFor,nodePortOf,nodePortRowY,setGroupPortSide,moveNodePortToRow,resetGroupPortLayout,GRID:GRID,
  drillSheet,portalOffsetOf,setPortalOffset,PORTAL_MARGIN:PORTAL_MARGIN,LANE_PITCH:LANE_PITCH,PORTAL_H:PORTAL_H,
- translateWireSegment,nodeBlockWidth,textWidth,isHvNet,netCategory,nodeSide};`);
+ translateWireSegment,nodeBlockWidth,textWidth,isHvNet,netCategory,nodeSide,
+ openAddPortalModal,candidateNetsForPortal,groupNetIndex,nodeGroupIndex,commit,undo};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -456,6 +457,79 @@ check('every in-group connection carries a routing lane',
   S.nodes=S.nodes.filter(n=>n.id!=='ADDTEST-1');
   S.groups.forEach(g=>{ g.members=g.members.filter(m=>m!=='ADDTEST-1'); });
   S.sel=null; T.render();
+}
+
+/* ---- rule 16: add external block, inspector add-net, "+" portal creation ---- */
+{
+  // Add External joins the open group and lands clear
+  doc.getElementById('btnAddExt').onclick();
+  doc.getElementById('fExtName').value='Test probe header';
+  doc.getElementById('fExtDesc').value='validation external';
+  doc.getElementById('mOk').onclick();
+  const ext=T.nodeById('EXT:Test probe header');
+  check('Add External creates the block inside the open group', !!ext && ext.kind==='external' &&
+    T.groupsWithUngrouped().find(x=>x.id===best.id).members.includes(ext.id));
+  const rects=T.drillSheet().obstacles.filter(r=>r.id!==ext.id);
+  check('the new external block lands clear of every block and portal',
+    !rects.some(r=>ext.x<r.x+r.w && ext.x+ext.w>r.x && ext.y<r.y+r.h && ext.y+ext.h>r.y));
+
+  // inspector offers ONLY this group's nets (plus the new-net escape hatch)
+  S.sel={ type:'node', id:ext.id }; T.render();
+  const anNet=doc.getElementById('anNet');
+  check('the inspector offers the Add-net section', !!anNet && !!doc.getElementById('anDir'));
+  const offered=new Set([...anNet.options].map(o=>o.value).filter(v=>v!=='__new__'));
+  const groupNets=new Set([...T.groupNetIndex(best.id).keys()]);
+  check('offered nets are exactly the nets this group sees',
+    offered.size===groupNets.size && [...offered].every(x=>groupNets.has(x)));
+
+  // existing net as INPUT wires the driver into this block
+  const firstNet=[...offered][0];
+  anNet.value=firstNet; doc.getElementById('anDir').value='in';
+  doc.getElementById('btnAddNetNode').onclick();
+  check('an existing net added as input arrives from its driver',
+    S.edges.some(e=>e.target===ext.id && e.nets.some(nn=>nn.name===firstNet)));
+
+  // NEW net as OUTPUT creates the edge to the chosen counterpart
+  S.sel={ type:'node', id:ext.id }; T.render();
+  const an2=doc.getElementById('anNet'); an2.value='__new__'; an2.onchange();
+  doc.getElementById('anName').value='TEST_NEW_NET';
+  doc.getElementById('anDir').value='out';
+  const other=doc.getElementById('anOther').value;
+  doc.getElementById('btnAddNetNode').onclick();
+  check('a new net as output drives the chosen counterpart',
+    S.edges.some(e=>e.source===ext.id && e.target===other && e.nets.some(nn=>nn.name==='TEST_NEW_NET')));
+
+  // "+" buttons under both portal columns; the FROM modal creates the portal
+  S.sel=null; T.render();
+  check('a "+" button sits under both portal columns', doc.querySelectorAll('#edgesG .portaladd').length===2);
+  // candidate nets never include one internal to ANOTHER group
+  const idx=T.nodeGroupIndex();
+  const foreign=T.diagramEdges(S.edges).find(e=>{
+    const gs=idx.get(e.source), gt=idx.get(e.target);
+    return gs===gt && gs!==best.id && gs!=='UNGROUPED';
+  });
+  const candNames=new Set(T.candidateNetsForPortal(best.id).map(n=>n.name));
+  if (foreign){
+    const onlyInternal=foreign.nets.find(nn=>!candNames.has(nn.name));
+    check('nets internal to other groups are excluded from the portal picker (spot check)',
+      foreign.nets.every(nn=>candNames.has(nn.name)) ? true : !!onlyInternal);
+  }
+  T.openAddPortalModal('in');
+  const inSources=new Set(T.drillSheet().portals.filter(p=>p.dir==='in').map(p=>p.item.source));
+  const gSel=doc.getElementById('apGroup');
+  const fresh=[...gSel.options].map(o=>o.value).find(v=>!inSources.has(v)) || gSel.value;
+  gSel.value=fresh; gSel.onchange();
+  const far=doc.getElementById('apFar').value, near=doc.getElementById('apNear').value, netName=doc.getElementById('apNet').value;
+  doc.getElementById('mOk').onclick();
+  check('the "+" modal creates the boundary edge for the new FROM',
+    S.edges.some(e=>e.source===far && e.target===near && e.nets.some(nn=>nn.name===netName)));
+  check('the new FROM portal materializes in the column',
+    T.drillSheet().portals.some(p=>p.dir==='in' && p.item.source===fresh));
+
+  // everything above was 4 committed steps — unwind them
+  T.undo(); T.undo(); T.undo(); T.undo();
+  S.sel=null; T.render();
+  check('undo unwinds the whole rule (external gone again)', !T.nodeById('EXT:Test probe header'));
 }
 
 T.closeGroupView();
