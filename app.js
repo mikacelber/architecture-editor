@@ -22,6 +22,7 @@ const S = {
   openGroup: null, // null = top-level view; groupId = drilled into that group (phase c)
   view: { tx:60, ty:40, k:1 },
   sel: null,   // {type:'node'|'edge'|'group'|'groupEdge'|'portal', id}
+  traceNet: null, // net name being traced end to end (inspector net-card click); ephemeral like sel
   link: null,  // {fromId, x, y} while dragging a connection
   edgeSeq: 0
 };
@@ -1576,7 +1577,7 @@ function restoreState(json){
   S.ungroupedHvFlip = s.ungroupedHvFlip || undefined;
   S.openGroup = s.openGroup ?? null;
   S.edgeSeq = Math.max(0, ...S.edges.map(e=>+String(e.id).replace(/^e/,'')||0)) + 1;
-  S.sel = null; S.link = null;
+  S.sel = null; S.link = null; S.traceNet = null;
   invalidateGroupPorts(); _routeCache.clear();
   render();
 }
@@ -1605,10 +1606,60 @@ function openGroupObstacleRects(){ return drillSheet().obstacles; }
 
 let lastPorts = null; // {linkY} of the most recently rendered view (used by renderLink)
 
+/* ------------------------------------------------------------------
+   NET TRACE — while a connection is selected, clicking one of its nets
+   in the inspector lights every wire and block where THAT net
+   intervenes, end to end in the current view (portals included, since
+   the net continues through them). Strictly that one net: nothing it
+   does not touch ever lights up.
+   ------------------------------------------------------------------ */
+// The trace only lives while the selected connection still carries the net.
+function validateTrace(){
+  if (!S.traceNet) return;
+  let nets = null;
+  if (S.sel && S.sel.type==='edge'){
+    const e = S.edges.find(x=>x.id===S.sel.id); nets = e && e.nets;
+  } else if (S.sel && S.sel.type==='groupEdge'){
+    const e = computeGroupEdges().find(x=>x.id===S.sel.id); nets = e && e.nets;
+  } else if (S.sel && S.sel.type==='portal'){
+    const [dir, otherId] = S.sel.id.split(/:(.+)/);
+    const { incoming, outgoing } = openGroupPortals();
+    const it = (dir==='in'?incoming:outgoing).find(x=>(dir==='in'?x.source:x.target)===otherId);
+    nets = it && it.nets;
+  }
+  if (!nets || !nets.some(n=>n.name===S.traceNet)) S.traceNet = null;
+}
+// Everything the traced net touches: drawable edges carrying it, the nodes at
+// their ends, and the groups those nodes live in (for the top-level view).
+function traceSets(){
+  if (!S.traceNet) return null;
+  const name = S.traceNet;
+  const edgeIds = new Set(), nodes = new Set();
+  for (const e of diagramEdges(S.edges)){
+    if (!e.nets.some(n=>n.name===name)) continue;
+    edgeIds.add(e.id);
+    nodes.add(e.source); nodes.add(e.target);
+  }
+  const idx = nodeGroupIndex();
+  const groups = new Set([...nodes].map(id=>idx.get(id)).filter(Boolean));
+  return { name, edgeIds, nodes, groups };
+}
+// Inspector net cards double as trace toggles — clicks on their inner buttons
+// (delete, LV|HV chip) keep doing their own job.
+function wireTraceCards(container){
+  container.querySelectorAll('[data-tracenet]').forEach(card=>card.onclick=ev=>{
+    if (ev.target.closest('button')) return;
+    const name = card.dataset.tracenet;
+    S.traceNet = S.traceNet===name ? null : name;
+    render();
+  });
+}
+
 function render(){
   // Block heights depend on the port index, so drop the memo before drawing:
   // render() runs after every state change, which keeps the cache honest.
   invalidateGroupPorts();
+  validateTrace();
   viewport.setAttribute('transform', `translate(${S.view.tx},${S.view.ty}) scale(${S.view.k})`);
 
   if (isTopLevel()) renderTopLevel(); else renderDrillDown();
@@ -1832,20 +1883,22 @@ function renderDrillDown(){
   for (const k of _routeCache.keys()) if (k.startsWith(NODE_ROUTE_PREFIX) && !live.has(k)) _routeCache.delete(k);
   const wireOf = s => groupEdgePtsCached(NODE_ROUTE_PREFIX+s.e.id, s.pa, s.pb,
     nodeEdgeRouteOf(s.e), obstacles, S.groupEdgeLanes[nodeEdgeLaneKey(s.e)] || 0);
+  const trace = traceSets();
 
   const edgeMarkup = specs.filter(s=>s.kind==='internal').map(s=>{
     const e = s.e;
     const cat = edgeCategory(e), style = NET_CATEGORY_STYLE[cat];
     const selected = S.sel && S.sel.type==='edge' && S.sel.id===e.id;
+    const traced = trace && trace.edgeIds.has(e.id);
     const { pts } = wireOf(s);
     const mid = ptsBadgePos(pts);
-    const w = selected ? EDGE_STROKE_W+1.6 : EDGE_STROKE_W;
+    const w = selected ? EDGE_STROKE_W+1.6 : traced ? EDGE_STROKE_W+1.2 : EDGE_STROKE_W;
     const d = ptsPathD(pts);
     return `<g class="edge" data-eid="${esc(e.id)}">
       <path d="${d}" fill="none" stroke="transparent" stroke-width="14" style="cursor:pointer"/>
       <path d="${d}" fill="none" stroke="${style.color}" stroke-width="${w}"
         stroke-dasharray="${selected?'none':(style.dash||'none')}"
-        ${selected?'filter="drop-shadow(0 0 3px var(--probe))"':''}
+        ${(selected||traced)?'filter="drop-shadow(0 0 3px var(--probe))"':''}
         marker-end="url(#${style.marker})" style="pointer-events:none"/>
       <circle cx="${s.pa.x}" cy="${s.pa.y}" r="4" fill="${style.color}" style="pointer-events:none"/>
       ${polyHandleMarkup(pts, e.id, '', 12)}
@@ -1871,15 +1924,16 @@ function renderDrillDown(){
       // The badge selects its OWN underlying connection (nets in the
       // inspector), so a wire in a bundle is inspectable on its own.
       const selEdge = S.sel && S.sel.type==='edge' && S.sel.id===s.e.id;
+      const traced = trace && trace.edgeIds.has(s.e.id);
       const { pts } = wireOf(s);
       const mid = ptsBadgePos(pts);
       const d = ptsPathD(pts);
-      const w = (selected || selEdge) ? EDGE_STROKE_W+1.2 : EDGE_STROKE_W;
+      const w = (selected || selEdge || traced) ? EDGE_STROKE_W+1.2 : EDGE_STROKE_W;
       return `
       <path d="${d}" fill="none" stroke="transparent" stroke-width="12"/>
       <path d="${d}" fill="none" stroke="${style.color}" stroke-width="${w}"
         stroke-dasharray="${selEdge?'none':(style.dash||'none')}"
-        ${selEdge?'filter="drop-shadow(0 0 3px var(--probe))"':''}
+        ${(selEdge||traced)?'filter="drop-shadow(0 0 3px var(--probe))"':''}
         marker-end="url(#${style.marker})" style="pointer-events:none"/>
       <circle cx="${s.pa.x}" cy="${s.pa.y}" r="3.6" fill="${style.color}" style="pointer-events:none"/>
       ${polyHandleMarkup(pts, s.e.id, '', 12)}
@@ -1890,7 +1944,8 @@ function renderDrillDown(){
           font-family="var(--mono)" font-size="9.5" fill="var(--ink)">${s.e.nets.length}</text>
       </g>`;
     }).join('');
-    return portalMarkupFor(p, selected, wires);
+    const tracedBox = trace && p.unders.some(e=>trace.edgeIds.has(e.id));
+    return portalMarkupFor(p, selected, wires, tracedBox);
   }).join('');
 
   // The "+" buttons under the FROM and TO columns — create a new boundary
@@ -1910,6 +1965,7 @@ function renderDrillDown(){
   const catOf = new Map(specs.map(s=>[s.e.id, edgeCategory(s.e)]));
   nodesG.innerHTML = members.map(n=>{
     const selected = S.sel && S.sel.type==='node' && S.sel.id===n.id;
+    const tracedN = trace && trace.nodes.has(n.id);
     const side = nodeSide(n.id);
     const sepY = nodeHeaderBottom(n);
     // Port zone — top-level norm: one row per connection, a lead-in tick from
@@ -1937,7 +1993,7 @@ function renderDrillDown(){
       return `<g class="node" data-nid="${esc(n.id)}" transform="translate(${n.x},${n.y})" style="cursor:move">
         <rect x="-3" y="4" width="${n.w+6}" height="${n.h}" rx="5" fill="#00000018"/>
         <rect width="${n.w}" height="${n.h}" rx="5" fill="var(--epoxy)"
-          stroke="${selected?'var(--probe)':(side==='lv'?'var(--epoxy-edge)':'var(--sig-hv)')}" stroke-width="${selected?2.5:1.4}"/>
+          stroke="${(selected||tracedN)?'var(--probe)':(side==='lv'?'var(--epoxy-edge)':'var(--sig-hv)')}" stroke-width="${(selected||tracedN)?2.5:1.4}"/>
         ${hvOverlayMarkup(side, n.w, n.h, 5, 'hvclip-'+safeId(n.id), n.hvFlip)}
         <circle cx="13" cy="13" r="3.6" fill="var(--silk)"/>
         <text x="26" y="26" font-family="var(--mono)" font-size="13.5" font-weight="600" fill="var(--silk)">${esc(n.label)}</text>
@@ -1949,7 +2005,7 @@ function renderDrillDown(){
     }
     return `<g class="node" data-nid="${esc(n.id)}" transform="translate(${n.x},${n.y})" style="cursor:move">
       <rect width="${n.w}" height="${n.h}" rx="4" fill="var(--paper)"
-        stroke="${selected?'var(--probe)':(side==='lv'?'var(--ink-soft)':'var(--sig-hv)')}" stroke-width="${selected?2.5:1.4}" stroke-dasharray="${selected?'none':'5 4'}"/>
+        stroke="${(selected||tracedN)?'var(--probe)':(side==='lv'?'var(--ink-soft)':'var(--sig-hv)')}" stroke-width="${(selected||tracedN)?2.5:1.4}" stroke-dasharray="${selected?'none':'5 4'}"/>
       ${hvOverlayMarkup(side, n.w, n.h, 4, 'hvclip-'+safeId(n.id), n.hvFlip)}
       <text x="12" y="20" font-family="var(--mono)" font-size="10" letter-spacing=".08em" fill="var(--ink-soft)">EXTERNAL</text>
       <text x="12" y="36" font-family="var(--sans)" font-size="11.5" font-weight="500" fill="var(--ink)">${esc(n.label)}</text>
@@ -1963,7 +2019,7 @@ function renderDrillDown(){
 // The portal box (FROM/TO + neighbour title + total net count). The old
 // floating stub is gone: `wires` are the REAL routed connections to the member
 // blocks, drawn under the box so they visibly leave/enter its edge.
-function portalMarkupFor(p, selected, wires){
+function portalMarkupFor(p, selected, wires, traced){
   const { r, dir, item } = p;
   const otherId = dir==='in' ? item.source : item.target;
   const other = groupsWithUngrouped().find(g=>g.id===otherId);
@@ -1987,7 +2043,7 @@ function portalMarkupFor(p, selected, wires){
   return `<g class="portal" data-portal="${esc(p.key)}" data-x="${r.x}" data-y="${r.y}" data-w="${r.w}" data-h="${r.h}" style="cursor:move">
     ${wires}
     <path d="${boxD}" fill="var(--vellum)"
-      stroke="${selected?'var(--probe)':'var(--ink-soft)'}" stroke-width="${selected?2.5:1.5}" stroke-dasharray="4 3"/>
+      stroke="${(selected||traced)?'var(--probe)':'var(--ink-soft)'}" stroke-width="${(selected||traced)?2.5:1.5}" stroke-dasharray="4 3"/>
     <text x="${tx}" y="${r.y+18}" font-family="var(--mono)" font-size="9" letter-spacing=".08em" fill="var(--ink-soft)">${dir==='in'?'FROM':'TO'}</text>
     <text x="${tx}" y="${r.y+36}" font-family="var(--mono)" font-size="12" font-weight="600" fill="var(--ink)">${esc(label)}</text>
     <circle cx="${bcx}" cy="${r.y+r.h/2}" r="9" fill="var(--paper)" stroke="${style.color}" stroke-width="1.2"/>
@@ -2063,6 +2119,7 @@ function updateGridLOD(){
 function renderTopLevel(){
   const groups = visibleGroups();
   const gEdges = computeGroupEdges();
+  const trace = traceSets();
   // Ports live in each block's port zone (below the member list), one row per
   // connection, on whichever edge the row is currently assigned to.
   lastPorts = null;
@@ -2078,19 +2135,20 @@ function renderTopLevel(){
   edgesG.innerHTML = gEdges.map(e=>{
     const cat = edgeCategory(e), style = NET_CATEGORY_STYLE[cat];
     const selected = S.sel && S.sel.type==='groupEdge' && S.sel.id===e.id;
+    const traced = trace && e.nets.some(nn=>nn.name===trace.name);
     const pa = groupPortAnchor(e.source, e.source, e.target, 'out');
     const pb = groupPortAnchor(e.target, e.source, e.target, 'in');
     const route = groupEdgeRouteOf(e.source,e.target);
     const { pts, geo, manual } = groupEdgePtsCached(groupEdgeRouteKey(e.source,e.target), pa, pb, route, obstacleRects, laneOf(e.source,e.target));
     const mid = ptsBadgePos(pts);
-    const w = selected ? GROUP_EDGE_STROKE_W+1.6 : GROUP_EDGE_STROKE_W;
+    const w = selected ? GROUP_EDGE_STROKE_W+1.6 : traced ? GROUP_EDGE_STROKE_W+1.2 : GROUP_EDGE_STROKE_W;
     const segAttrs = ` data-src="${esc(e.source)}" data-tgt="${esc(e.target)}"`;
     const d = ptsPathD(pts);
     return `<g class="edge" data-eid="${esc(e.id)}">
       <path d="${d}" fill="none" stroke="transparent" stroke-width="16" style="cursor:pointer"/>
       <path d="${d}" fill="none" stroke="${style.color}" stroke-width="${w}"
         stroke-dasharray="${selected?'none':(style.dash||'none')}"
-        ${selected?'filter="drop-shadow(0 0 3px var(--probe))"':''}
+        ${(selected||traced)?'filter="drop-shadow(0 0 3px var(--probe))"':''}
         marker-end="url(#${style.marker})" style="pointer-events:none"/>
       <circle cx="${pa.x}" cy="${pa.y}" r="4.5" fill="${style.color}" style="pointer-events:none"/>
       ${polyHandleMarkup(pts, e.id, segAttrs, 14)}
@@ -2107,6 +2165,7 @@ function renderTopLevel(){
     const pos = groupPosOf(g.id);
     const h = groupBlockHeight(g), W = groupBlockWidth(g);
     const selected = S.sel && S.sel.type==='group' && S.sel.id===g.id;
+    const tracedG = trace && trace.groups.has(g.id);
     const eyebrow = g.id===UNGROUPED_ID ? 'UNASSIGNED' : 'FUNCTIONAL GROUP';
     const memberLines = g.members.map((id,i)=>{
       const n = nodeById(id);
@@ -2140,7 +2199,7 @@ function renderTopLevel(){
     return `<g class="node" data-nid="${esc(g.id)}" transform="translate(${pos.x},${pos.y})" style="cursor:move">
       <rect x="-4" y="6" width="${W+8}" height="${h}" rx="6" fill="#00000018"/>
       <rect width="${W}" height="${h}" rx="6" fill="var(--vellum)"
-        stroke="${selected?'var(--probe)':(side==='lv'?'var(--ink)':'var(--sig-hv)')}" stroke-width="${selected?3:2}"/>
+        stroke="${(selected||tracedG)?'var(--probe)':(side==='lv'?'var(--ink)':'var(--sig-hv)')}" stroke-width="${(selected||tracedG)?3:2}"/>
       ${hvOverlayMarkup(side, W, h, 6, 'hvclip-'+safeId(g.id), groupHvFlip(g.id))}
       <line x1="${GROUP_PAD_X}" y1="30" x2="${W-GROUP_PAD_X}" y2="30" stroke="var(--ink)" stroke-width="1" opacity=".18"/>
       <text x="${GROUP_PAD_X}" y="20" font-family="var(--mono)" font-size="9.5" letter-spacing=".1em" fill="var(--ink-soft)">${eyebrow}</text>
@@ -2299,7 +2358,7 @@ function renderInspector(){
     body.innerHTML = `
       <p style="color:var(--ink-soft)">Derived from ${e.nets.length} underlying net${e.nets.length===1?'':'s'} between member blocks. Open a group to edit its individual connections. Drag the vertical segments sideways or the horizontal segments up/down to reroute — including the last segment where the wire enters the block.</p>
       ${e.nets.map(n=>`
-        <div class="netcard cat-${netCategory(n)}">
+        <div class="netcard traceable cat-${netCategory(n)}${S.traceNet===n.name?' on':''}" data-tracenet="${esc(n.name)}" title="Click to trace this net end to end">
           <div class="nettop"><span class="netname">${esc(n.name)}</span><span class="nettype">${esc(n.type)}</span></div>
           ${n.description?`<div class="netdesc">${esc(n.description)}</div>`:''}
         </div>`).join('')}
@@ -2311,6 +2370,7 @@ function renderInspector(){
       delete S.groupPortSides[groupPortKey(e.target, e.source, e.target)];
       render();
     };
+    wireTraceCards(body);
     return;
   }
   if (S.sel.type==='portal'){
@@ -2327,12 +2387,13 @@ function renderInspector(){
     body.innerHTML = `
       <p style="color:var(--ink-soft)">This connection leaves the open group. Derived from ${e.nets.length} underlying net${e.nets.length===1?'':'s'}. Open "${esc(other?other.title:otherId)}" to edit it from that side.</p>
       ${e.nets.map(n=>`
-        <div class="netcard cat-${netCategory(n)}">
+        <div class="netcard traceable cat-${netCategory(n)}${S.traceNet===n.name?' on':''}" data-tracenet="${esc(n.name)}" title="Click to trace this net end to end">
           <div class="nettop"><span class="netname">${esc(n.name)}</span><span class="nettype">${esc(n.type)}</span></div>
           ${n.description?`<div class="netdesc">${esc(n.description)}</div>`:''}
         </div>`).join('')}
       ${other&&other.members.length?`<div class="btnrow"><button id="btnOpenOther">Open "${esc(other.title)}"</button></div>`:''}`;
     const btn = $('btnOpenOther'); if (btn) btn.onclick=()=>openGroupView(otherId);
+    wireTraceCards(body);
     return;
   }
   if (S.sel.type==='node'){
@@ -2463,7 +2524,7 @@ function renderInspector(){
   body.innerHTML = `
     ${e.nets.length?'':'<p style="color:var(--warn)">This connection has no nets yet — add at least one, or it will be dropped on export.</p>'}
     ${shown.map(({n,i})=>`
-      <div class="netcard cat-${netCategory(n)}">
+      <div class="netcard traceable cat-${netCategory(n)}${S.traceNet===n.name?' on':''}" data-tracenet="${esc(n.name)}" title="Click to trace this net end to end">
         <div class="nettop">
           <span class="netname">${esc(n.name)}</span>
           <span class="nettype">${esc(n.type)}</span>
@@ -2507,6 +2568,7 @@ function renderInspector(){
   };
   const rb=$('btnResetRoute'); if (rb) rb.onclick=()=>{ delete e.route; render(); };
   $('btnDelEdge').onclick=()=>{ commit(); S.edges=S.edges.filter(x=>x.id!==e.id); S.sel=null; render(); };
+  wireTraceCards(body);
 }
 
 function deleteNode(id){

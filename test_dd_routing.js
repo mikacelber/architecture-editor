@@ -14,7 +14,7 @@ window.__T={get S(){return S;},loadFromContract,render,openGroupView,closeGroupV
  nodePortRowsFor,nodePortOf,nodePortRowY,setGroupPortSide,moveNodePortToRow,resetGroupPortLayout,GRID:GRID,
  drillSheet,portalOffsetOf,setPortalOffset,PORTAL_MARGIN:PORTAL_MARGIN,LANE_PITCH:LANE_PITCH,PORTAL_H:PORTAL_H,
  translateWireSegment,nodeBlockWidth,textWidth,isHvNet,netCategory,nodeSide,
- openAddPortalModal,candidateNetsForPortal,groupNetIndex,nodeGroupIndex,commit,undo};`);
+ openAddPortalModal,candidateNetsForPortal,groupNetIndex,nodeGroupIndex,computeGroupEdges,traceSets,commit,undo};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -530,6 +530,78 @@ check('every in-group connection carries a routing lane',
   T.undo(); T.undo(); T.undo(); T.undo();
   S.sel=null; T.render();
   check('undo unwinds the whole rule (external gone again)', !T.nodeById('EXT:Test probe header'));
+}
+
+/* ---- rule 17: net trace — an inspector net card lights the net end to end,
+   and ONLY that net's wires and blocks ---- */
+{
+  const clickCard=card=>card.onclick({ target:{ closest:()=>null } });
+  const probeStroke=nid=>!![...doc.querySelectorAll(`#nodesG .node[data-nid="${nid}"] rect[stroke="var(--probe)"]`)].length;
+  const glowing=()=>new Set([...doc.querySelectorAll('#edgesG .edge, #edgesG .portal')]
+    .filter(g=>g.querySelector('path[filter]')).map(g=>g.dataset.eid||g.dataset.portal));
+
+  // pick an internal connection of the open group and trace its first net
+  const e0=internalOf(T.groupsWithUngrouped().find(g=>g.id===best.id))[0];
+  S.sel={ type:'edge', id:e0.id }; T.render();
+  const card0=doc.querySelector('#insBody [data-tracenet]');
+  check('the inspector net cards are trace toggles (data-tracenet present)', !!card0);
+  const netName=card0.dataset.tracenet;
+  clickCard(card0);
+  check('clicking a net card arms the trace', S.traceNet===netName);
+  check('the clicked card shows the active effect (.on)',
+    !!doc.querySelector(`#insBody [data-tracenet="${netName}"].on`));
+
+  // exactly the carriers glow — wires, member blocks and portals of THAT net
+  const tr=T.traceSets();
+  const carrierEdges=new Set([...tr.edgeIds]);
+  const lit=glowing();
+  const members=new Set(T.groupsWithUngrouped().find(g=>g.id===best.id).members);
+  const wiresOk=[...doc.querySelectorAll('#edgesG .edge')].every(g=>
+    (!!g.querySelector('path[filter]'))===(carrierEdges.has(g.dataset.eid)||(S.sel&&S.sel.id===g.dataset.eid)));
+  check('every wire carrying the net glows, and no other wire does', wiresOk);
+  const nodesOk=[...members].every(id=>probeStroke(id)===tr.nodes.has(id));
+  check('every block the net touches lights up, and no other block does', nodesOk);
+  const portalsOk=T.drillSheet().portals.every(p=>{
+    const boxLit=!![...doc.querySelectorAll(`#edgesG .portal[data-portal="${p.key}"] path`)]
+      .some(el=>el.getAttribute('stroke')==='var(--probe)');
+    return boxLit===p.unders.some(x=>carrierEdges.has(x.id));
+  });
+  check('portals glow only when the traced net passes through them', portalsOk);
+
+  // strictly one net: a second click switches it off again
+  clickCard(doc.querySelector(`#insBody [data-tracenet="${netName}"]`));
+  check('clicking the card again disarms the trace', S.traceNet===null);
+  check('nothing glows once the trace is off (selection aside)',
+    [...glowing()].every(id=>S.sel&&S.sel.id===id));
+
+  // the trace dies with the selection
+  clickCard(doc.querySelector('#insBody [data-tracenet]'));
+  S.sel=null; T.render();
+  check('clearing the selection clears the trace too', S.traceNet===null);
+
+  // top level: tracing from a group connection lights the groups it spans
+  T.closeGroupView();
+  const ge=T.computeGroupEdges()[0];
+  S.sel={ type:'groupEdge', id:ge.id }; T.render();
+  const cardTop=doc.querySelector('#insBody [data-tracenet]');
+  check('group-connection net cards are trace toggles too', !!cardTop);
+  clickCard(cardTop);
+  const trTop=T.traceSets();
+  const groupsOk=T.groupsWithUngrouped().every(g=>{
+    const el=doc.querySelector(`#nodesG .node[data-nid="${g.id}"]`);
+    if (!el) return true;   // not on the sheet (empty group)
+    const litG=!![...el.querySelectorAll('rect[stroke="var(--probe)"]')].length;
+    return litG===(trTop.groups.has(g.id)||(S.sel&&S.sel.id===g.id));
+  });
+  check('at the top level exactly the groups the net crosses light up', groupsOk);
+  const topWiresOk=[...doc.querySelectorAll('#edgesG .edge')].every(g=>{
+    const e=T.computeGroupEdges().find(x=>x.id===g.dataset.eid);
+    const carries=!!(e&&e.nets.some(nn=>nn.name===trTop.name));
+    return (!!g.querySelector('path[filter]'))===(carries||(S.sel&&S.sel.id===g.dataset.eid));
+  });
+  check('at the top level exactly the wires carrying the net glow', topWiresOk);
+  S.traceNet=null; S.sel=null; T.render();
+  T.openGroupView(best.id);
 }
 
 T.closeGroupView();
