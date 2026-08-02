@@ -13,7 +13,7 @@ window.Element.prototype.setPointerCapture=()=>{};
 window.eval(fs.readFileSync('app.js','utf8')+`
 window.__T={get S(){return S;},loadFromContract,render,dkNormalizeProducts,dkSearch,dkRenderResults,
  dkConfig,dkSaveConfig,buildSessionJSON,nodeById,findFreeSpot,openReplaceICModal,renameNodeId,
- nodePortRowsFor,GRID:GRID};`);
+ nodePortRowsFor,isHvNet,GRID:GRID};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -137,6 +137,24 @@ const FIX={Products:[
         !S.edges.some(e=>e.source===oldId||e.target===oldId));
       check('group membership follows the new part', grp.members.includes('NEWPART-123') && !grp.members.includes(oldId));
       check('the port index resolves the new id', T.nodePortRowsFor('NEWPART-123').length===rowsBefore && rowsBefore>0);
+    }
+
+    /* ---- importer tolerates LLM-style hv flags (strings / domain alias) ---- */
+    {
+      T.loadFromContract(
+        { id:'t', title:'t', description:'', ic_components:[
+          { ic_part_number:'ICA', ic_type:'a', description:'', manufacturer:'', DatasheetUrl:'', selection_rationale:'' },
+          { ic_part_number:'ICB', ic_type:'b', description:'', manufacturer:'', DatasheetUrl:'', selection_rationale:'' }] },
+        { global_nets:[
+          { name:'N1', type:'ANALOG_SIGNAL', source:'ICA', consumers:['ICB'], description:'', hv:'true' },
+          { name:'N2', type:'ANALOG_SIGNAL', source:'ICA', consumers:['ICB'], description:'', domain:'HV' },
+          { name:'N3', type:'ANALOG_SIGNAL', source:'ICA', consumers:['ICB'], description:'', hv:false }],
+          external_blocks:[] },
+        []);
+      const nets=S.edges.find(e=>e.source==='ICA'&&e.target==='ICB').nets;
+      const by=n=>nets.find(x=>x.name===n);
+      check('importer reads hv:"true" strings and domain:"HV" aliases (and hv:false)',
+        T.isHvNet(by('N1')) && T.isHvNet(by('N2')) && !T.isHvNet(by('N3')) && by('N3').hv===false);
     }
 
     console.log('\n'+pass+' passed, '+fail+' failed');

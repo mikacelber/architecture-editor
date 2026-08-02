@@ -192,6 +192,15 @@ function buildGraph(input, contract, rawGroups){
     return extNode(core, '(auto-created from contract reference)');
   }
 
+  // The per-net insulation-domain flag, as LLM-generated contracts actually
+  // write it: boolean `hv`, string "true"/"false", or `domain: "HV"|"LV"`.
+  // Returns true/false when stated, null when the contract says nothing.
+  function importedNetHv(net){
+    if (net.hv != null) return net.hv === true || String(net.hv).toLowerCase() === 'true';
+    if (net.domain != null) return /^hv/i.test(String(net.domain).trim());
+    return null;
+  }
+
   const edgeMap = new Map();
   for (const net of (contract.global_nets||[])){
     // GND is never DRAWN (see visibleNets / diagramEdges): every block shares a
@@ -208,9 +217,10 @@ function buildGraph(input, contract, rawGroups){
       const nets = edgeMap.get(key).nets;
       // A bus never carries the same net twice (a malformed contract can list the
       // same consumer more than once for one net — keep the first occurrence).
+      const hv = importedNetHv(net);
       if (!nets.some(x=>x.name===net.name))
         nets.push({ name:net.name, type:net.type||'NA', description:net.description||'',
-          ...(net.hv!=null ? { hv:!!net.hv } : {}) });
+          ...(hv!=null ? { hv } : {}) });
     }
   }
   // Group members arrive as IC part numbers or "external block: <Name>" refs — resolveRef
