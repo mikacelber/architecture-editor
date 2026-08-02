@@ -1894,7 +1894,7 @@ function renderDrillDown(){
     const mid = ptsBadgePos(pts);
     const w = selected ? EDGE_STROKE_W+1.6 : traced ? EDGE_STROKE_W+1.2 : EDGE_STROKE_W;
     const d = ptsPathD(pts);
-    return `<g class="edge" data-eid="${esc(e.id)}">
+    return `<g class="edge${trace&&!traced&&!selected?' dim':''}" data-eid="${esc(e.id)}">
       <path d="${d}" fill="none" stroke="transparent" stroke-width="14" style="cursor:pointer"/>
       <path d="${d}" fill="none" stroke="${style.color}" stroke-width="${w}"
         stroke-dasharray="${selected?'none':(style.dash||'none')}"
@@ -1919,6 +1919,8 @@ function renderDrillDown(){
   // block it feeds.
   const portalMarkup = portals.map(p=>{
     const selected = S.sel && S.sel.type==='portal' && S.sel.id===p.key;
+    const tracedBox = trace && p.unders.some(e=>trace.edgeIds.has(e.id));
+    const boxDim = trace && !tracedBox && !selected;
     const wires = specs.filter(s=>s.portalKey===p.key).map(s=>{
       const style = NET_CATEGORY_STYLE[edgeCategory(s.e)];
       // The badge selects its OWN underlying connection (nets in the
@@ -1929,7 +1931,10 @@ function renderDrillDown(){
       const mid = ptsBadgePos(pts);
       const d = ptsPathD(pts);
       const w = (selected || selEdge || traced) ? EDGE_STROKE_W+1.2 : EDGE_STROKE_W;
-      return `
+      // A lit portal can still carry OTHER nets — those wires recede on their
+      // own (the whole box only dims when nothing under it carries the net).
+      const wireDim = trace && !traced && !selEdge && !boxDim;
+      return `${wireDim?'<g class="dim">':''}
       <path d="${d}" fill="none" stroke="transparent" stroke-width="12"/>
       <path d="${d}" fill="none" stroke="${style.color}" stroke-width="${w}"
         stroke-dasharray="${selEdge?'none':(style.dash||'none')}"
@@ -1942,17 +1947,16 @@ function renderDrillDown(){
           fill="${selEdge?'var(--probe)':'var(--paper)'}" stroke="${style.color}" stroke-width="1.2"/>
         <text x="${mid.x}" y="${mid.y+3.5}" text-anchor="middle"
           font-family="var(--mono)" font-size="9.5" fill="var(--ink)">${s.e.nets.length}</text>
-      </g>`;
+      </g>${wireDim?'</g>':''}`;
     }).join('');
-    const tracedBox = trace && p.unders.some(e=>trace.edgeIds.has(e.id));
-    return portalMarkupFor(p, selected, wires, tracedBox);
+    return portalMarkupFor(p, selected, wires, tracedBox, boxDim);
   }).join('');
 
   // The "+" buttons under the FROM and TO columns — create a new boundary
   // connection (openAddPortalModal picks the far group, the blocks and a net).
   const addBtnMarkup = ['in','out'].map(dir=>{
     const s = sheet.portalAdd[dir];
-    return `<g class="portaladd" data-dir="${dir}" style="cursor:pointer">
+    return `<g class="portaladd${trace?' dim':''}" data-dir="${dir}" style="cursor:pointer">
       <circle cx="${s.cx}" cy="${s.cy}" r="12" fill="var(--vellum)" stroke="var(--ink-soft)" stroke-width="1.5" stroke-dasharray="4 3"/>
       <text x="${s.cx}" y="${s.cy+4.5}" text-anchor="middle" font-family="var(--mono)" font-size="15" font-weight="600" fill="var(--ink-soft)" style="pointer-events:none">+</text>
       <title>${dir==='in'?'Add a FROM connection (incoming)':'Add a TO connection (outgoing)'}</title>
@@ -1989,8 +1993,9 @@ function renderDrillDown(){
         <text x="${bx+bw/2}" y="${y+4}" text-anchor="middle" font-family="var(--mono)" font-size="10" font-weight="600" fill="var(--ink)">${r.nets}</text>
       </g>`;
     }).join('');
+    const dimN = trace && !tracedN && !selected ? ' dim' : '';
     if (n.kind==='ic'){
-      return `<g class="node" data-nid="${esc(n.id)}" transform="translate(${n.x},${n.y})" style="cursor:move">
+      return `<g class="node${dimN}" data-nid="${esc(n.id)}" transform="translate(${n.x},${n.y})" style="cursor:move">
         <rect x="-3" y="4" width="${n.w+6}" height="${n.h}" rx="5" fill="#00000018"/>
         <rect width="${n.w}" height="${n.h}" rx="5" fill="var(--epoxy)"
           stroke="${(selected||tracedN)?'var(--probe)':(side==='lv'?'var(--epoxy-edge)':'var(--sig-hv)')}" stroke-width="${(selected||tracedN)?2.5:1.4}"/>
@@ -2003,7 +2008,7 @@ function renderDrillDown(){
         ${portRows}
       </g>`;
     }
-    return `<g class="node" data-nid="${esc(n.id)}" transform="translate(${n.x},${n.y})" style="cursor:move">
+    return `<g class="node${dimN}" data-nid="${esc(n.id)}" transform="translate(${n.x},${n.y})" style="cursor:move">
       <rect width="${n.w}" height="${n.h}" rx="4" fill="var(--paper)"
         stroke="${(selected||tracedN)?'var(--probe)':(side==='lv'?'var(--ink-soft)':'var(--sig-hv)')}" stroke-width="${(selected||tracedN)?2.5:1.4}" stroke-dasharray="${selected?'none':'5 4'}"/>
       ${hvOverlayMarkup(side, n.w, n.h, 4, 'hvclip-'+safeId(n.id), n.hvFlip)}
@@ -2019,7 +2024,7 @@ function renderDrillDown(){
 // The portal box (FROM/TO + neighbour title + total net count). The old
 // floating stub is gone: `wires` are the REAL routed connections to the member
 // blocks, drawn under the box so they visibly leave/enter its edge.
-function portalMarkupFor(p, selected, wires, traced){
+function portalMarkupFor(p, selected, wires, traced, dim){
   const { r, dir, item } = p;
   const otherId = dir==='in' ? item.source : item.target;
   const other = groupsWithUngrouped().find(g=>g.id===otherId);
@@ -2040,7 +2045,7 @@ function portalMarkupFor(p, selected, wires, traced){
   // The count badge hugs the flat (block-facing) end, clear of the round cap.
   const bcx = dir==='in' ? r.x+r.w-16 : r.x+16;
   const tx = dir==='in' ? r.x+14 : r.x+30;
-  return `<g class="portal" data-portal="${esc(p.key)}" data-x="${r.x}" data-y="${r.y}" data-w="${r.w}" data-h="${r.h}" style="cursor:move">
+  return `<g class="portal${dim?' dim':''}" data-portal="${esc(p.key)}" data-x="${r.x}" data-y="${r.y}" data-w="${r.w}" data-h="${r.h}" style="cursor:move">
     ${wires}
     <path d="${boxD}" fill="var(--vellum)"
       stroke="${(selected||traced)?'var(--probe)':'var(--ink-soft)'}" stroke-width="${(selected||traced)?2.5:1.5}" stroke-dasharray="4 3"/>
@@ -2144,7 +2149,7 @@ function renderTopLevel(){
     const w = selected ? GROUP_EDGE_STROKE_W+1.6 : traced ? GROUP_EDGE_STROKE_W+1.2 : GROUP_EDGE_STROKE_W;
     const segAttrs = ` data-src="${esc(e.source)}" data-tgt="${esc(e.target)}"`;
     const d = ptsPathD(pts);
-    return `<g class="edge" data-eid="${esc(e.id)}">
+    return `<g class="edge${trace&&!traced&&!selected?' dim':''}" data-eid="${esc(e.id)}">
       <path d="${d}" fill="none" stroke="transparent" stroke-width="16" style="cursor:pointer"/>
       <path d="${d}" fill="none" stroke="${style.color}" stroke-width="${w}"
         stroke-dasharray="${selected?'none':(style.dash||'none')}"
@@ -2196,7 +2201,7 @@ function renderTopLevel(){
         <text x="${bx+bw/2}" y="${y+4}" text-anchor="middle" font-family="var(--mono)" font-size="10" font-weight="600" fill="var(--ink)">${r.nets}</text>
       </g>`;
     }).join('');
-    return `<g class="node" data-nid="${esc(g.id)}" transform="translate(${pos.x},${pos.y})" style="cursor:move">
+    return `<g class="node${trace&&!tracedG&&!selected?' dim':''}" data-nid="${esc(g.id)}" transform="translate(${pos.x},${pos.y})" style="cursor:move">
       <rect x="-4" y="6" width="${W+8}" height="${h}" rx="6" fill="#00000018"/>
       <rect width="${W}" height="${h}" rx="6" fill="var(--vellum)"
         stroke="${(selected||tracedG)?'var(--probe)':(side==='lv'?'var(--ink)':'var(--sig-hv)')}" stroke-width="${(selected||tracedG)?3:2}"/>
