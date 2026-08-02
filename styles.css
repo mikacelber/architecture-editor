@@ -56,6 +56,10 @@ main{flex:1;display:flex;min-height:0}
 svg#board{position:absolute;inset:0;width:100%;height:100%;display:block;cursor:grab;touch-action:none}
 svg#board.panning{cursor:grabbing}
 svg#board.linking{cursor:crosshair}
+/* Net trace armed: everything the traced net does not touch recedes — faded
+   and desaturated, EDA cross-probe style — so the lit path reads instantly.
+   Dimmed elements stay clickable (selecting one re-scopes or ends the trace). */
+svg#board .dim{opacity:.22;filter:saturate(.35)}
 
 .breadcrumb{position:absolute;top:12px;left:12px;z-index:5;display:flex;align-items:center;gap:6px;
   font-family:var(--mono);font-size:11.5px;background:var(--panel);border:1.5px solid var(--line);

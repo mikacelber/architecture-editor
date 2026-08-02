@@ -568,11 +568,27 @@ check('every in-group connection carries a routing lane',
   });
   check('portals glow only when the traced net passes through them', portalsOk);
 
+  // everything else recedes: exactly the non-carriers are dimmed
+  const dimOkWires=[...doc.querySelectorAll('#edgesG .edge')].every(g=>
+    g.classList.contains('dim')===!(carrierEdges.has(g.dataset.eid)||(S.sel&&S.sel.id===g.dataset.eid)));
+  check('every wire the net skips is dimmed, every carrier stays bright', dimOkWires);
+  const dimOkNodes=[...members].every(id=>{
+    const el=doc.querySelector(`#nodesG .node[data-nid="${id}"]`);
+    return el.classList.contains('dim')===!tr.nodes.has(id);
+  });
+  check('every block the net skips is dimmed, every touched block stays bright', dimOkNodes);
+  const dimOkPortals=T.drillSheet().portals.every(p=>{
+    const el=doc.querySelector(`#edgesG .portal[data-portal="${p.key}"]`);
+    return el.classList.contains('dim')===!p.unders.some(x=>carrierEdges.has(x.id));
+  });
+  check('portals the net skips are dimmed too', dimOkPortals);
+
   // strictly one net: a second click switches it off again
   clickCard(doc.querySelector(`#insBody [data-tracenet="${netName}"]`));
   check('clicking the card again disarms the trace', S.traceNet===null);
   check('nothing glows once the trace is off (selection aside)',
     [...glowing()].every(id=>S.sel&&S.sel.id===id));
+  check('nothing is dimmed once the trace is off', doc.querySelectorAll('#board .dim').length===0);
 
   // the trace dies with the selection
   clickCard(doc.querySelector('#insBody [data-tracenet]'));
@@ -600,7 +616,11 @@ check('every in-group connection carries a routing lane',
     return (!!g.querySelector('path[filter]'))===(carries||(S.sel&&S.sel.id===g.dataset.eid));
   });
   check('at the top level exactly the wires carrying the net glow', topWiresOk);
+  const topDimOk=[...doc.querySelectorAll('#nodesG .node')].every(g=>
+    g.classList.contains('dim')===!trTop.groups.has(g.dataset.nid));
+  check('at the top level the groups the net skips are dimmed', topDimOk);
   S.traceNet=null; S.sel=null; T.render();
+  check('the top level is fully bright again after the trace ends', doc.querySelectorAll('#board .dim').length===0);
   T.openGroupView(best.id);
 }
 
