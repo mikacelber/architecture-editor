@@ -1778,7 +1778,19 @@ function drillSheet(){
         pb:{ x:p.r.x, y:slotY, sign:1 } });
     }
   });
-  return { g, members, bounds, portals, obstacles, specs };
+  // "+" slot under each portal column (or at the column's natural spot when
+  // it is empty) — clicking it creates a new FROM/TO boundary connection.
+  const addSlotFor = dir => {
+    const col = portals.filter(p=>p.dir===dir);
+    if (col.length){
+      const last = col.reduce((a,p)=>p.r.y>a.r.y?p:a, col[0]);
+      return { cx: last.r.x + last.r.w/2, cy: last.r.y + last.r.h + 26 };
+    }
+    const r = portalRect(0, 1, dir, bounds, dir==='in'?inMargin:outMargin, dir==='in'?inOff:outOff, portalW);
+    return { cx: r.x + r.w/2, cy: r.y + r.h/2 };
+  };
+  const portalAdd = { in: addSlotFor('in'), out: addSlotFor('out') };
+  return { g, members, bounds, portals, obstacles, specs, portalAdd };
 }
 // Same corridor-separation rule as assignRouteLanes, for every wire drawn in the
 // open group — internal AND boundary. Lanes live in S.groupEdgeLanes under
@@ -1881,7 +1893,18 @@ function renderDrillDown(){
     return portalMarkupFor(p, selected, wires);
   }).join('');
 
-  edgesG.innerHTML = edgeMarkup + portalMarkup;
+  // The "+" buttons under the FROM and TO columns — create a new boundary
+  // connection (openAddPortalModal picks the far group, the blocks and a net).
+  const addBtnMarkup = ['in','out'].map(dir=>{
+    const s = sheet.portalAdd[dir];
+    return `<g class="portaladd" data-dir="${dir}" style="cursor:pointer">
+      <circle cx="${s.cx}" cy="${s.cy}" r="12" fill="var(--vellum)" stroke="var(--ink-soft)" stroke-width="1.5" stroke-dasharray="4 3"/>
+      <text x="${s.cx}" y="${s.cy+4.5}" text-anchor="middle" font-family="var(--mono)" font-size="15" font-weight="600" fill="var(--ink-soft)" style="pointer-events:none">+</text>
+      <title>${dir==='in'?'Add a FROM connection (incoming)':'Add a TO connection (outgoing)'}</title>
+    </g>`;
+  }).join('');
+
+  edgesG.innerHTML = edgeMarkup + portalMarkup + addBtnMarkup;
 
   // Per-edge category for the port-row tick/badge colors, over ALL drawn wires.
   const catOf = new Map(specs.map(s=>[s.e.id, edgeCategory(s.e)]));
@@ -2333,6 +2356,31 @@ function renderInspector(){
       </div>`:''}`;
     const customPorts = !!S.groupPortOrder[n.id] || Object.keys(S.groupPortSides).some(k=>k.startsWith(n.id+'|'));
     const portHint = `<p class="hint">${nodePortRowsFor(n.id).length} port${nodePortRowsFor(n.id).length===1?'':'s'} in this block's port zone. Drag a port's net-count badge sideways to switch which edge it attaches to, or up/down to reorder it.</p>`;
+    // "Add net" — the block joins a net as input or output. Offered nets are the
+    // ones this block's GROUP already sees (internal wires + boundary
+    // crossings); nets internal to other groups are irrelevant noise here.
+    const gid = nodeGroupIndex().get(n.id);
+    const gNetNames = gid ? [...groupNetIndex(gid).keys()].sort((a,b)=>a.localeCompare(b)) : [];
+    const gMembers = (groupsWithUngrouped().find(x=>x.id===gid)||{members:[]}).members.filter(id=>id!==n.id);
+    const memberLabel = id => { const x=nodeById(id); return x?x.label:id; };
+    const addNetSection = `
+      <div class="addnet">
+        <div class="kv"><label>Add net to this block — nets in this group</label>
+          <select id="anNet">
+            ${gNetNames.map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join('')}
+            <option value="__new__">➕ New net…</option>
+          </select></div>
+        <div class="kv"><label>Direction at this block</label>
+          <select id="anDir"><option value="in">Input (arrives here)</option><option value="out">Output (driven here)</option></select></div>
+        <div id="anNewPane" style="display:none">
+          <div class="kv"><label>Net name</label><input type="text" id="anName" placeholder="MY_NEW_NET"></div>
+          <div class="kv"><label>Type</label><select id="anType">${NET_TYPES.map(t=>`<option>${t}</option>`).join('')}</select></div>
+          <div class="kv"><label>Description</label><textarea id="anDesc" placeholder="One line: purpose, polarity if applicable"></textarea></div>
+          <div class="kv"><label>Counterpart block (same group)</label>
+            <select id="anOther">${gMembers.map(id=>`<option value="${esc(id)}">${esc(memberLabel(id))}</option>`).join('')}</select></div>
+        </div>
+        <button id="btnAddNetNode">Add net</button>
+      </div>`;
     if (n.kind==='ic'){
       body.innerHTML = `
         <div class="kv"><label>Type</label><div class="val">${esc(n.data.ic_type||'')}</div></div>
@@ -2342,6 +2390,7 @@ function renderInspector(){
         <div class="kv"><label>Datasheet</label><div class="val">${n.data.DatasheetUrl?`<a href="${esc(n.data.DatasheetUrl)}" target="_blank" rel="noopener">${esc(n.data.DatasheetUrl)}</a>`:'—'}</div></div>
         ${sideRow}
         ${portHint}
+        ${addNetSection}
         <div class="btnrow"><button id="btnReplaceIC">Replace IC…</button>${customPorts?'<button id="btnResetNodePorts">Reset port layout</button>':''}</div>
         <div class="btnrow"><button class="danger" id="btnDelNode">Delete IC and its connections</button></div>`;
     } else {
@@ -2349,6 +2398,7 @@ function renderInspector(){
         <div class="kv"><label>Description</label><div class="val">${esc(n.data.description||'')}</div></div>
         ${sideRow}
         ${portHint}
+        ${addNetSection}
         <div class="btnrow">${customPorts?'<button id="btnResetNodePorts">Reset port layout</button>':''}<button class="danger" id="btnDelNode">Delete block and its connections</button></div>`;
     }
     $('fSide').onchange=()=>{ n.hvSide = $('fSide').value || undefined; render(); };
@@ -2356,6 +2406,42 @@ function renderInspector(){
     const rep=$('btnReplaceIC'); if (rep) rep.onclick=()=>openReplaceICModal(n);
     const rp=$('btnResetNodePorts'); if (rp) rp.onclick=()=>{ commit(); resetGroupPortLayout(n.id); render(); };
     const del=$('btnDelNode'); if (del) del.onclick=()=>deleteNode(n.id);
+    const anNet=$('anNet');
+    if (anNet){
+      const syncPane=()=>{ $('anNewPane').style.display = anNet.value==='__new__' ? 'block' : 'none'; };
+      anNet.onchange=syncPane; syncPane();
+      const hasNet=(s,t,name)=>{ const e=S.edges.find(x=>x.source===s&&x.target===t); return !!(e&&e.nets.some(x=>x.name===name)); };
+      $('btnAddNetNode').onclick=()=>{
+        const dir=$('anDir').value;
+        if (anNet.value==='__new__'){
+          const name=$('anName').value.trim().toUpperCase().replace(/[^A-Z0-9]+/g,'_').replace(/^_|_$/g,'');
+          if (!name){ toast('Net name required'); return; }
+          const other=$('anOther').value;
+          if (!other){ toast('Pick the counterpart block'); return; }
+          if (hasNet(dir==='in'?other:n.id, dir==='in'?n.id:other, name)){ toast('That connection already carries '+name); return; }
+          const net={ name, type:$('anType').value, description:$('anDesc').value.trim() };
+          commit();
+          if (dir==='in') addNetToEdge(other, n.id, net); else addNetToEdge(n.id, other, net);
+          render();
+          return;
+        }
+        const info=groupNetIndex(gid).get(anNet.value);
+        if (!info) return;
+        if (dir==='in'){
+          // the net arrives here from its existing driver (which may sit in
+          // another group — the wire then shows through a FROM portal)
+          if (info.driver===n.id){ toast('This block already drives '+info.net.name+' — pick Output or another net'); return; }
+          if (hasNet(info.driver, n.id, info.net.name)){ toast('Already connected as input'); return; }
+          commit(); addNetToEdge(info.driver, n.id, info.net); render();
+        } else {
+          // this block becomes a driver feeding the net's in-group consumers
+          const gset=new Set((groupsWithUngrouped().find(x=>x.id===gid)||{members:[]}).members);
+          const targets=[...info.consumers].filter(id=>id!==n.id && gset.has(id) && !hasNet(n.id, id, info.net.name));
+          if (!targets.length){ toast('No in-group consumer to feed — add it as Input or create a new net'); return; }
+          commit(); targets.forEach(t=>addNetToEdge(n.id, t, info.net)); render();
+        }
+      };
+    }
     return;
   }
   // edge
@@ -2486,6 +2572,7 @@ svg.addEventListener('pointerdown', ev=>{
   const segEl = ev.target.closest('.seg-v, .seg-h');
   const numEl = ev.target.closest('.portnum');
   const badgeEl = ev.target.closest('.netbadge');
+  const addEl = ev.target.closest('.portaladd');
   const port = ev.target.closest('.port');
   const portalEl = ev.target.closest('.portal');
   const nodeEl = ev.target.closest('.node');
@@ -2498,6 +2585,10 @@ svg.addEventListener('pointerdown', ev=>{
   if (badgeEl){
     S.sel = { type: isTopLevel() ? 'groupEdge' : 'edge', id: badgeEl.dataset.eid };
     render();
+    return;
+  }
+  if (addEl){
+    openAddPortalModal(addEl.dataset.dir);
     return;
   }
 
@@ -3052,6 +3143,136 @@ $('btnAddIC').onclick=()=>{
     closeModal(); S.sel={type:'node',id:pn}; render();
   };
 };
+
+$('btnAddExt').onclick=()=>{
+  const openGroup = !isTopLevel() && S.openGroup!==UNGROUPED_ID
+    ? S.groups.find(g=>g.id===S.openGroup) : null;
+  openModal('Add external block', `
+    <div class="kv"><label>Name *</label><input type="text" id="fExtName" placeholder="HV output connector"></div>
+    <div class="kv"><label>Description</label><textarea id="fExtDesc" placeholder="One line: what this element is and its role"></textarea></div>
+    <p class="hint">External blocks are connectors, batteries, transformers, passive networks — system elements without a designator.
+      The new block appears in the nearest clear spot. ${openGroup
+      ? `It will join the open group "${esc(openGroup.title)}".`
+      : 'It will be ungrouped — open a group first if it belongs in one.'}</p>
+  `, `<button id="mCancel">Cancel</button><button class="primary" id="mOk">Add external block</button>`);
+  $('mCancel').onclick=closeModal;
+  $('mOk').onclick=()=>{
+    const name=$('fExtName').value.trim();
+    if (!name){ toast('A name is required'); return; }
+    if (nodeById('EXT:'+name) || S.nodes.some(n=>n.kind==='external' && n.label.toLowerCase()===name.toLowerCase())){
+      toast('An external block with this name already exists'); return;
+    }
+    const node = { id:'EXT:'+name, kind:'external', label:name, x:0, y:0, w:NODE_W_EXT, h:NODE_H_EXT,
+      data:{ description:$('fExtDesc').value.trim() } };
+    node.w = nodeBlockWidth(node);
+    node.h = nodeBlockHeight(node);
+    const obstacles = newIcObstacles();
+    let cx, cy;
+    if (isTopLevel() && obstacles.length){
+      cx = (Math.min(...obstacles.map(o=>o.x)) + Math.max(...obstacles.map(o=>o.x+o.w)))/2;
+      cy = (Math.min(...obstacles.map(o=>o.y)) + Math.max(...obstacles.map(o=>o.y+o.h)))/2;
+    } else {
+      const r=svg.getBoundingClientRect();
+      const c=toWorld(r.left+r.width/2, r.top+r.height/2);
+      cx=c.x; cy=c.y;
+    }
+    const spot=findFreeSpot(cx, cy, node.w, node.h, obstacles);
+    node.x=spot.x; node.y=spot.y;
+    commit();
+    S.nodes.push(node);
+    if (openGroup){ openGroup.members.push(node.id); openGroup.members.sort(); }
+    closeModal(); S.sel={type:'node',id:node.id}; render();
+  };
+};
+
+/* ------------------------------------------------------------------
+   ADD NET FROM A BLOCK — the inspector lets an IC/external block join a
+   net as an input or output. Offered nets are the ones the block's own
+   GROUP already sees (its internal wires plus its boundary crossings) —
+   nets internal to other groups are irrelevant noise here — plus a
+   "new net" escape hatch that also picks the counterpart block.
+   ------------------------------------------------------------------ */
+// name → {net, driver, consumers:Set} over every edge touching the group.
+function groupNetIndex(gid){
+  const g = groupsWithUngrouped().find(x=>x.id===gid);
+  const m = new Set(g ? g.members : []);
+  const map = new Map();
+  for (const e of S.edges){
+    if (!m.has(e.source) && !m.has(e.target)) continue;
+    for (const n of e.nets){
+      if (!map.has(n.name)) map.set(n.name, { net:n, driver:e.source, consumers:new Set() });
+      map.get(n.name).consumers.add(e.target);
+    }
+  }
+  return map;
+}
+// Append a net to the src→tgt edge, creating the edge if needed.
+// Returns false (with a toast) when that edge already carries the name.
+function addNetToEdge(srcId, tgtId, net){
+  let e = S.edges.find(x=>x.source===srcId && x.target===tgtId);
+  if (!e){ e = { id:'e'+(S.edgeSeq++), source:srcId, target:tgtId, nets:[] }; S.edges.push(e); }
+  if (e.nets.some(x=>x.name===net.name)){ toast('That connection already carries '+net.name); return false; }
+  e.nets.push({ name:net.name, type:net.type||'NA', description:net.description||'',
+    ...(net.hv!=null ? { hv:!!net.hv } : {}) });
+  e.nets.sort((a,b)=>a.name.localeCompare(b.name));
+  return true;
+}
+
+/* ------------------------------------------------------------------
+   NEW FROM/TO PORTAL — the "+" under each portal column. Creates a real
+   boundary edge (far block → near block or vice versa); the portal then
+   materializes by derivation like every other one. Offered nets: the
+   system-level ones (on group-crossing edges) plus this group's own —
+   never a net internal to ANOTHER group, that would be irrelevant noise.
+   ------------------------------------------------------------------ */
+function candidateNetsForPortal(gid){
+  const idx = nodeGroupIndex();
+  const map = new Map();
+  for (const e of S.edges){
+    const gs = idx.get(e.source), gt = idx.get(e.target);
+    if (gs===gt && gs!==gid) continue;   // internal to another group — excluded
+    for (const n of e.nets) if (!map.has(n.name)) map.set(n.name, n);
+  }
+  return [...map.values()].sort((a,b)=>a.name.localeCompare(b.name));
+}
+function openAddPortalModal(dir){
+  const here = groupsWithUngrouped().find(g=>g.id===S.openGroup);
+  const others = groupsWithUngrouped().filter(g=>g.id!==S.openGroup && g.members.length);
+  if (!here || !others.length){ toast('No other group to connect to'); return; }
+  const nets = candidateNetsForPortal(S.openGroup);
+  const memberLabel = id => { const x=nodeById(id); return x?x.label:id; };
+  const memberOpts = ids => ids.map(id=>`<option value="${esc(id)}">${esc(memberLabel(id))}</option>`).join('');
+  openModal(dir==='in' ? 'New FROM connection' : 'New TO connection', `
+    <div class="kv"><label>${dir==='in'?'From group':'To group'}</label>
+      <select id="apGroup">${others.map(g=>`<option value="${esc(g.id)}">${esc(g.title)}</option>`).join('')}</select></div>
+    <div class="kv"><label>${dir==='in'?'Driving block (in that group)':'Receiving block (in that group)'}</label>
+      <select id="apFar">${memberOpts(others[0].members)}</select></div>
+    <div class="kv"><label>${dir==='in'?'Receiving block (in this group)':'Driving block (in this group)'}</label>
+      <select id="apNear">${memberOpts(here.members)}</select></div>
+    <div class="kv"><label>Net</label>
+      <select id="apNet">${nets.map(n=>`<option value="${esc(n.name)}">${esc(n.name)} — ${esc(n.type)}</option>`).join('')}</select></div>
+    <p class="hint">${dir==='in'
+      ? 'Creates an incoming boundary connection: the FROM portal appears on the left, wired into the receiving block.'
+      : 'Creates an outgoing boundary connection: the TO portal appears on the right, fed by the driving block.'}
+      Offered nets are the system-level ones plus this group's own — nets internal to other groups are excluded.</p>
+  `, `<button id="mCancel">Cancel</button><button class="primary" id="mOk">${dir==='in'?'Add FROM':'Add TO'}</button>`);
+  $('mCancel').onclick=closeModal;
+  $('apGroup').onchange=()=>{
+    const g=others.find(x=>x.id===$('apGroup').value);
+    $('apFar').innerHTML=memberOpts(g?g.members:[]);
+  };
+  $('mOk').onclick=()=>{
+    const far=$('apFar').value, near=$('apNear').value;
+    const net=nets.find(n=>n.name===$('apNet').value);
+    if (!far || !near || !net){ toast('Pick both blocks and a net'); return; }
+    const src = dir==='in' ? far : near, tgt = dir==='in' ? near : far;
+    const existing = S.edges.find(e=>e.source===src && e.target===tgt);
+    if (existing && existing.nets.some(x=>x.name===net.name)){ toast('That connection already carries '+net.name); return; }
+    commit();
+    addNetToEdge(src, tgt, net);
+    closeModal(); render();
+  };
+}
 
 // Renaming a node's id (a replacement changes the part number) has to follow
 // every store that keys by node id or by src→tgt node pairs: edges, group
