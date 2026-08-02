@@ -13,7 +13,7 @@ window.__T={get S(){return S;},loadFromContract,render,openGroupView,closeGroupV
  groupsWithUngrouped,nodeById,openGroupObstacleRects,nodeEdgeLaneKey,commit,undo,_routeCache,
  nodePortRowsFor,nodePortOf,nodePortRowY,setGroupPortSide,moveNodePortToRow,resetGroupPortLayout,GRID:GRID,
  drillSheet,portalOffsetOf,setPortalOffset,PORTAL_MARGIN:PORTAL_MARGIN,LANE_PITCH:LANE_PITCH,PORTAL_H:PORTAL_H,
- translateWireSegment,nodeBlockWidth,textWidth};`);
+ translateWireSegment,nodeBlockWidth,textWidth,isHvNet,netCategory,nodeSide};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -408,6 +408,35 @@ check('every in-group connection carries a routing lane',
   S.sel=null; n.hvSide=prevSide; n.hvFlip=prevFlip; T.render();
   check('clearing the flip restores the default (HV wash on the right)',
     !doc.getElementById('nodesG').innerHTML.includes('x="0" y="0" width="'+(n.w/2)+'"'));
+}
+
+/* ---- rule 15: per-net LV|HV flag propagates to ports, blocks and colors ---- */
+{
+  const g=T.groupsWithUngrouped().find(x=>x.id===best.id);
+  const m=new Set(g.members);
+  // an internal edge whose endpoints classify automatically (no manual hvSide)
+  const e=T.diagramEdges(S.edges).find(x=>m.has(x.source)&&m.has(x.target)
+    && !T.nodeById(x.source).hvSide && !T.nodeById(x.target).hvSide
+    && x.nets.every(nn=>!T.isHvNet(nn)));
+  const net=e.nets[0];
+  check('an LV-typed net reads LV before any flag', T.isHvNet(net)===false && T.netCategory(net)!=='hv');
+  net.hv=true; T.render();
+  check('the flag wins over the type: the net reads HV now', T.isHvNet(net)===true && T.netCategory(net)==='hv');
+  const srcSide=T.nodeSide(e.source);
+  check('the touching block re-classifies automatically (hv or barrier)', srcSide==='hv' || srcSide==='barrier');
+  if (srcSide==='barrier'){
+    const row=T.nodePortRowsFor(e.source).find(r=>r.src===e.source&&r.tgt===e.target);
+    check('the flagged net\'s port pins to the HV half', row.pinned && row.side==='right' && row.hv);
+  } else {
+    check('an all-HV block needs no barrier pinning (whole block is HV)', true);
+  }
+  // the connection inspector offers the toggle and it flips back
+  S.sel={ type:'edge', id:e.id }; T.render();
+  const domBtn=doc.querySelector('#insBody [data-domnet]');
+  check('every net card carries an LV|HV toggle', !!domBtn && domBtn.textContent==='HV');
+  domBtn.onclick();
+  check('clicking the toggle flips the net back to LV', T.isHvNet(net)===false);
+  delete net.hv; S.sel=null; T.render();
 }
 
 /* ---- rule 14: a new IC lands clear of every block (end to end) ---- */

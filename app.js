@@ -209,7 +209,8 @@ function buildGraph(input, contract, rawGroups){
       // A bus never carries the same net twice (a malformed contract can list the
       // same consumer more than once for one net — keep the first occurrence).
       if (!nets.some(x=>x.name===net.name))
-        nets.push({ name:net.name, type:net.type||'NA', description:net.description||'' });
+        nets.push({ name:net.name, type:net.type||'NA', description:net.description||'',
+          ...(net.hv!=null ? { hv:!!net.hv } : {}) });
     }
   }
   // Group members arrive as IC part numbers or "external block: <Name>" refs — resolveRef
@@ -384,7 +385,7 @@ function groupPortIndex(){
   const titleOf = new Map(groupsWithUngrouped().map(g=>[g.id, g.title||g.id]));
   const idx = new Map(groupsWithUngrouped().map(g=>[g.id, []]));
   for (const e of computeGroupEdges()){
-    const hv = e.nets.some(isHvNetType);   // the connection's insulation domain
+    const hv = e.nets.some(isHvNet);   // the connection's EFFECTIVE insulation domain
     if (idx.has(e.source)) idx.get(e.source).push({ eid:e.id, src:e.source, tgt:e.target, dir:'out', other:e.target, nets:e.nets.length, hv });
     if (idx.has(e.target)) idx.get(e.target).push({ eid:e.id, src:e.source, tgt:e.target, dir:'in',  other:e.source, nets:e.nets.length, hv });
   }
@@ -468,7 +469,7 @@ function nodePortIndex(){
   if (_nodePortIdx) return _nodePortIdx;
   const idx = new Map(S.nodes.map(n=>[n.id, []]));
   for (const e of diagramEdges(S.edges)){
-    const hv = e.nets.some(isHvNetType);   // the connection's insulation domain
+    const hv = e.nets.some(isHvNet);   // the connection's EFFECTIVE insulation domain
     if (idx.has(e.source)) idx.get(e.source).push({ eid:e.id, src:e.source, tgt:e.target, dir:'out', other:e.target, nets:e.nets.length, hv });
     if (idx.has(e.target)) idx.get(e.target).push({ eid:e.id, src:e.source, tgt:e.target, dir:'in',  other:e.source, nets:e.nets.length, hv });
   }
@@ -893,6 +894,14 @@ function autoLayoutGroups(onlyMissing){
 function esc(s){ return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function nodeById(id){ return S.nodes.find(n=>n.id===id); }
 function isHvNetType(n){ return /HIGH_VOLTAGE/i.test(n.type||''); }
+// EFFECTIVE insulation domain of a net: an explicit per-net flag (set from the
+// connection inspector) wins over what the TYPE implies. Needed because nets
+// like HV_SENSE_DIV routinely carry type ANALOG_SIGNAL — the type says how the
+// signal behaves, the flag says which side of the isolation barrier it lives
+// on. Everything domain-related (port pinning, block sides, wire color)
+// classifies through THIS function, so flipping a net re-classifies the
+// touching blocks automatically (unless they carry an explicit hvSide).
+function isHvNet(n){ return n.hv != null ? !!n.hv : isHvNetType(n); }
 
 /* ------------------------------------------------------------------
    SIGNAL CATEGORIES — every wire and arrowhead renders at the same size
@@ -913,7 +922,7 @@ const NET_CATEGORY_STYLE = {
 };
 const CATEGORY_PRIORITY = ['hv','power','switching','control','logic','analog','other'];
 function netCategory(n){
-  if (isHvNetType(n)) return 'hv';
+  if (isHvNet(n)) return 'hv';
   const t = (n.type||'').toUpperCase();
   if (t==='POWER_DISTRIBUTION' || t==='HIGH_CURRENT_PATH') return 'power';
   if (t==='SWITCHING_NODE') return 'switching';
@@ -946,7 +955,7 @@ function nodeTouchingNets(nodeId){
 function inferNodeSide(nodeId){
   const nets = nodeTouchingNets(nodeId);
   if (!nets.length) return 'lv';
-  const hv = nets.some(isHvNetType), lv = nets.some(n=>!isHvNetType(n));
+  const hv = nets.some(isHvNet), lv = nets.some(n=>!isHvNet(n));
   return hv && lv ? 'barrier' : hv ? 'hv' : 'lv';
 }
 function nodeSide(nodeId){
@@ -2362,6 +2371,8 @@ function renderInspector(){
         <div class="nettop">
           <span class="netname">${esc(n.name)}</span>
           <span class="nettype">${esc(n.type)}</span>
+          <button class="netdom ${isHvNet(n)?'hv':'lv'}" data-domnet="${i}"
+            title="Insulation domain of this net — click to flip. Blocks re-classify automatically (unless their Voltage domain is set by hand).">${isHvNet(n)?'HV':'LV'}</button>
           <button class="x" data-delnet="${i}" title="Remove net">✕</button>
         </div>
         ${n.description?`<div class="netdesc">${esc(n.description)}</div>`:''}
@@ -2383,6 +2394,12 @@ function renderInspector(){
       <button class="danger" id="btnDelEdge">Delete connection</button>
     </div>`;
   body.querySelectorAll('[data-delnet]').forEach(b=>b.onclick=()=>{ commit(); e.nets.splice(+b.dataset.delnet,1); render(); });
+  body.querySelectorAll('[data-domnet]').forEach(b=>b.onclick=()=>{
+    commit();
+    const net = e.nets[+b.dataset.domnet];
+    net.hv = !isHvNet(net);   // explicit flag — wins over what the type implies
+    render();
+  });
   $('btnAddNet').onclick=()=>{
     commit();
     const name = $('newNetName').value.trim().toUpperCase().replace(/[^A-Z0-9]+/g,'_').replace(/^_|_$/g,'');
@@ -3192,7 +3209,8 @@ function buildPipelineJSON(){
     if (!src||!dst) continue;
     for (const net of e.nets){
       if (!netMap.has(net.name))
-        netMap.set(net.name, { name:net.name, type:net.type||'NA', source:refOf(src), consumers:[], description:net.description||'' });
+        netMap.set(net.name, { name:net.name, type:net.type||'NA', source:refOf(src), consumers:[], description:net.description||'',
+          ...(net.hv!=null ? { hv:net.hv } : {}) });
       const rec=netMap.get(net.name);
       const c=refOf(dst);
       if (!rec.consumers.includes(c)) rec.consumers.push(c);
