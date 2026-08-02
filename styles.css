@@ -101,6 +101,11 @@ textarea{resize:vertical;min-height:52px;font-family:var(--sans)}
   background:var(--paper);color:var(--ink-soft);flex-shrink:0}
 .netcard .netdom.hv{border-color:var(--sig-hv);color:var(--sig-hv)}
 .netcard .netdom:hover{background:var(--btn-hover)}
+/* Net cards double as trace toggles: click one to light the whole net up
+   across the diagram (see traceSets in app.js); click again to switch off. */
+.netcard.traceable{cursor:pointer}
+.netcard.traceable:hover{border-color:var(--copper)}
+.netcard.on{outline:2px solid var(--probe);outline-offset:1px}
 .addnet{border:1.5px dashed var(--line);border-radius:3px;padding:10px;margin-top:6px}
 .addnet .kv{margin-bottom:6px}
 
