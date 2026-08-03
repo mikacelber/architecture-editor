@@ -224,14 +224,15 @@ check('every in-group connection carries a routing lane',
 {
   T.render();
   const domPortals=[...doc.querySelectorAll('#edgesG .portal')];
-  // outer end is a semicircle: the box path carries an arc of radius h/2
-  // (heights vary — one GRID row per wire — so the radius follows each box)
+  // outer end is a round cap: the box path carries arcs of radius
+  // min(h/2, PORTAL_H/2) — at the base height that IS a semicircle, and a box
+  // grown to fit more wires keeps the same cap instead of bulging.
   const shaped=domPortals.every(p=>{
-    const sr=(+p.dataset.h)/2;
+    const sr=Math.min((+p.dataset.h)/2, T.PORTAL_H/2);
     const d=(p.querySelector('path[fill="var(--vellum)"]')||{getAttribute:()=>''}).getAttribute('d')||'';
     return d.includes(`A ${sr} ${sr}`);
   });
-  check('every portal box has a semicircular outer end (arc r=h/2)', shaped);
+  check('every portal box has a semicircular outer end (cap r=min(h/2,PORTAL_H/2))', shaped);
   check('portals expose no reorder handle (feature removed)', doc.querySelectorAll('.portalnum').length===0);
 
   // titles never truncated; ONE shared width keeps both columns uniform
@@ -630,17 +631,41 @@ check('every in-group connection carries a routing lane',
    anchoring against the mid blocks, vertical slot reorder ---- */
 {
   const onGrid=v=>Math.abs(v-Math.round(v/T.GRID)*T.GRID)<0.01;
+  // Slots ride the FINE lattice (GRID/2) — one of the zoom subdivision pitches —
+  // which keeps the fan compact while still landing dead on grid lines.
+  const fine=T.GRID/2;
+  const onFine=v=>Math.abs(v-Math.round(v/fine)*fine)<0.01;
   const slotYOf=s=>s.kind==='in'?s.pa.y:s.pb.y;
   const sheet=T.drillSheet();
   check('every portal box sits on the grid (y and h are GRID multiples)',
     sheet.portals.every(p=>onGrid(p.r.y)&&onGrid(p.r.h)));
   const bSpecs=sheet.specs.filter(s=>s.kind!=='internal');
-  check('every portal exit slot lands exactly on a grid line',
-    bSpecs.length>0 && bSpecs.every(s=>onGrid(slotYOf(s))));
+  check('every portal exit slot lands exactly on a (fine) grid line',
+    bSpecs.length>0 && bSpecs.every(s=>onFine(slotYOf(s))));
   const byPortal={};
   for (const s of bSpecs) (byPortal[s.portalKey]=byPortal[s.portalKey]||[]).push(slotYOf(s));
   check('no two wires of a portal share a slot row',
     Object.values(byPortal).every(ys=>new Set(ys).size===ys.length));
+  // compact fan: consecutive slots are exactly one fine pitch apart, and the
+  // fan is centred in its box
+  const fanOk=sheet.portals.every(p=>{
+    const ys=bSpecs.filter(s=>s.portalKey===p.key).map(slotYOf).sort((a,b)=>a-b);
+    if (ys.length<2) return true;
+    const spaced=ys.every((y,i)=>i===0||Math.abs(y-ys[i-1]-fine)<0.01);
+    const mid=(ys[0]+ys[ys.length-1])/2;
+    return spaced && Math.abs(mid-(p.r.y+p.r.h/2))<=fine/2+0.01;
+  });
+  check('slots keep the compact half-GRID pitch, centred in their box', fanOk);
+  check('a box with up to 3 wires stays at the base height',
+    sheet.portals.every(p=>p.unders.length>3 || p.r.h===T.PORTAL_H));
+  // the FROM/TO caption + title pair is centred on the box midline
+  T.render();
+  const textCentred=[...doc.querySelectorAll('#edgesG .portal')].every(el=>{
+    const cy=+el.dataset.y + +el.dataset.h/2;
+    const ys=[...el.querySelectorAll('text')].map(t=>+t.getAttribute('y'));
+    return ys.includes(cy-8) && ys.includes(cy+10);
+  });
+  check('the FROM/TO caption and title stay centred in the box', textCentred);
 
   // live X anchoring: pushing the leftmost block further left tows the FROM
   // column along (same corridor offset); TO and every Y stay put
@@ -670,7 +695,7 @@ check('every in-group connection carries a routing lane',
     check('the dragged slot lands on the wanted row and the rest shuffle',
       ids1[0]===ids0[1] && ids1[1]===ids0[0]);
     check('reordered slots still land exactly on grid lines',
-      T.drillSheet().specs.filter(s=>s.portalKey===rp.key).every(s=>onGrid(slotYOf(s))));
+      T.drillSheet().specs.filter(s=>s.portalKey===rp.key).every(s=>onFine(slotYOf(s))));
     T.render();
     check('every boundary wire carries a slot reorder handle',
       doc.querySelectorAll('#edgesG .portal .slothandle').length===T.drillSheet().specs.filter(s=>s.kind!=='internal').length);
