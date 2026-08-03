@@ -1690,10 +1690,20 @@ function openGroupPortals(){
 // member blocks. The real corridor scales with how many boundary wires have to
 // live in it — one LANE_PITCH per wire (see portalMargin) — and grows further
 // when the user drags the column outward (portalOffsetOf).
-// Grid-native boxes: height is a GRID multiple and grows one row per wire, so
-// every exit slot lands EXACTLY on a lattice line — a wire running on the grid
-// meets its slot dead-on, no last-minute jog to absorb a fractional offset.
+// Grid-native boxes: y and height are GRID multiples, and every exit slot
+// lands EXACTLY on the FINE lattice (GRID/2 — one of the zoom subdivision
+// pitches), so a wire running on the grid meets its slot dead-on, no
+// last-minute jog to absorb a fractional offset. The half-GRID slot pitch
+// keeps the compact fan the boxes always had.
 const PORTAL_W = 156, PORTAL_H = 2*GRID, PORTAL_VGAP = GRID, PORTAL_MARGIN = 130;
+const PORTAL_SLOT = GRID/2;
+// Slot j's Y for a portal: the fan is centred in the box and snapped so every
+// slot is an exact multiple of PORTAL_SLOT (box y is a GRID multiple).
+function portalSlotY(p, j){
+  const k = p.unders.length;
+  const s0 = p.r.y + Math.round((p.r.h/2 - (k-1)*PORTAL_SLOT/2)/PORTAL_SLOT)*PORTAL_SLOT;
+  return s0 + j*PORTAL_SLOT;
+}
 // Every boundary wire on a side may need its own vertical line in the corridor.
 function portalMargin(wireCount){ return PORTAL_MARGIN + wireCount*LANE_PITCH; }
 // Manual column displacement. FROM may only move LEFT (dx≤0) and TO only RIGHT
@@ -1827,10 +1837,11 @@ function drillSheet(){
     const pos = new Map(ord.map((id,i)=>[id,i]));
     return base.slice().sort((a,b)=>(pos.has(a.id)?pos.get(a.id):1e9)-(pos.has(b.id)?pos.get(b.id):1e9));
   };
-  // Boxes stack cumulatively: one GRID row per wire (min PORTAL_H), a GRID gap
-  // between boxes, the whole column centred on the (frozen) member midline and
-  // snapped onto the lattice — so every slot Y is an exact grid line.
-  const heightFor = k => Math.max(PORTAL_H, (k+1)*GRID);
+  // Boxes stack cumulatively: the compact half-GRID slot fan plus a GRID of
+  // breathing room, rounded up to a GRID multiple (min PORTAL_H — up to 3
+  // wires fit in the base height), a GRID gap between boxes, the whole column
+  // centred on the (frozen) member midline and snapped onto the lattice.
+  const heightFor = k => Math.max(PORTAL_H, Math.ceil(((k-1)*PORTAL_SLOT + GRID)/GRID)*GRID);
   const buildColumn = (list, dir, margin, off, maxLane) => {
     const col = list.map(item => ({ item, dir, maxLane,
       key: dir==='in' ? 'in:'+item.source : 'out:'+item.target,
@@ -1858,10 +1869,10 @@ function drillSheet(){
       pb: nodePortAnchor(e.target, e.source, e.target, 'in') });
   }
   for (const p of portals) p.unders.forEach((e,j)=>{
-    // Each wire gets its own exit slot on the portal edge — one per GRID row,
-    // dead on the lattice, so two wires never leave the portal on the same
-    // line and none needs a jog to reach an off-grid slot.
-    const slotY = p.r.y + GRID*(j+1);
+    // Each wire gets its own exit slot on the portal edge — half-GRID pitch,
+    // dead on the fine lattice, so two wires never leave the portal on the
+    // same line and none needs a jog to reach an off-grid slot.
+    const slotY = portalSlotY(p, j);
     if (p.dir==='in'){
       if (!nodeById(e.target)) return;
       specs.push({ e, kind:'in', portalKey:p.key, maxLane:p.maxLane,
@@ -2087,25 +2098,34 @@ function portalMarkupFor(p, selected, wires, traced, dim){
   // TO) is a semicircle, the block-facing end stays flat — the shape itself
   // says which way the signal flows. Dragging the box moves the whole column
   // (FROM only leftward, TO only rightward, both freely up/down).
-  const cr = 6, sr = r.h/2;   // flat-corner radius, semicircle radius
+  // The cap radius is capped at PORTAL_H/2 so a box grown to fit more wires
+  // keeps the same silhouette instead of bulging into a giant lens: at the
+  // base height the two arcs meet and it IS a semicircle, taller boxes just
+  // grow a straight run between them.
+  const cr = 6, sr = Math.min(r.h/2, PORTAL_H/2);   // flat-corner radius, cap radius
   const boxD = dir==='in'
     ? `M ${r.x+sr} ${r.y} L ${r.x+r.w-cr} ${r.y} A ${cr} ${cr} 0 0 1 ${r.x+r.w} ${r.y+cr}
        L ${r.x+r.w} ${r.y+r.h-cr} A ${cr} ${cr} 0 0 1 ${r.x+r.w-cr} ${r.y+r.h}
-       L ${r.x+sr} ${r.y+r.h} A ${sr} ${sr} 0 0 1 ${r.x+sr} ${r.y} Z`
+       L ${r.x+sr} ${r.y+r.h} A ${sr} ${sr} 0 0 1 ${r.x} ${r.y+r.h-sr}
+       L ${r.x} ${r.y+sr} A ${sr} ${sr} 0 0 1 ${r.x+sr} ${r.y} Z`
     : `M ${r.x} ${r.y+cr} A ${cr} ${cr} 0 0 1 ${r.x+cr} ${r.y} L ${r.x+r.w-sr} ${r.y}
+       A ${sr} ${sr} 0 0 1 ${r.x+r.w} ${r.y+sr} L ${r.x+r.w} ${r.y+r.h-sr}
        A ${sr} ${sr} 0 0 1 ${r.x+r.w-sr} ${r.y+r.h} L ${r.x+cr} ${r.y+r.h}
        A ${cr} ${cr} 0 0 1 ${r.x} ${r.y+r.h-cr} Z`;
-  // The count badge hugs the flat (block-facing) end, clear of the round cap.
+  // The count badge hugs the flat (block-facing) end, clear of the round cap;
+  // the FROM/TO caption and the neighbour title are centred as a pair on the
+  // box midline, so they stay centred however tall the box grows.
   const bcx = dir==='in' ? r.x+r.w-16 : r.x+16;
   const tx = dir==='in' ? r.x+14 : r.x+30;
+  const cy = r.y + r.h/2;
   return `<g class="portal${dim?' dim':''}" data-portal="${esc(p.key)}" data-x="${r.x}" data-y="${r.y}" data-w="${r.w}" data-h="${r.h}" style="cursor:move">
     ${wires}
     <path d="${boxD}" fill="var(--vellum)"
       stroke="${(selected||traced)?'var(--probe)':'var(--ink-soft)'}" stroke-width="${(selected||traced)?2.5:1.5}" stroke-dasharray="4 3"/>
-    <text x="${tx}" y="${r.y+18}" font-family="var(--mono)" font-size="9" letter-spacing=".08em" fill="var(--ink-soft)">${dir==='in'?'FROM':'TO'}</text>
-    <text x="${tx}" y="${r.y+36}" font-family="var(--mono)" font-size="12" font-weight="600" fill="var(--ink)">${esc(label)}</text>
-    <circle cx="${bcx}" cy="${r.y+r.h/2}" r="9" fill="var(--paper)" stroke="${style.color}" stroke-width="1.2"/>
-    <text x="${bcx}" y="${r.y+r.h/2+3.5}" text-anchor="middle" font-family="var(--mono)" font-size="9.5" fill="var(--ink)">${item.nets.length}</text>
+    <text x="${tx}" y="${cy-8}" font-family="var(--mono)" font-size="9" letter-spacing=".08em" fill="var(--ink-soft)">${dir==='in'?'FROM':'TO'}</text>
+    <text x="${tx}" y="${cy+10}" font-family="var(--mono)" font-size="12" font-weight="600" fill="var(--ink)">${esc(label)}</text>
+    <circle cx="${bcx}" cy="${cy}" r="9" fill="var(--paper)" stroke="${style.color}" stroke-width="1.2"/>
+    <text x="${bcx}" y="${cy+3.5}" text-anchor="middle" font-family="var(--mono)" font-size="9.5" fill="var(--ink)">${item.nets.length}</text>
   </g>`;
 }
 
@@ -2884,11 +2904,11 @@ svg.addEventListener('pointermove', ev=>{
     return;
   }
   if (drag.mode==='portalslot'){
-    // Slots sit at r.y + GRID*(row+1): quantize the pointer to a row and
-    // shuffle live, exactly like a block port's badge drag.
+    // Quantize the pointer onto the half-GRID slot fan and shuffle live,
+    // exactly like a block port's badge drag.
     const p = drillSheet().portals.find(x=>x.key===drag.key);
     if (!p) return;
-    const wantedRow = Math.round((w.y - p.r.y)/GRID) - 1;
+    const wantedRow = Math.round((w.y - portalSlotY(p, 0))/PORTAL_SLOT);
     if (movePortalSlotToRow(drag.key, drag.eid, wantedRow)){ commitGesture(drag); render(); }
     return;
   }
