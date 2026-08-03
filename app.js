@@ -19,6 +19,7 @@ const S = {
   groupPortOrder: {}, // {[gid]: ['srcId→tgtId', ...]} — port rows dragged into a manual vertical order
   portalOffsets: {}, // {[gid]: {in:{dx,dy}, out:{dx,dy}}} — each portal COLUMN dragged as a whole (in: dx≤0, out: dx≥0)
   portalOrder: {}, // {[gid]: {[portalKey]: [edgeId,...]}} — a portal's exit slots dragged into a manual vertical order
+  portalAnchor: {}, // {[gid]: {minY,maxY}} — vertical anchor the FROM/TO columns are centred on, frozen so block drags never tow them
   ungroupedHvFlip: undefined, // LV|HV flip of the implicit UNGROUPED block (real groups keep g.hvFlip on themselves)
   openGroup: null, // null = top-level view; groupId = drilled into that group (phase c)
   view: { tx:60, ty:40, k:1 },
@@ -1576,6 +1577,7 @@ function restoreState(json){
   S.groupEdgeLanes = s.groupEdgeLanes || {};
   S.portalOffsets = s.portalOffsets || {};
   S.portalOrder = s.portalOrder || {};
+  S.portalAnchor = s.portalAnchor || {};
   S.ungroupedHvFlip = s.ungroupedHvFlip || undefined;
   S.openGroup = s.openGroup ?? null;
   S.edgeSeq = Math.max(0, ...S.edges.map(e=>+String(e.id).replace(/^e/,'')||0)) + 1;
@@ -1784,13 +1786,14 @@ const BOUNDARY_LANE_MAX = 3;
 // Boundary wires run portal ↔ member block, so every arrow is attached to the
 // exact block it feeds: the portal box aggregates the neighbouring group, the
 // wires say WHAT connects to WHAT.
-// The portal columns are anchored to the member bounds — Y frozen AT OPEN
-// TIME (dragging a block vertically must not tow the FROM/TO columns along),
-// X tracking the blocks LIVE: push a block toward a column and the column
-// slides away, always keeping its corridor offset against the blocks.
-// Y re-anchors when the group is (re)opened or auto-laid-out.
-let _portalBase = null, _portalBaseGroup = null;
-function resetPortalBase(){ _portalBase = null; _portalBaseGroup = null; }
+// The portal columns are anchored to the member bounds — Y frozen the FIRST
+// time the group is drawn (dragging a block vertically must not tow the
+// FROM/TO columns along), X tracking the blocks LIVE: push a block toward a
+// column and the column slides away, keeping its corridor offset.
+// The frozen Y anchor is real state (S.portalAnchor), so it survives undo,
+// Save session and a browser reload — the columns come back exactly where
+// they were left. In-group Auto-layout re-anchors them.
+function resetPortalBase(){ if (S.openGroup) delete S.portalAnchor[S.openGroup]; }
 function drillSheet(){
   const g = groupsWithUngrouped().find(x=>x.id===S.openGroup);
   const memberSet = new Set(g ? g.members : []);
@@ -1799,11 +1802,10 @@ function drillSheet(){
   // measure grows the block) — refresh before anything is placed or routed.
   updateMemberDims(members);
   const liveB = members.length ? memberBounds(members) : { minX:0,maxX:0,minY:0,maxY:0 };
-  if (_portalBaseGroup !== S.openGroup || !_portalBase){
-    _portalBase = liveB;
-    _portalBaseGroup = S.openGroup;
-  }
-  const bounds = { minX:liveB.minX, maxX:liveB.maxX, minY:_portalBase.minY, maxY:_portalBase.maxY };
+  // Freeze the vertical anchor on first sight of this group; X always live.
+  const anchor = (S.openGroup && S.portalAnchor[S.openGroup])
+    || (S.openGroup ? (S.portalAnchor[S.openGroup] = { minY:liveB.minY, maxY:liveB.maxY }) : liveB);
+  const bounds = { minX:liveB.minX, maxX:liveB.maxX, minY:anchor.minY, maxY:anchor.maxY };
   const all = diagramEdges(S.edges);
   const internal = all.filter(e=>memberSet.has(e.source) && memberSet.has(e.target));
   const { incoming, outgoing } = openGroupPortals();
@@ -2311,7 +2313,8 @@ function openGroupView(groupId){
   const g = groupsWithUngrouped().find(x=>x.id===groupId);
   if (!g || !g.members.length) return;
   S.openGroup = groupId;
-  resetPortalBase();   // anchor the FROM/TO columns to this visit's layout
+  // No re-anchoring here: the FROM/TO columns keep the position they were
+  // left in (S.portalAnchor), so re-entering a group never shuffles them.
   S.sel = null;
   render();
   fitView();
@@ -2417,6 +2420,7 @@ function renderInspector(){
         delete S.groupPortOrder[g.id];
         delete S.portalOffsets[g.id];
         delete S.portalOrder[g.id];
+        delete S.portalAnchor[g.id];
         Object.keys(S.groupEdgeLanes).forEach(k=>{ if (k.startsWith(g.id+'→')||k.endsWith('→'+g.id)) delete S.groupEdgeLanes[k]; });
         S.sel=null; render(); fitView();
       };
@@ -3534,19 +3538,7 @@ $('btnImport').onclick=()=>{
         }
         loadFromContract(inp, con, groups);
       } else {
-        const s=tolerantParse($('impSess').value);
-        if (!s||!s.nodes||!s.edges) throw new Error('Not a session JSON (nodes/edges missing)');
-        S.meta=s.meta||S.meta; S.nodes=s.nodes; S.edges=s.edges; S.groups=s.groups||[];
-        S.groupPos = s.groupPos || {}; S.groupEdgeRoutes = s.groupEdgeRoutes || {};
-        S.groupPortSides = s.groupPortSides || {}; S.groupPortOrder = s.groupPortOrder || {};
-        S.groupEdgeLanes = s.groupEdgeLanes || {};
-        S.portalOffsets = s.portalOffsets || {}; S.portalOrder = s.portalOrder || {};
-        S.ungroupedHvFlip = s.ungroupedHvFlip || undefined;
-        S.openGroup = s.openGroup || null;
-        S.edgeSeq = Math.max(0,...S.edges.map(e=>+String(e.id).replace(/^e/,'')||0))+1;
-        autoLayoutGroups(true); // fill in positions only for groups the session didn't have (preserves dragged layout)
-        if (!Object.keys(S.groupEdgeLanes).length) assignRouteLanes();
-        S.sel=null; render(); fitView();
+        loadSession(tolerantParse($('impSess').value));
       }
       closeModal(); toast('Imported');
     }catch(err){ toast('Import failed: '+err.message); }
@@ -3639,19 +3631,54 @@ function buildSessionJSON(){
     groupPortOrder:Object.fromEntries(Object.entries(S.groupPortOrder).map(([k,v])=>[k,[...v]])),
     portalOffsets:JSON.parse(JSON.stringify(S.portalOffsets)),
     portalOrder:JSON.parse(JSON.stringify(S.portalOrder)),
+    portalAnchor:JSON.parse(JSON.stringify(S.portalAnchor)),
     ungroupedHvFlip:S.ungroupedHvFlip,
-    openGroup:S.openGroup };
+    openGroup:S.openGroup,
+    // Pan/zoom rides along so a re-imported session opens on the exact same
+    // framing. Deliberately NOT read back by restoreState: undoing an edit
+    // must not yank the canvas around.
+    view:{ ...S.view } };
 }
 
 /* ============================================================
    LOAD / BOOT
    ============================================================ */
+// Restore a document saved with Export → Save session. The rule is total
+// fidelity: every field buildSessionJSON writes is read back here, so blocks,
+// portal columns, manual wire routes, port layouts and the framing all come
+// back exactly as they were left. Anything missing (older sessions) falls back
+// to the same defaults a fresh import would use.
+function loadSession(s){
+  if (!s || !s.nodes || !s.edges) throw new Error('Not a session JSON (nodes/edges missing)');
+  S.meta = s.meta || S.meta;
+  S.nodes = s.nodes; S.edges = s.edges; S.groups = s.groups || [];
+  S.groupPos = s.groupPos || {}; S.groupEdgeRoutes = s.groupEdgeRoutes || {};
+  S.groupPortSides = s.groupPortSides || {}; S.groupPortOrder = s.groupPortOrder || {};
+  S.groupEdgeLanes = s.groupEdgeLanes || {};
+  S.portalOffsets = s.portalOffsets || {}; S.portalOrder = s.portalOrder || {};
+  S.portalAnchor = s.portalAnchor || {};
+  S.ungroupedHvFlip = s.ungroupedHvFlip || undefined;
+  S.openGroup = s.openGroup || null;
+  S.edgeSeq = Math.max(0, ...S.edges.map(e=>+String(e.id).replace(/^e/,'')||0)) + 1;
+  // Nothing of the outgoing document may leak into the restored one.
+  S.sel = null; S.traceNet = null; S.link = null;
+  invalidateGroupPorts(); _routeCache.clear();
+  autoLayoutGroups(true); // fill in positions only for groups the session didn't have (preserves dragged layout)
+  if (!Object.keys(S.groupEdgeLanes).length) assignRouteLanes();
+  // A session that carries its framing reopens EXACTLY as it was saved; older
+  // ones (no view) still get the fit-to-content default.
+  const framed = !!(s.view && s.view.k);
+  if (framed) S.view = { tx:+s.view.tx||0, ty:+s.view.ty||0, k:+s.view.k };
+  render();
+  if (!framed) fitView();
+}
+
 function loadFromContract(input, contract, groups){
   S.meta = { id:input.id||null, title:input.title||'', description:input.description||'', key_references:input.key_references||[] };
   S.edgeSeq=0;
   const g = buildGraph(input, contract||{}, groups||[]);
   S.nodes=g.nodes; S.edges=g.edges; S.groups=g.groups;
-  S.groupPos={}; S.groupEdgeRoutes={}; S.groupPortSides={}; S.groupPortOrder={}; S.groupEdgeLanes={}; S.portalOffsets={}; S.portalOrder={}; S.ungroupedHvFlip=undefined; S.openGroup=null; S.sel=null;
+  S.groupPos={}; S.groupEdgeRoutes={}; S.groupPortSides={}; S.groupPortOrder={}; S.groupEdgeLanes={}; S.portalOffsets={}; S.portalOrder={}; S.portalAnchor={}; S.ungroupedHvFlip=undefined; S.openGroup=null; S.sel=null;
   autoLayoutAllGroupMembers();
   autoLayoutGroups();
   assignRouteLanes();   // spread the wires apart before the first paint
