@@ -14,7 +14,8 @@ window.__T={get S(){return S;},loadFromContract,render,openGroupView,closeGroupV
  nodePortRowsFor,nodePortOf,nodePortRowY,setGroupPortSide,moveNodePortToRow,resetGroupPortLayout,GRID:GRID,
  drillSheet,portalOffsetOf,setPortalOffset,PORTAL_MARGIN:PORTAL_MARGIN,LANE_PITCH:LANE_PITCH,PORTAL_H:PORTAL_H,
  translateWireSegment,nodeBlockWidth,textWidth,isHvNet,netCategory,nodeSide,
- openAddPortalModal,candidateNetsForPortal,groupNetIndex,nodeGroupIndex,computeGroupEdges,traceSets,commit,undo};`);
+ openAddPortalModal,candidateNetsForPortal,groupNetIndex,nodeGroupIndex,computeGroupEdges,traceSets,
+ movePortalSlotToRow,commit,undo};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -222,14 +223,15 @@ check('every in-group connection carries a routing lane',
 /* ---- rule 9: portal shape and clickable net badges ---- */
 {
   T.render();
-  const sr=T.PORTAL_H/2;
   const domPortals=[...doc.querySelectorAll('#edgesG .portal')];
-  // outer end is a semicircle: the box path carries an arc of radius PORTAL_H/2
+  // outer end is a semicircle: the box path carries an arc of radius h/2
+  // (heights vary — one GRID row per wire — so the radius follows each box)
   const shaped=domPortals.every(p=>{
+    const sr=(+p.dataset.h)/2;
     const d=(p.querySelector('path[fill="var(--vellum)"]')||{getAttribute:()=>''}).getAttribute('d')||'';
     return d.includes(`A ${sr} ${sr}`);
   });
-  check('every portal box has a semicircular outer end (arc r='+sr+')', shaped);
+  check('every portal box has a semicircular outer end (arc r=h/2)', shaped);
   check('portals expose no reorder handle (feature removed)', doc.querySelectorAll('.portalnum').length===0);
 
   // titles never truncated; ONE shared width keeps both columns uniform
@@ -622,6 +624,60 @@ check('every in-group connection carries a routing lane',
   S.traceNet=null; S.sel=null; T.render();
   check('the top level is fully bright again after the trace ends', doc.querySelectorAll('#board .dim').length===0);
   T.openGroupView(best.id);
+}
+
+/* ---- rule 18: grid-native portals — slots dead on the lattice, live X
+   anchoring against the mid blocks, vertical slot reorder ---- */
+{
+  const onGrid=v=>Math.abs(v-Math.round(v/T.GRID)*T.GRID)<0.01;
+  const slotYOf=s=>s.kind==='in'?s.pa.y:s.pb.y;
+  const sheet=T.drillSheet();
+  check('every portal box sits on the grid (y and h are GRID multiples)',
+    sheet.portals.every(p=>onGrid(p.r.y)&&onGrid(p.r.h)));
+  const bSpecs=sheet.specs.filter(s=>s.kind!=='internal');
+  check('every portal exit slot lands exactly on a grid line',
+    bSpecs.length>0 && bSpecs.every(s=>onGrid(slotYOf(s))));
+  const byPortal={};
+  for (const s of bSpecs) (byPortal[s.portalKey]=byPortal[s.portalKey]||[]).push(slotYOf(s));
+  check('no two wires of a portal share a slot row',
+    Object.values(byPortal).every(ys=>new Set(ys).size===ys.length));
+
+  // live X anchoring: pushing the leftmost block further left tows the FROM
+  // column along (same corridor offset); TO and every Y stay put
+  const members=T.groupsWithUngrouped().find(x=>x.id===best.id).members.map(id=>T.nodeById(id));
+  const leftmost=members.reduce((a,n)=>n.x<a.x?n:a,members[0]);
+  const fromX0=Math.min(...sheet.portals.filter(p=>p.dir==='in').map(p=>p.r.x));
+  const toX0=Math.max(...sheet.portals.filter(p=>p.dir==='out').map(p=>p.r.x));
+  const ys0=sheet.portals.map(p=>p.key+'@'+p.r.y).join('|');
+  const ox=leftmost.x; leftmost.x-=96; T.render();
+  const sheet2=T.drillSheet();
+  check('the FROM column follows the member extents in X (offset preserved)',
+    Math.min(...sheet2.portals.filter(p=>p.dir==='in').map(p=>p.r.x))===fromX0-96);
+  check('the TO column stays put when only minX changes',
+    Math.max(...sheet2.portals.filter(p=>p.dir==='out').map(p=>p.r.x))===toX0);
+  check('the columns never move in Y when blocks move (Y stays frozen)',
+    sheet2.portals.map(p=>p.key+'@'+p.r.y).join('|')===ys0);
+  leftmost.x=ox; T.render();
+
+  // vertical slot reorder, like a block port's badge drag
+  const rp=T.drillSheet().portals.find(p=>p.unders.length>=2);
+  check('a portal with 2+ wires exists (reorder test is meaningful)', !!rp);
+  if (rp){
+    const ids0=rp.unders.map(e=>e.id);
+    T.commit();
+    check('a slot can be dragged onto another row', T.movePortalSlotToRow(rp.key, ids0[1], 0)===true);
+    const ids1=T.drillSheet().portals.find(p=>p.key===rp.key).unders.map(e=>e.id);
+    check('the dragged slot lands on the wanted row and the rest shuffle',
+      ids1[0]===ids0[1] && ids1[1]===ids0[0]);
+    check('reordered slots still land exactly on grid lines',
+      T.drillSheet().specs.filter(s=>s.portalKey===rp.key).every(s=>onGrid(slotYOf(s))));
+    T.render();
+    check('every boundary wire carries a slot reorder handle',
+      doc.querySelectorAll('#edgesG .portal .slothandle').length===T.drillSheet().specs.filter(s=>s.kind!=='internal').length);
+    T.undo();
+    check('undo restores the original slot order',
+      T.drillSheet().portals.find(p=>p.key===rp.key).unders.map(e=>e.id).join()===ids0.join());
+  }
 }
 
 T.closeGroupView();

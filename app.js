@@ -18,6 +18,7 @@ const S = {
   groupEdgeLanes: {}, // {[srcId+'→'+tgtId]: laneIndex} — routing lane frozen at layout time
   groupPortOrder: {}, // {[gid]: ['srcId→tgtId', ...]} — port rows dragged into a manual vertical order
   portalOffsets: {}, // {[gid]: {in:{dx,dy}, out:{dx,dy}}} — each portal COLUMN dragged as a whole (in: dx≤0, out: dx≥0)
+  portalOrder: {}, // {[gid]: {[portalKey]: [edgeId,...]}} — a portal's exit slots dragged into a manual vertical order
   ungroupedHvFlip: undefined, // LV|HV flip of the implicit UNGROUPED block (real groups keep g.hvFlip on themselves)
   openGroup: null, // null = top-level view; groupId = drilled into that group (phase c)
   view: { tx:60, ty:40, k:1 },
@@ -1574,6 +1575,7 @@ function restoreState(json){
   S.groupPortOrder = s.groupPortOrder || {};
   S.groupEdgeLanes = s.groupEdgeLanes || {};
   S.portalOffsets = s.portalOffsets || {};
+  S.portalOrder = s.portalOrder || {};
   S.ungroupedHvFlip = s.ungroupedHvFlip || undefined;
   S.openGroup = s.openGroup ?? null;
   S.edgeSeq = Math.max(0, ...S.edges.map(e=>+String(e.id).replace(/^e/,'')||0)) + 1;
@@ -1688,7 +1690,10 @@ function openGroupPortals(){
 // member blocks. The real corridor scales with how many boundary wires have to
 // live in it — one LANE_PITCH per wire (see portalMargin) — and grows further
 // when the user drags the column outward (portalOffsetOf).
-const PORTAL_W = 156, PORTAL_H = 52, PORTAL_GAP = 70, PORTAL_MARGIN = 130;
+// Grid-native boxes: height is a GRID multiple and grows one row per wire, so
+// every exit slot lands EXACTLY on a lattice line — a wire running on the grid
+// meets its slot dead-on, no last-minute jog to absorb a fractional offset.
+const PORTAL_W = 156, PORTAL_H = 2*GRID, PORTAL_VGAP = GRID, PORTAL_MARGIN = 130;
 // Every boundary wire on a side may need its own vertical line in the corridor.
 function portalMargin(wireCount){ return PORTAL_MARGIN + wireCount*LANE_PITCH; }
 // Manual column displacement. FROM may only move LEFT (dx≤0) and TO only RIGHT
@@ -1698,6 +1703,20 @@ function setPortalOffset(gid, dir, dx, dy){
   const o = S.portalOffsets[gid] || (S.portalOffsets[gid] = {});
   o[dir] = { dx: dir==='in' ? Math.min(0,dx) : Math.max(0,dx), dy };
 }
+// Vertical reorder of one portal's exit slots — the portal twin of
+// moveNodePortToRow: drag a slot's ring up/down and the other slots shuffle.
+function movePortalSlotToRow(key, eid, newRow){
+  const p = drillSheet().portals.find(x=>x.key===key);
+  if (!p) return false;
+  const ids = p.unders.map(e=>e.id);
+  const from = ids.indexOf(eid);
+  if (from < 0) return false;
+  const to = Math.max(0, Math.min(ids.length-1, newRow));
+  if (from === to) return false;
+  ids.splice(to, 0, ids.splice(from, 1)[0]);
+  (S.portalOrder[S.openGroup] || (S.portalOrder[S.openGroup] = {}))[key] = ids;
+  return true;
+}
 // `w` widens the box beyond the base PORTAL_W when a neighbour's title needs
 // the room (drillSheet passes ONE shared width for every portal of the open
 // group, so the two columns stay visually uniform and no title is truncated).
@@ -1705,7 +1724,8 @@ function portalRect(i, count, dir, memberBounds, margin, off, w){
   const W = w != null ? w : PORTAL_W;
   const m = margin != null ? margin : PORTAL_MARGIN;
   const o = off || { dx:0, dy:0 };
-  const y = (memberBounds.minY+memberBounds.maxY)/2 - ((count-1)*PORTAL_GAP)/2 + i*PORTAL_GAP - PORTAL_H/2 + o.dy;
+  const pitch = PORTAL_H + PORTAL_VGAP;
+  const y = snapG((memberBounds.minY+memberBounds.maxY)/2 - ((count-1)*pitch)/2 + i*pitch - PORTAL_H/2 + o.dy);
   const x = (dir==='in' ? memberBounds.minX - m - W : memberBounds.maxX + m) + o.dx;
   return { x, y, w:W, h:PORTAL_H };
 }
@@ -1754,9 +1774,11 @@ const BOUNDARY_LANE_MAX = 3;
 // Boundary wires run portal ↔ member block, so every arrow is attached to the
 // exact block it feeds: the portal box aggregates the neighbouring group, the
 // wires say WHAT connects to WHAT.
-// The portal columns are anchored to the member bounds AT OPEN TIME, frozen
-// for the whole visit: dragging a block around must not tow the FROM/TO
-// columns along. Re-anchored when the group is (re)opened or auto-laid-out.
+// The portal columns are anchored to the member bounds — Y frozen AT OPEN
+// TIME (dragging a block vertically must not tow the FROM/TO columns along),
+// X tracking the blocks LIVE: push a block toward a column and the column
+// slides away, always keeping its corridor offset against the blocks.
+// Y re-anchors when the group is (re)opened or auto-laid-out.
 let _portalBase = null, _portalBaseGroup = null;
 function resetPortalBase(){ _portalBase = null; _portalBaseGroup = null; }
 function drillSheet(){
@@ -1766,11 +1788,12 @@ function drillSheet(){
   // Block dimensions follow the port rows (a connection added since the last
   // measure grows the block) — refresh before anything is placed or routed.
   updateMemberDims(members);
+  const liveB = members.length ? memberBounds(members) : { minX:0,maxX:0,minY:0,maxY:0 };
   if (_portalBaseGroup !== S.openGroup || !_portalBase){
-    _portalBase = members.length ? memberBounds(members) : { minX:0,maxX:0,minY:0,maxY:0 };
+    _portalBase = liveB;
     _portalBaseGroup = S.openGroup;
   }
-  const bounds = _portalBase;
+  const bounds = { minX:liveB.minX, maxX:liveB.maxX, minY:_portalBase.minY, maxY:_portalBase.maxY };
   const all = diagramEdges(S.edges);
   const internal = all.filter(e=>memberSet.has(e.source) && memberSet.has(e.target));
   const { incoming, outgoing } = openGroupPortals();
@@ -1791,15 +1814,36 @@ function drillSheet(){
   const titleOf = id => { const gg = groupsWithUngrouped().find(x=>x.id===id); return gg ? gg.title : id; };
   const portalW = portalWidthFor([
     ...incoming.map(x=>titleOf(x.source)), ...outgoing.map(x=>titleOf(x.target))]);
+  // A portal's wires, in slot order: alphabetical by default, but a manual
+  // order (slot-handle drag, S.portalOrder) wins; edges it doesn't know append.
+  const undersFor = (dir, item) => {
+    const base = dir==='in'
+      ? all.filter(e=>memberSet.has(e.target) && idx.get(e.source)===item.source)
+          .sort((a,b)=>(a.target+'|'+a.id).localeCompare(b.target+'|'+b.id))
+      : all.filter(e=>memberSet.has(e.source) && idx.get(e.target)===item.target)
+          .sort((a,b)=>(a.source+'|'+a.id).localeCompare(b.source+'|'+b.id));
+    const ord = (S.portalOrder[S.openGroup]||{})[dir==='in' ? 'in:'+item.source : 'out:'+item.target];
+    if (!ord) return base;
+    const pos = new Map(ord.map((id,i)=>[id,i]));
+    return base.slice().sort((a,b)=>(pos.has(a.id)?pos.get(a.id):1e9)-(pos.has(b.id)?pos.get(b.id):1e9));
+  };
+  // Boxes stack cumulatively: one GRID row per wire (min PORTAL_H), a GRID gap
+  // between boxes, the whole column centred on the (frozen) member midline and
+  // snapped onto the lattice — so every slot Y is an exact grid line.
+  const heightFor = k => Math.max(PORTAL_H, (k+1)*GRID);
+  const buildColumn = (list, dir, margin, off, maxLane) => {
+    const col = list.map(item => ({ item, dir, maxLane,
+      key: dir==='in' ? 'in:'+item.source : 'out:'+item.target,
+      unders: undersFor(dir, item) }));
+    const total = col.reduce((a,p)=>a+heightFor(p.unders.length),0) + Math.max(0,col.length-1)*PORTAL_VGAP;
+    const x = (dir==='in' ? bounds.minX - margin - portalW : bounds.maxX + margin) + off.dx;
+    let y = snapG((bounds.minY+bounds.maxY)/2 - total/2 + off.dy);
+    for (const p of col){ p.r = { x, y, w:portalW, h:heightFor(p.unders.length) }; y += p.r.h + PORTAL_VGAP; }
+    return col;
+  };
   const portals = [
-    ...incoming.map((item,i)=>({ item, dir:'in', key:'in:'+item.source, maxLane:inMaxLane,
-      r: portalRect(i, incoming.length, 'in', bounds, inMargin, inOff, portalW),
-      unders: all.filter(e=>memberSet.has(e.target) && idx.get(e.source)===item.source)
-        .sort((a,b)=>(a.target+'|'+a.id).localeCompare(b.target+'|'+b.id)) })),
-    ...outgoing.map((item,i)=>({ item, dir:'out', key:'out:'+item.target, maxLane:outMaxLane,
-      r: portalRect(i, outgoing.length, 'out', bounds, outMargin, outOff, portalW),
-      unders: all.filter(e=>memberSet.has(e.source) && idx.get(e.target)===item.target)
-        .sort((a,b)=>(a.source+'|'+a.id).localeCompare(b.source+'|'+b.id)) }))
+    ...buildColumn(incoming, 'in', inMargin, inOff, inMaxLane),
+    ...buildColumn(outgoing, 'out', outMargin, outOff, outMaxLane)
   ];
   const obstacles = [ ...memberObstacleRects(members),
     ...portals.map(p=>({ id:'portal:'+p.key, x:p.r.x, y:p.r.y, w:p.r.w, h:p.r.h })) ];
@@ -1814,9 +1858,10 @@ function drillSheet(){
       pb: nodePortAnchor(e.target, e.source, e.target, 'in') });
   }
   for (const p of portals) p.unders.forEach((e,j)=>{
-    // Each wire gets its own exit slot on the portal edge, fanned like a block's
-    // port slots, so two wires never leave the portal on the same line.
-    const slotY = p.r.y + p.r.h*(j+1)/(p.unders.length+1);
+    // Each wire gets its own exit slot on the portal edge — one per GRID row,
+    // dead on the lattice, so two wires never leave the portal on the same
+    // line and none needs a jog to reach an off-grid slot.
+    const slotY = p.r.y + GRID*(j+1);
     if (p.dir==='in'){
       if (!nodeById(e.target)) return;
       specs.push({ e, kind:'in', portalKey:p.key, maxLane:p.maxLane,
@@ -1934,6 +1979,9 @@ function renderDrillDown(){
       // A lit portal can still carry OTHER nets — those wires recede on their
       // own (the whole box only dims when nothing under it carries the net).
       const wireDim = trace && !traced && !selEdge && !boxDim;
+      // The slot's ring on the portal edge doubles as its reorder handle:
+      // drag it up/down to shuffle this wire among the portal's slots.
+      const sp = s.kind==='in' ? s.pa : s.pb;
       return `${wireDim?'<g class="dim">':''}
       <path d="${d}" fill="none" stroke="transparent" stroke-width="12"/>
       <path d="${d}" fill="none" stroke="${style.color}" stroke-width="${w}"
@@ -1942,6 +1990,11 @@ function renderDrillDown(){
         marker-end="url(#${style.marker})" style="pointer-events:none"/>
       <circle cx="${s.pa.x}" cy="${s.pa.y}" r="3.6" fill="${style.color}" style="pointer-events:none"/>
       ${polyHandleMarkup(pts, s.e.id, '', 12)}
+      <g class="slothandle" data-portal="${esc(p.key)}" data-eid="${esc(s.e.id)}" style="cursor:ns-resize">
+        <circle cx="${sp.x}" cy="${sp.y}" r="10" fill="transparent"/>
+        <circle cx="${sp.x}" cy="${sp.y}" r="5" fill="var(--paper)" stroke="${style.color}" stroke-width="1.6" style="pointer-events:none"/>
+        <title>Drag up/down to reorder this wire on the portal</title>
+      </g>
       <g class="netbadge" data-eid="${esc(s.e.id)}" style="cursor:pointer">
         <rect x="${mid.x-13}" y="${mid.y-9}" width="26" height="16" rx="8"
           fill="${selEdge?'var(--probe)':'var(--paper)'}" stroke="${style.color}" stroke-width="1.2"/>
@@ -2343,6 +2396,7 @@ function renderInspector(){
         Object.keys(S.groupPortSides).forEach(k=>{ if (k.startsWith(g.id+'|')||k.includes('|'+g.id+'→')||k.endsWith('→'+g.id)) delete S.groupPortSides[k]; });
         delete S.groupPortOrder[g.id];
         delete S.portalOffsets[g.id];
+        delete S.portalOrder[g.id];
         Object.keys(S.groupEdgeLanes).forEach(k=>{ if (k.startsWith(g.id+'→')||k.endsWith('→'+g.id)) delete S.groupEdgeLanes[k]; });
         S.sel=null; render(); fitView();
       };
@@ -2641,6 +2695,7 @@ svg.addEventListener('pointerdown', ev=>{
   const badgeEl = ev.target.closest('.netbadge');
   const addEl = ev.target.closest('.portaladd');
   const port = ev.target.closest('.port');
+  const slotEl = ev.target.closest('.slothandle');
   const portalEl = ev.target.closest('.portal');
   const nodeEl = ev.target.closest('.node');
   const edgeEl = ev.target.closest('.edge');
@@ -2708,6 +2763,15 @@ svg.addEventListener('pointerdown', ev=>{
     drag = { mode:'link' };
     svg.classList.add('linking');
     renderLink();
+    return;
+  }
+  // Must be tested before .portal: the ring lives inside the portal's <g>,
+  // and dragging it reorders the SLOT, not the column. A plain click selects
+  // the wire's own connection, like its net badge.
+  if (slotEl){
+    S.sel = { type:'edge', id: slotEl.dataset.eid };
+    drag = { mode:'portalslot', key: slotEl.dataset.portal, eid: slotEl.dataset.eid, snap:snapshotState() };
+    render();
     return;
   }
   if (portalEl){
@@ -2817,6 +2881,15 @@ svg.addEventListener('pointermove', ev=>{
     const wantedRow = Math.floor((w.y - zoneTop) / GROUP_PORT_ROW_H);
     if (moveNodePortToRow(drag.nid, groupEdgeRouteKey(drag.src, drag.tgt), wantedRow)) changed = true;
     if (changed){ commitGesture(drag); render(); }
+    return;
+  }
+  if (drag.mode==='portalslot'){
+    // Slots sit at r.y + GRID*(row+1): quantize the pointer to a row and
+    // shuffle live, exactly like a block port's badge drag.
+    const p = drillSheet().portals.find(x=>x.key===drag.key);
+    if (!p) return;
+    const wantedRow = Math.round((w.y - p.r.y)/GRID) - 1;
+    if (movePortalSlotToRow(drag.key, drag.eid, wantedRow)){ commitGesture(drag); render(); }
     return;
   }
   if (drag.mode==='portalcol'){
@@ -3447,6 +3520,8 @@ $('btnImport').onclick=()=>{
         S.groupPos = s.groupPos || {}; S.groupEdgeRoutes = s.groupEdgeRoutes || {};
         S.groupPortSides = s.groupPortSides || {}; S.groupPortOrder = s.groupPortOrder || {};
         S.groupEdgeLanes = s.groupEdgeLanes || {};
+        S.portalOffsets = s.portalOffsets || {}; S.portalOrder = s.portalOrder || {};
+        S.ungroupedHvFlip = s.ungroupedHvFlip || undefined;
         S.openGroup = s.openGroup || null;
         S.edgeSeq = Math.max(0,...S.edges.map(e=>+String(e.id).replace(/^e/,'')||0))+1;
         autoLayoutGroups(true); // fill in positions only for groups the session didn't have (preserves dragged layout)
@@ -3543,6 +3618,7 @@ function buildSessionJSON(){
     groupEdgeLanes:{ ...S.groupEdgeLanes },
     groupPortOrder:Object.fromEntries(Object.entries(S.groupPortOrder).map(([k,v])=>[k,[...v]])),
     portalOffsets:JSON.parse(JSON.stringify(S.portalOffsets)),
+    portalOrder:JSON.parse(JSON.stringify(S.portalOrder)),
     ungroupedHvFlip:S.ungroupedHvFlip,
     openGroup:S.openGroup };
 }
@@ -3555,7 +3631,7 @@ function loadFromContract(input, contract, groups){
   S.edgeSeq=0;
   const g = buildGraph(input, contract||{}, groups||[]);
   S.nodes=g.nodes; S.edges=g.edges; S.groups=g.groups;
-  S.groupPos={}; S.groupEdgeRoutes={}; S.groupPortSides={}; S.groupPortOrder={}; S.groupEdgeLanes={}; S.portalOffsets={}; S.ungroupedHvFlip=undefined; S.openGroup=null; S.sel=null;
+  S.groupPos={}; S.groupEdgeRoutes={}; S.groupPortSides={}; S.groupPortOrder={}; S.groupEdgeLanes={}; S.portalOffsets={}; S.portalOrder={}; S.ungroupedHvFlip=undefined; S.openGroup=null; S.sel=null;
   autoLayoutAllGroupMembers();
   autoLayoutGroups();
   assignRouteLanes();   // spread the wires apart before the first paint
