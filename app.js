@@ -1747,6 +1747,10 @@ function openGroupPortals(){
 // keeps the compact fan the boxes always had.
 const PORTAL_W = 156, PORTAL_H = 2*GRID, PORTAL_VGAP = GRID, PORTAL_MARGIN = 130;
 const PORTAL_SLOT = GRID/2;
+// The REAL minimum block-to-column distance: a parked column only moves when
+// a block gets closer than this to its boxes (the corridor margin above is a
+// routing-room default, not a hard keep-out).
+const PORTAL_MIN_CLEAR = 2*GRID;
 // Slot j's Y for a portal: the fan is centred in the box and snapped so every
 // slot is an exact multiple of PORTAL_SLOT (box y is a GRID multiple).
 function portalSlotY(p, j){
@@ -1852,11 +1856,12 @@ const BOUNDARY_LANE_MAX = 3;
 // Boundary wires run portal ↔ member block, so every arrow is attached to the
 // exact block it feeds: the portal box aggregates the neighbouring group, the
 // wires say WHAT connects to WHAT.
-// The portal columns are anchored to the member bounds — Y frozen the FIRST
-// time the group is drawn (dragging a block vertically must not tow the
-// FROM/TO columns along), X tracking the blocks LIVE: push a block toward a
-// column and the column slides away, keeping its corridor offset.
-// The frozen Y anchor is real state (S.portalAnchor), so it survives undo,
+// The portal columns are anchored to the member bounds FROZEN the first time
+// the group is drawn: dragging blocks around never tows the columns along.
+// The one exception is real crowding — a block within PORTAL_MIN_CLEAR of a
+// column shoves it out of the way, and it comes back once the space frees up
+// (see colXFor in drillSheet).
+// The frozen anchor is real state (S.portalAnchor), so it survives undo,
 // Save session and a browser reload — the columns come back exactly where
 // they were left. In-group Auto-layout re-anchors them.
 function resetPortalBase(){ if (S.openGroup) delete S.portalAnchor[S.openGroup]; }
@@ -1868,10 +1873,19 @@ function drillSheet(){
   // measure grows the block) — refresh before anything is placed or routed.
   updateMemberDims(members);
   const liveB = members.length ? memberBounds(members) : { minX:0,maxX:0,minY:0,maxY:0 };
-  // Freeze the vertical anchor on first sight of this group; X always live.
+  // Freeze the whole anchor on first sight of this group. The columns PARK
+  // against the frozen extents; only a real crowding (below) moves them.
   const anchor = (S.openGroup && S.portalAnchor[S.openGroup])
-    || (S.openGroup ? (S.portalAnchor[S.openGroup] = { minY:liveB.minY, maxY:liveB.maxY }) : liveB);
-  const bounds = { minX:liveB.minX, maxX:liveB.maxX, minY:anchor.minY, maxY:anchor.maxY };
+    || (S.openGroup ? (S.portalAnchor[S.openGroup] = { ...liveB }) : liveB);
+  if (anchor.minX == null){ anchor.minX = liveB.minX; anchor.maxX = liveB.maxX; }  // sessions saved when only Y was frozen
+  const bounds = { minX:anchor.minX, maxX:anchor.maxX, minY:anchor.minY, maxY:anchor.maxY };
+  // A column's X: parked at its corridor offset from the FROZEN anchor, and
+  // only PUSHED further out while a block actually crowds it — closer than
+  // PORTAL_MIN_CLEAR to the boxes. It returns to the parked spot as the space
+  // frees up: approaching blocks shove it, retreating blocks never tow it.
+  const colXFor = (dir, margin, off, w) => dir==='in'
+    ? Math.min(anchor.minX - margin, liveB.minX - PORTAL_MIN_CLEAR) - w + off.dx
+    : Math.max(anchor.maxX + margin, liveB.maxX + PORTAL_MIN_CLEAR) + off.dx;
   const all = diagramEdges(S.edges);
   const internal = all.filter(e=>memberSet.has(e.source) && memberSet.has(e.target));
   const { incoming, outgoing } = openGroupPortals();
@@ -1915,7 +1929,7 @@ function drillSheet(){
       key: dir==='in' ? 'in:'+item.source : 'out:'+item.target,
       unders: undersFor(dir, item) }));
     const total = col.reduce((a,p)=>a+heightFor(p.unders.length),0) + Math.max(0,col.length-1)*PORTAL_VGAP;
-    const x = (dir==='in' ? bounds.minX - margin - portalW : bounds.maxX + margin) + off.dx;
+    const x = colXFor(dir, margin, off, portalW);
     let y = snapG((bounds.minY+bounds.maxY)/2 - total/2 + off.dy);
     for (const p of col){ p.r = { x, y, w:portalW, h:heightFor(p.unders.length) }; y += p.r.h + PORTAL_VGAP; }
     return col;
