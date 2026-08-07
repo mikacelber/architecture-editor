@@ -667,22 +667,36 @@ check('every in-group connection carries a routing lane',
   });
   check('the FROM/TO caption and title stay centred in the box', textCentred);
 
-  // live X anchoring: pushing the leftmost block further left tows the FROM
-  // column along (same corridor offset); TO and every Y stay put
+  // X anchoring: the columns stay PARKED while blocks move — only a block
+  // closer than PORTAL_MIN_CLEAR to a column's boxes shoves it, and it comes
+  // back once the block retreats. Y is always frozen.
   const members=T.groupsWithUngrouped().find(x=>x.id===best.id).members.map(id=>T.nodeById(id));
   const leftmost=members.reduce((a,n)=>n.x<a.x?n:a,members[0]);
-  const fromX0=Math.min(...sheet.portals.filter(p=>p.dir==='in').map(p=>p.r.x));
+  const fromP=sheet.portals.filter(p=>p.dir==='in');
+  const fromX0=Math.min(...fromP.map(p=>p.r.x));
+  const fromRight=Math.max(...fromP.map(p=>p.r.x+p.r.w));
   const toX0=Math.max(...sheet.portals.filter(p=>p.dir==='out').map(p=>p.r.x));
   const ys0=sheet.portals.map(p=>p.key+'@'+p.r.y).join('|');
-  const ox=leftmost.x; leftmost.x-=96; T.render();
+  const ox=leftmost.x;
+  // a nudge toward the column, still outside the minimum distance: no movement
+  leftmost.x-=96; T.render();
   const sheet2=T.drillSheet();
-  check('the FROM column follows the member extents in X (offset preserved)',
-    Math.min(...sheet2.portals.filter(p=>p.dir==='in').map(p=>p.r.x))===fromX0-96);
-  check('the TO column stays put when only minX changes',
-    Math.max(...sheet2.portals.filter(p=>p.dir==='out').map(p=>p.r.x))===toX0);
+  check('a block move that keeps its distance never drags the FROM column',
+    Math.min(...sheet2.portals.filter(p=>p.dir==='in').map(p=>p.r.x))===fromX0);
   check('the columns never move in Y when blocks move (Y stays frozen)',
     sheet2.portals.map(p=>p.key+'@'+p.r.y).join('|')===ys0);
+  // crowding: park the block INSIDE the minimum distance — the column is
+  // shoved exactly far enough to keep PORTAL_MIN_CLEAR to the block
+  leftmost.x=fromRight+10; T.render();
+  const shoved=Math.max(...T.drillSheet().portals.filter(p=>p.dir==='in').map(p=>p.r.x+p.r.w));
+  check('a block crowding the FROM column shoves it to the minimum distance',
+    Math.abs(leftmost.x-shoved-(2*T.GRID))<0.01);
+  check('the TO column never reacts to minX crowding',
+    Math.max(...T.drillSheet().portals.filter(p=>p.dir==='out').map(p=>p.r.x))===toX0);
+  // retreat: the column returns to its parked spot, not one pixel further
   leftmost.x=ox; T.render();
+  check('the column returns to its parked spot when the block retreats',
+    Math.min(...T.drillSheet().portals.filter(p=>p.dir==='in').map(p=>p.r.x))===fromX0);
 
   // vertical slot reorder, like a block port's badge drag
   const rp=T.drillSheet().portals.find(p=>p.unders.length>=2);
