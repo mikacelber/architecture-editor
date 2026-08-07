@@ -1261,6 +1261,47 @@ function ptsInsideAnyBlock(pts, obstacles){
   }
   return false;
 }
+// Re-glue: a polyline whose PORTS moved (a dragged FROM/TO column, a dragged
+// block, a reordered portal slot) follows them by STRETCHING — the
+// port-adjacent segment slides on its own axis and its perpendicular
+// neighbour absorbs the difference, exactly like a segment drag. The rest of
+// the shape — all the routing work done before — is untouched. Returns null
+// when stretching can't do it legally (shape would cross a block, the stub
+// would leave the port backwards, a straight wire needs a new bend): those
+// are real constraint breaks, and the caller re-routes as before.
+function reglueEnd(pts, target, atStart){
+  const p = pts.map(q=>q.slice());
+  if (p.length < 2) return null;
+  const i0 = atStart ? 0 : p.length-1;
+  const i1 = atStart ? 1 : p.length-2;
+  const horiz = Math.abs(p[i0][1]-p[i1][1]) < 0.01;
+  if (p.length === 2){
+    // straight port-to-port run: it can only stretch along its own axis
+    if (horiz){ if (Math.abs(target.y-p[i0][1])>0.01) return null; }
+    else      { if (Math.abs(target.x-p[i0][0])>0.01) return null; }
+    p[i0] = [target.x, target.y];
+    return p;
+  }
+  if (horiz) p[i1] = [p[i1][0], target.y];   // stub slides in Y, next vertical stretches
+  else       p[i1] = [target.x, p[i1][1]];   // (vertical stub: the mirror case)
+  p[i0] = [target.x, target.y];
+  return p;
+}
+function reglueRoute(pts, pa, pb, obstacles){
+  const moved = (q,a)=>Math.abs(q[0]-a.x)>0.01 || Math.abs(q[1]-a.y)>0.01;
+  let p = pts;
+  if (moved(p[0], pa)){ p = reglueEnd(p, pa, true); if (!p) return null; }
+  if (moved(p[p.length-1], pb)){ p = reglueEnd(p, pb, false); if (!p) return null; }
+  p = simplifyPts(p);
+  if (p.length < 2) return null;
+  // the stubs must still LEAVE/ENTER their ports in the direction of travel
+  const dxA = p[1][0]-p[0][0];
+  if (Math.abs(dxA)>0.01 && Math.abs(p[1][1]-p[0][1])<0.01 && dxA*pa.sign < 0) return null;
+  const n = p.length, dxB = p[n-1][0]-p[n-2][0];
+  if (Math.abs(dxB)>0.01 && Math.abs(p[n-1][1]-p[n-2][1])<0.01 && dxB*pb.sign < 0) return null;
+  if (ptsInsideAnyBlock(p, obstacles)) return null;
+  return p;
+}
 function groupEdgePts(pa, pb, route, obstacles, lane){
   const geo = sidedGeometry(pa, pb, null);
   const ptsOf = g => simplifyPts([[g.x1,g.y1],[g.bendX,g.y1],[g.bendX,g.bendY],
@@ -1289,6 +1330,13 @@ function groupEdgePts(pa, pb, route, obstacles, lane){
       Math.abs(mp[0][0]-pa.x)<0.01 && Math.abs(mp[0][1]-pa.y)<0.01 &&
       Math.abs(mp[mp.length-1][0]-pb.x)<0.01 && Math.abs(mp[mp.length-1][1]-pb.y)<0.01;
     if (endsOk && !ptsInsideAnyBlock(mp, obstacles)) return { pts: mp, geo, manual:true };
+    if (!endsOk){
+      // The ports moved out from under the stored shape (dragged FROM/TO
+      // column, dragged block, reordered slot): stretch it after them and
+      // keep every hand-placed bend. Only a real constraint break re-routes.
+      const glued = reglueRoute(mp, pa, pb, obstacles);
+      if (glued) return { pts: glued, geo, manual:true };
+    }
     const at = ptsBadgePos(mp);
     route = { wx: at.x, wy: at.y };
   }
@@ -1714,6 +1762,24 @@ function portalOffsetOf(gid, dir){ return (S.portalOffsets[gid]||{})[dir] || { d
 function setPortalOffset(gid, dir, dx, dy){
   const o = S.portalOffsets[gid] || (S.portalOffsets[gid] = {});
   o[dir] = { dx: dir==='in' ? Math.min(0,dx) : Math.max(0,dx), dy };
+}
+// First movement of a FROM/TO column drag: pin the column's auto-routed
+// boundary wires to their CURRENT shapes (as persisted manual routes). From
+// then on the move just STRETCHES them after the ports (reglueRoute) instead
+// of re-routing — all the routing on the sheet survives the drag, exactly
+// like block drags on hand-routed wires. Undo removes the pins again, and a
+// per-connection "Reset routing" or re-route only happens when the stretched
+// shape would actually break a constraint.
+function pinPortalWires(dir){
+  const { specs, obstacles } = drillSheet();
+  for (const s of specs){
+    if (s.kind !== dir) continue;
+    const e = S.edges.find(x=>x.id===s.e.id);
+    if (!e || nodeEdgeRouteOf(e)) continue;   // hand-routed wires are already pinned
+    const r = groupEdgePtsCached(NODE_ROUTE_PREFIX+s.e.id, s.pa, s.pb,
+      undefined, obstacles, S.groupEdgeLanes[nodeEdgeLaneKey(s.e)] || 0);
+    e.route = { pts: r.pts.map(p=>p.slice()) };
+  }
 }
 // Vertical reorder of one portal's exit slots — the portal twin of
 // moveNodePortToRow: drag a slot's ring up/down and the other slots shuffle.
@@ -2924,7 +2990,8 @@ svg.addEventListener('pointermove', ev=>{
     const off = portalOffsetOf(S.openGroup, drag.dir);
     const clamped = drag.dir==='in' ? Math.min(0,nx) : Math.max(0,nx);
     if (clamped !== off.dx || ny !== off.dy){
-      commitGesture(drag);
+      commitGesture(drag);   // snapshot first — undo also removes the pins below
+      if (!drag.pinned){ drag.pinned = true; pinPortalWires(drag.dir); }
       drag.moved = true;
       setPortalOffset(S.openGroup, drag.dir, nx, ny);
       render();
