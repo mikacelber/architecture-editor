@@ -3706,28 +3706,34 @@ window.addEventListener('resize', ()=>render());
    the drawer tab at the canvas edge). It never hides under the pointer
    or while a field inside it has focus. Session-only, like the theme.
    ------------------------------------------------------------------ */
-const INSP_HIDE_MS = 2500, INSP_MIN_W = 260;
-const inspEl = $('inspector'), inspPinBtn = $('inspPin'), inspTabBtn = $('inspTab'), inspGrip = $('inspResize');
-const insp = { pinned:true, w:340, hideT:null };
-function inspSetWidth(w){
-  insp.w = Math.max(INSP_MIN_W, Math.min(Math.round(w), Math.round(window.innerWidth*0.7)));
+const INSP_HIDE_MS = 3000, INSP_MIN_W = 260;
+// Dragging the panel narrower than this at drop folds it away — the drag
+// itself becomes the collapse gesture; INSP_TINY_W lets it visibly shrink
+// to almost nothing on the way there.
+const INSP_COLLAPSE_W = 120, INSP_TINY_W = 40;
+const inspEl = $('inspector'), inspPinBtn = $('inspPin'), inspHandle = $('inspHandle'), inspGrip = $('inspResize');
+const insp = { pinned:true, hidden:false, w:340, hideT:null };
+function inspSetWidth(w, tiny){
+  insp.w = Math.max(tiny ? INSP_TINY_W : INSP_MIN_W, Math.min(Math.round(w), Math.round(window.innerWidth*0.7)));
   inspEl.style.width = insp.w+'px';
   inspEl.style.setProperty('--inspw', insp.w+'px');
 }
-function inspShow(){
+// insp.hidden is the single source of truth; this projects it onto the DOM —
+// the panel's collapsed class and the handle's side/arrow direction.
+function inspApply(){
   const was = inspEl.classList.contains('collapsed');
-  inspEl.classList.remove('collapsed');
-  inspTabBtn.classList.remove('show');
-  if (was) setTimeout(render, 240);   // board regained its size — redraw once the fold ends
+  inspEl.classList.toggle('collapsed', insp.hidden);
+  inspHandle.classList.toggle('folded', insp.hidden);
+  inspHandle.title = insp.hidden ? 'Show the inspector panel' : 'Hide the inspector panel';
+  if (was !== insp.hidden) setTimeout(render, 240);   // board changed size — redraw once the fold ends
 }
+function inspShow(){ insp.hidden = false; inspApply(); }
+// The auto-hide path (idle countdown) — never yanks the panel away mid-use.
+// The handle bypasses it: an explicit click hides even a pinned panel.
 function inspHide(){
   if (insp.pinned) return;
-  // Never yank the panel away mid-use.
   if (inspEl.matches(':hover') || inspEl.contains(document.activeElement)){ inspScheduleHide(); return; }
-  const was = !inspEl.classList.contains('collapsed');
-  inspEl.classList.add('collapsed');
-  inspTabBtn.classList.add('show');
-  if (was) setTimeout(render, 240);
+  insp.hidden = true; inspApply();
 }
 function inspScheduleHide(){
   clearTimeout(insp.hideT);
@@ -3735,7 +3741,8 @@ function inspScheduleHide(){
 }
 // Called from renderInspector on every render: a live selection brings the
 // panel back and buys it a fresh idle window; with nothing selected the
-// countdown just keeps running.
+// countdown just keeps running. A pinned panel manually folded via the
+// handle stays folded until the handle (or the pin) is clicked again.
 function inspOnRender(){
   if (insp.pinned) return;
   if (S.sel) inspShow();
@@ -3751,9 +3758,25 @@ inspPinBtn.onclick = () => {
   if (insp.pinned){ clearTimeout(insp.hideT); inspShow(); }
   else inspScheduleHide();
 };
-inspTabBtn.onclick = () => { inspTabBtn.blur(); inspShow(); inspScheduleHide(); };
+inspHandle.onclick = () => {
+  inspHandle.blur();
+  if (insp.hidden){ inspShow(); inspScheduleHide(); }
+  else { clearTimeout(insp.hideT); insp.hidden = true; inspApply(); }
+};
 inspEl.addEventListener('pointerenter', ()=>clearTimeout(insp.hideT));
 inspEl.addEventListener('pointerleave', inspScheduleHide);
+// Drop end of a resize gesture: a panel dragged down to almost nothing folds
+// away (same as clicking the handle), reopening later at its pre-drag width.
+function inspFinishResize(startW){
+  if (insp.w < INSP_COLLAPSE_W){
+    inspSetWidth(Math.max(startW, INSP_MIN_W));
+    clearTimeout(insp.hideT);
+    insp.hidden = true; inspApply();
+  } else {
+    inspSetWidth(insp.w);   // re-clamp to the usable minimum
+  }
+  render();
+}
 // Left-edge grip: drag to trade canvas for panel. Width applies live (the
 // content re-wraps to it); the diagram re-renders once at drop.
 inspGrip.addEventListener('pointerdown', ev => {
@@ -3761,13 +3784,14 @@ inspGrip.addEventListener('pointerdown', ev => {
   inspGrip.setPointerCapture(ev.pointerId);
   inspGrip.classList.add('active');
   inspEl.classList.add('resizing');
-  const move = e => inspSetWidth(window.innerWidth - e.clientX);
+  const startW = insp.w;
+  const move = e => inspSetWidth(window.innerWidth - e.clientX, true);
   const up = () => {
     inspGrip.classList.remove('active');
     inspEl.classList.remove('resizing');
     inspGrip.removeEventListener('pointermove', move);
     inspGrip.removeEventListener('pointerup', up);
-    render();
+    inspFinishResize(startW);
   };
   inspGrip.addEventListener('pointermove', move);
   inspGrip.addEventListener('pointerup', up);

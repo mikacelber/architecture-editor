@@ -36,10 +36,15 @@
   <div id="canvasWrap">
     <div class="breadcrumb" id="breadcrumb"></div>
     <div id="legend"></div>
-    <button id="inspTab" title="Show the inspector panel">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M9 3 h6 l-1 6 3 3 H7 l3 -3 Z" fill="currentColor" fill-opacity=".25"/>
-        <line x1="12" y1="12" x2="12" y2="20"/>
+    <!-- Collapse/expand handle, centred on the divider: a slim block that
+         interrupts the line. The arrow is three near-vertical strokes bent
+         into a chevron (no shaft) — right = fold the panel away, and the
+         same block stays at the edge, mirrored, to bring it back. -->
+    <button id="inspHandle" title="Hide the inspector panel">
+      <svg viewBox="0 0 12 40" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="2.2,4 5.2,20 2.2,36"/>
+        <polyline points="5.4,8 7.9,20 5.4,32"/>
+        <polyline points="8.6,12 10.6,20 8.6,28"/>
       </svg>
     </button>
     <svg id="board" xmlns="http://www.w3.org/2000/svg">

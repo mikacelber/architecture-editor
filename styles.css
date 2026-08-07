@@ -94,14 +94,18 @@ aside#inspector.resizing{transition:none}
 /* Drag strip on the panel's left edge — resize the panel horizontally. */
 #inspResize{position:absolute;left:0;top:0;bottom:0;width:7px;cursor:ew-resize;z-index:2}
 #inspResize:hover,#inspResize.active{background:linear-gradient(90deg,var(--copper),transparent)}
-/* Slim drawer tab at the canvas edge while the panel is folded away —
-   click to bring the inspector back. */
-#inspTab{position:absolute;right:0;top:50%;transform:translateY(-50%);width:26px;height:52px;
-  display:none;align-items:center;justify-content:center;border:1.5px solid var(--ink);border-right:none;
-  border-radius:8px 0 0 8px;background:var(--panel);color:var(--ink-soft);cursor:pointer;z-index:5;line-height:0}
-#inspTab:hover{color:var(--ink);background:var(--btn-hover)}
-#inspTab svg{width:16px;height:16px;transform:rotate(48deg)}
-#inspTab.show{display:flex}
+/* Collapse/expand handle, always visible (pin or no pin): a slim block sat
+   on the divider's midpoint, splitting it into two line segments. Chevron
+   points right while the panel is out (click = fold it away); the block
+   stays at the screen edge, mirrored, while the panel is hidden. */
+#inspHandle{position:absolute;right:-8px;top:50%;transform:translateY(-50%);width:16px;height:52px;
+  display:flex;align-items:center;justify-content:center;padding:0;
+  border:1.5px solid var(--ink);border-radius:5px;background:var(--panel);color:var(--ink-soft);
+  cursor:pointer;z-index:6;line-height:0}
+#inspHandle:hover{color:var(--ink);background:var(--btn-hover)}
+#inspHandle svg{width:11px;height:38px}
+#inspHandle.folded{right:0;border-radius:5px 0 0 5px;border-right:none}
+#inspHandle.folded svg{transform:scaleX(-1)}
 .kv{margin-bottom:10px}
 .kv label{display:block;font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:3px}
 .kv .val{line-height:1.45;word-break:break-word}
