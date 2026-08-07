@@ -15,7 +15,7 @@ window.__T={get S(){return S;},loadFromContract,render,openGroupView,closeGroupV
  drillSheet,portalOffsetOf,setPortalOffset,PORTAL_MARGIN:PORTAL_MARGIN,LANE_PITCH:LANE_PITCH,PORTAL_H:PORTAL_H,
  translateWireSegment,nodeBlockWidth,textWidth,isHvNet,netCategory,nodeSide,
  openAddPortalModal,candidateNetsForPortal,groupNetIndex,nodeGroupIndex,computeGroupEdges,traceSets,
- movePortalSlotToRow,commit,undo};`);
+ movePortalSlotToRow,pinPortalWires,nodeEdgeRouteOf,commit,undo};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -703,6 +703,69 @@ check('every in-group connection carries a routing lane',
     check('undo restores the original slot order',
       T.drillSheet().portals.find(p=>p.key===rp.key).unders.map(e=>e.id).join()===ids0.join());
   }
+}
+
+/* ---- rule 19: moving a FROM/TO column STRETCHES its wires instead of
+   re-routing them — the routing on the sheet survives the drag ---- */
+{
+  const wireKey=eid=>'n|'+eid;
+  const ptsOfEdge=eid=>{ const c=T._routeCache.get(wireKey(eid)); return c?c.pts.map(p=>p.slice()):null; };
+  T.render();
+  const inSpecs=T.drillSheet().specs.filter(s=>s.kind==='in');
+  check('the sheet has incoming boundary wires to verify', inSpecs.length>0);
+  const before=new Map(inSpecs.map(s=>[s.e.id, ptsOfEdge(s.e.id)]));
+
+  // what a column drag does: pin the current shapes, then move the column
+  T.commit();
+  T.pinPortalWires('in');
+  check('pinning materializes every auto boundary wire as a manual route',
+    inSpecs.every(s=>{ const e=S.edges.find(x=>x.id===s.e.id); return e && e.route && e.route.pts; }));
+  T.setPortalOffset(best.id,'in',-96,24); T.render();
+
+  // every wire kept its whole shape — only the port-adjacent end stretched
+  // (collinear vertices may legitimately collapse when the port lines up)
+  const simp=p=>{
+    const o=[];
+    for (const q of p){
+      while (o.length>=2){
+        const A=o[o.length-2],B=o[o.length-1];
+        const col=(Math.abs(A[0]-B[0])<0.01&&Math.abs(B[0]-q[0])<0.01)||(Math.abs(A[1]-B[1])<0.01&&Math.abs(B[1]-q[1])<0.01);
+        if (col) o.pop(); else break;
+      }
+      if (!o.length||Math.abs(o[o.length-1][0]-q[0])>0.01||Math.abs(o[o.length-1][1]-q[1])>0.01) o.push(q);
+    }
+    return o;
+  };
+  const kept=inSpecs.every(s=>{
+    const a=before.get(s.e.id), b=ptsOfEdge(s.e.id);
+    if (!a||!b) return false;
+    const expect=simp([[a[0][0]-96,a[0][1]+24],[a[1][0],a[1][1]+24],...a.slice(2)]);
+    return JSON.stringify(simp(b))===JSON.stringify(expect);
+  });
+  check('a column drag stretches every wire after its port (interior untouched)', kept);
+  let bad=null;
+  for (const w of wirePts()){ const hit=crossesAny(w.pts, T.openGroupObstacleRects()); if (hit) bad=w.eid+' over '+hit; }
+  check('stretched wires are still clear of every block'+(bad?' ['+bad+']':''), !bad);
+
+  // a hand-routed wire (manual pts) survives the move the same way
+  const manualSpec=inSpecs[0];
+  const manualShape=S.edges.find(x=>x.id===manualSpec.e.id).route.pts.map(p=>p.slice());
+  T.setPortalOffset(best.id,'in',-192,48); T.render();
+  const after2=ptsOfEdge(manualSpec.e.id);
+  check('a further move keeps stretching from the stored shape (no drift)',
+    after2.length===manualShape.length &&
+    manualShape.slice(2).every((p,i)=>Math.abs(p[0]-after2[i+2][0])<0.01&&Math.abs(p[1]-after2[i+2][1])<0.01));
+
+  // cold render agrees with what is on screen (the cache is not a source of truth)
+  const hot=inSpecs.map(s=>JSON.stringify(ptsOfEdge(s.e.id))).join('|');
+  T._routeCache.clear(); T.render();
+  check('a cold re-render reproduces the stretched shapes exactly',
+    inSpecs.map(s=>JSON.stringify(ptsOfEdge(s.e.id))).join('|')===hot);
+
+  T.undo(); T.render();
+  check('undo removes the pins and the column offset together',
+    T.portalOffsetOf(best.id,'in').dx===0 &&
+    inSpecs.every(s=>{ const e=S.edges.find(x=>x.id===s.e.id); return e && !T.nodeEdgeRouteOf(e); }));
 }
 
 T.closeGroupView();
