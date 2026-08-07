@@ -2341,6 +2341,7 @@ function allGroupsOptions(currentId){
 }
 
 function renderInspector(){
+  inspOnRender();   // unpinned panel: show while something is selected, then fold away
   const eye=$('insEyebrow'), title=$('insTitle'), body=$('insBody');
   if (!S.sel){
     eye.textContent='System';
@@ -3696,6 +3697,82 @@ $('btnFit').onclick=fitView;
 $('btnUndo').onclick=undo;
 $('btnRedo').onclick=redo;
 window.addEventListener('resize', ()=>render());
+
+/* ------------------------------------------------------------------
+   INSPECTOR PANEL CHROME — Altium-style pin, auto-hide, resizable width.
+   Pinned (default): the panel is always there, exactly as before.
+   Unpinned: it folds away after a short idle so the diagram gets the
+   whole width, and slides back whenever something is selected (or via
+   the drawer tab at the canvas edge). It never hides under the pointer
+   or while a field inside it has focus. Session-only, like the theme.
+   ------------------------------------------------------------------ */
+const INSP_HIDE_MS = 2500, INSP_MIN_W = 260;
+const inspEl = $('inspector'), inspPinBtn = $('inspPin'), inspTabBtn = $('inspTab'), inspGrip = $('inspResize');
+const insp = { pinned:true, w:340, hideT:null };
+function inspSetWidth(w){
+  insp.w = Math.max(INSP_MIN_W, Math.min(Math.round(w), Math.round(window.innerWidth*0.7)));
+  inspEl.style.width = insp.w+'px';
+  inspEl.style.setProperty('--inspw', insp.w+'px');
+}
+function inspShow(){
+  const was = inspEl.classList.contains('collapsed');
+  inspEl.classList.remove('collapsed');
+  inspTabBtn.classList.remove('show');
+  if (was) setTimeout(render, 240);   // board regained its size — redraw once the fold ends
+}
+function inspHide(){
+  if (insp.pinned) return;
+  // Never yank the panel away mid-use.
+  if (inspEl.matches(':hover') || inspEl.contains(document.activeElement)){ inspScheduleHide(); return; }
+  const was = !inspEl.classList.contains('collapsed');
+  inspEl.classList.add('collapsed');
+  inspTabBtn.classList.add('show');
+  if (was) setTimeout(render, 240);
+}
+function inspScheduleHide(){
+  clearTimeout(insp.hideT);
+  if (!insp.pinned) insp.hideT = setTimeout(inspHide, INSP_HIDE_MS);
+}
+// Called from renderInspector on every render: a live selection brings the
+// panel back and buys it a fresh idle window; with nothing selected the
+// countdown just keeps running.
+function inspOnRender(){
+  if (insp.pinned) return;
+  if (S.sel) inspShow();
+  inspScheduleHide();
+}
+inspPinBtn.onclick = () => {
+  inspPinBtn.blur();   // the focus guard is for form fields, not for the pin itself
+  insp.pinned = !insp.pinned;
+  inspPinBtn.classList.toggle('pinned', insp.pinned);
+  inspPinBtn.title = insp.pinned
+    ? 'Unpin — the panel hides itself to maximize the diagram'
+    : 'Pin — keep the panel always visible';
+  if (insp.pinned){ clearTimeout(insp.hideT); inspShow(); }
+  else inspScheduleHide();
+};
+inspTabBtn.onclick = () => { inspTabBtn.blur(); inspShow(); inspScheduleHide(); };
+inspEl.addEventListener('pointerenter', ()=>clearTimeout(insp.hideT));
+inspEl.addEventListener('pointerleave', inspScheduleHide);
+// Left-edge grip: drag to trade canvas for panel. Width applies live (the
+// content re-wraps to it); the diagram re-renders once at drop.
+inspGrip.addEventListener('pointerdown', ev => {
+  ev.preventDefault();
+  inspGrip.setPointerCapture(ev.pointerId);
+  inspGrip.classList.add('active');
+  inspEl.classList.add('resizing');
+  const move = e => inspSetWidth(window.innerWidth - e.clientX);
+  const up = () => {
+    inspGrip.classList.remove('active');
+    inspEl.classList.remove('resizing');
+    inspGrip.removeEventListener('pointermove', move);
+    inspGrip.removeEventListener('pointerup', up);
+    render();
+  };
+  inspGrip.addEventListener('pointermove', move);
+  inspGrip.addEventListener('pointerup', up);
+});
+inspSetWidth(insp.w);
 
 // Theme is session-only (no localStorage) — index.html seeds the initial value from
 // prefers-color-scheme before first paint; this button just flips it at runtime.

@@ -70,12 +70,38 @@ svg#board .dim{opacity:.22;filter:saturate(.35)}
 .breadcrumb .crumb-sep{color:var(--line)}
 .breadcrumb .crumb-current{color:var(--ink);font-weight:600}
 
-aside#inspector{width:340px;flex-shrink:0;border-left:2px solid var(--ink);background:var(--panel);display:flex;flex-direction:column;min-height:0}
-#inspector .head{padding:12px 16px;border-bottom:1px solid var(--line)}
+aside#inspector{width:340px;flex-shrink:0;border-left:2px solid var(--ink);background:var(--panel);display:flex;flex-direction:column;min-height:0;
+  position:relative;overflow:hidden;transition:width .22s ease}
+/* Unpinned + idle: the panel folds away completely so the diagram gets the room. */
+aside#inspector.collapsed{width:0 !important;border-left-width:0}
+aside#inspector.resizing{transition:none}
+#inspector .head{padding:12px 40px 12px 16px;border-bottom:1px solid var(--line)}
+/* Inner content is pinned to the panel's chosen width (JS keeps --inspw in
+   sync), so folding away slides the text out instead of re-wrapping it. */
+#inspector .head,#inspector .body{min-width:var(--inspw,340px)}
 #inspector .head .eyebrow{font-family:var(--mono);font-size:10px;letter-spacing:.14em;color:var(--ink-soft);text-transform:uppercase}
 #inspector .head h2{font-family:var(--mono);font-size:15px;font-weight:600;margin-top:2px;word-break:break-word}
 #inspector .body{flex:1;overflow-y:auto;padding:14px 16px;font-size:13px}
 #inspector .body p{color:var(--ink-soft);line-height:1.5;margin-bottom:10px}
+/* Altium-style thumbtack, top-right of the panel: upright = pinned (always
+   visible), tilted = unpinned (the panel auto-hides to maximize the canvas). */
+#inspPin{position:absolute;top:8px;right:8px;width:26px;height:26px;padding:3px;border:1px solid transparent;
+  background:none;border-radius:4px;cursor:pointer;color:var(--ink-soft);z-index:2;line-height:0}
+#inspPin:hover{border-color:var(--line);background:var(--btn-hover);color:var(--ink)}
+#inspPin svg{width:18px;height:18px;transition:transform .18s ease}
+#inspPin.pinned{color:var(--copper)}
+#inspPin:not(.pinned) svg{transform:rotate(48deg)}
+/* Drag strip on the panel's left edge — resize the panel horizontally. */
+#inspResize{position:absolute;left:0;top:0;bottom:0;width:7px;cursor:ew-resize;z-index:2}
+#inspResize:hover,#inspResize.active{background:linear-gradient(90deg,var(--copper),transparent)}
+/* Slim drawer tab at the canvas edge while the panel is folded away —
+   click to bring the inspector back. */
+#inspTab{position:absolute;right:0;top:50%;transform:translateY(-50%);width:26px;height:52px;
+  display:none;align-items:center;justify-content:center;border:1.5px solid var(--ink);border-right:none;
+  border-radius:8px 0 0 8px;background:var(--panel);color:var(--ink-soft);cursor:pointer;z-index:5;line-height:0}
+#inspTab:hover{color:var(--ink);background:var(--btn-hover)}
+#inspTab svg{width:16px;height:16px;transform:rotate(48deg)}
+#inspTab.show{display:flex}
 .kv{margin-bottom:10px}
 .kv label{display:block;font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:3px}
 .kv .val{line-height:1.45;word-break:break-word}

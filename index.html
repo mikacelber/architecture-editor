@@ -36,6 +36,12 @@
   <div id="canvasWrap">
     <div class="breadcrumb" id="breadcrumb"></div>
     <div id="legend"></div>
+    <button id="inspTab" title="Show the inspector panel">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M9 3 h6 l-1 6 3 3 H7 l3 -3 Z" fill="currentColor" fill-opacity=".25"/>
+        <line x1="12" y1="12" x2="12" y2="20"/>
+      </svg>
+    </button>
     <svg id="board" xmlns="http://www.w3.org/2000/svg">
       <defs>
         <!-- markerUnits="userSpaceOnUse" pins the arrowhead to a fixed pixel size —
@@ -77,6 +83,14 @@
   </div>
 
   <aside id="inspector">
+    <div id="inspResize" title="Drag to resize the panel"></div>
+    <button id="inspPin" class="pinned" title="Unpin — the panel hides itself to maximize the diagram">
+      <!-- Altium-style thumbtack: head, collar, needle -->
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M9 3 h6 l-1 6 3 3 H7 l3 -3 Z" fill="currentColor" fill-opacity=".25"/>
+        <line x1="12" y1="12" x2="12" y2="20"/>
+      </svg>
+    </button>
     <div class="head">
       <span class="eyebrow" id="insEyebrow">Inspector</span>
       <h2 id="insTitle">Nothing selected</h2>
