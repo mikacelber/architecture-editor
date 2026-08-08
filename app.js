@@ -67,7 +67,7 @@ function groupEyebrow(g){ return g && g.id===UNGROUPED_ID ? 'UNASSIGNED' : 'FUNC
 function groupMemberLabel(id){ const n = nodeById(id); return n ? n.label : id; }
 function portRowLabel(r, titleOf){
   const other = titleOf ? (titleOf.get(r.other) || r.other) : r.other;
-  return `${r.dir==='in'?'(IN)':'(OUT)'} ${other}`;
+  return `${r.dir==='in'?'(IN)':'(OUT)'} ${other}${r.dom==='hv'?' · HV':''}`;
 }
 // The block is as wide as its widest piece of text needs — nothing is ever
 // truncated. Memoised alongside the port index (it depends on the port rows).
@@ -280,11 +280,18 @@ function computeGroupEdges(){
   for (const e of diagramEdges(S.edges)){
     const gs = idx.get(e.source), gt = idx.get(e.target);
     if (!gs || !gt || gs===gt) continue;
-    const key = gs+'→'+gt;
-    if (!map.has(key)) map.set(key, { source:gs, target:gt, nets:[] });
-    map.get(key).nets.push(...e.nets);
+    // A bus never mixes insulation domains: HV-domain nets travel in their
+    // OWN group connection (drawn red), so each pair of groups derives up to
+    // TWO edges — one per domain (e.dom: '' = LV, 'hv' = HV).
+    for (const net of e.nets){
+      const dom = isHvNet(net) ? 'hv' : '';
+      const key = gs+'→'+gt+(dom ? '#hv' : '');
+      if (!map.has(key)) map.set(key, { source:gs, target:gt, dom, nets:[] });
+      map.get(key).nets.push(net);
+    }
   }
-  const list = [...map.values()].sort((a,b)=>(a.source+'|'+a.target).localeCompare(b.source+'|'+b.target));
+  const list = [...map.values()].sort((a,b)=>
+    (a.source+'|'+a.target).localeCompare(b.source+'|'+b.target) || a.dom.localeCompare(b.dom));
   list.forEach((g,i)=>{
     g.nets.sort((a,b)=>a.name.localeCompare(b.name));
     // A bus never lists the same net twice: the same net often links several node
@@ -326,12 +333,15 @@ function groupBlockRect(id){
 // Group-level edges are recomputed from scratch every render (computeGroupEdges),
 // so their manual routing can't live on the edge object itself — it's keyed by
 // the stable source/target group ids instead, same idea as S.groupPos.
-function groupEdgeRouteKey(src,tgt){ return src+'→'+tgt; }
-function groupEdgeRouteOf(src,tgt){ return S.groupEdgeRoutes[groupEdgeRouteKey(src,tgt)]; }
-function setGroupEdgeRoute(src,tgt,route){
+// `dom` ('hv' for the HV-domain split of a pair, ''/undefined for LV) is part
+// of the identity everywhere: each domain's connection keeps its own route,
+// lane and ports.
+function groupEdgeRouteKey(src,tgt,dom){ return src+'→'+tgt+(dom==='hv'?'#hv':''); }
+function groupEdgeRouteOf(src,tgt,dom){ return S.groupEdgeRoutes[groupEdgeRouteKey(src,tgt,dom)]; }
+function setGroupEdgeRoute(src,tgt,route,dom){
   // A route is a single waypoint {wx,wy}; replace rather than merge so a stale
   // coordinate from an older drag can't survive.
-  S.groupEdgeRoutes[groupEdgeRouteKey(src,tgt)] = { ...route };
+  S.groupEdgeRoutes[groupEdgeRouteKey(src,tgt,dom)] = { ...route };
 }
 
 /* ------------------------------------------------------------------
@@ -346,10 +356,11 @@ function setGroupEdgeRoute(src,tgt,route){
    depends on it and gets called many times per render — invalidated
    from render() and from the layout entry points.
    ------------------------------------------------------------------ */
-function groupPortKey(gid, src, tgt){ return gid+'|'+groupEdgeRouteKey(src,tgt); }
+function groupPortKey(gid, src, tgt, dom){ return gid+'|'+groupEdgeRouteKey(src,tgt,dom); }
 // A port's identity inside its own group. Unique because a group edge never has
-// the same group at both ends (self-links are dropped in computeGroupEdges).
-function portRowKey(r){ return groupEdgeRouteKey(r.src, r.tgt); }
+// the same group at both ends (self-links are dropped in computeGroupEdges)
+// and each insulation domain of a pair is its own connection.
+function portRowKey(r){ return groupEdgeRouteKey(r.src, r.tgt, r.dom); }
 // Drop a port at a given row, pushing whatever was there (and below) down — or up
 // if the port came from lower down. Row count is unchanged, so the block keeps
 // its height and nothing else in the sheet moves. On a barrier block rows are
@@ -384,11 +395,11 @@ function resetGroupPortLayout(gid){
   Object.keys(S.groupPortSides).forEach(k=>{ if (k.startsWith(gid+'|')) delete S.groupPortSides[k]; });
   invalidateGroupPorts();
 }
-function groupPortSideOf(gid, src, tgt, dir){
-  return S.groupPortSides[groupPortKey(gid,src,tgt)] || (dir==='in' ? 'left' : 'right');
+function groupPortSideOf(gid, src, tgt, dir, dom){
+  return S.groupPortSides[groupPortKey(gid,src,tgt,dom)] || (dir==='in' ? 'left' : 'right');
 }
-function setGroupPortSide(gid, src, tgt, side){
-  S.groupPortSides[groupPortKey(gid,src,tgt)] = side;
+function setGroupPortSide(gid, src, tgt, side, dom){
+  S.groupPortSides[groupPortKey(gid,src,tgt,dom)] = side;
   invalidateGroupPorts();
 }
 let _groupPortIdx = null, _nodePortIdx = null;
@@ -398,9 +409,9 @@ function groupPortIndex(){
   const titleOf = new Map(groupsWithUngrouped().map(g=>[g.id, g.title||g.id]));
   const idx = new Map(groupsWithUngrouped().map(g=>[g.id, []]));
   for (const e of computeGroupEdges()){
-    const hv = e.nets.some(isHvNet);   // the connection's EFFECTIVE insulation domain
-    if (idx.has(e.source)) idx.get(e.source).push({ eid:e.id, src:e.source, tgt:e.target, dir:'out', other:e.target, nets:e.nets.length, hv });
-    if (idx.has(e.target)) idx.get(e.target).push({ eid:e.id, src:e.source, tgt:e.target, dir:'in',  other:e.source, nets:e.nets.length, hv });
+    const hv = e.dom==='hv';   // connections are split per insulation domain
+    if (idx.has(e.source)) idx.get(e.source).push({ eid:e.id, src:e.source, tgt:e.target, dom:e.dom, dir:'out', other:e.target, nets:e.nets.length, hv });
+    if (idx.has(e.target)) idx.get(e.target).push({ eid:e.id, src:e.source, tgt:e.target, dom:e.dom, dir:'in',  other:e.source, nets:e.nets.length, hv });
   }
   for (const [gid, rows] of idx){
     rows.sort((a,b)=>
@@ -429,7 +440,7 @@ function groupPortIndex(){
     const flip = groupHvFlip(gid);
     rows.forEach(r=>{
       r.pinned = gside==='barrier';
-      r.side = r.pinned ? ((r.hv !== flip) ? 'right' : 'left') : groupPortSideOf(gid, r.src, r.tgt, r.dir);
+      r.side = r.pinned ? ((r.hv !== flip) ? 'right' : 'left') : groupPortSideOf(gid, r.src, r.tgt, r.dir, r.dom);
     });
     // On a barrier block the two halves hold independent COLUMNS of rows: an
     // LV and an HV port can share the same line, because the width rule
@@ -446,15 +457,15 @@ function groupPortIndex(){
   return idx;
 }
 function groupPortRowsFor(gid){ return groupPortIndex().get(gid) || []; }
-function groupPortOf(gid, src, tgt, dir){
-  return groupPortRowsFor(gid).find(r=>r.src===src && r.tgt===tgt && r.dir===dir);
+function groupPortOf(gid, src, tgt, dir, dom){
+  return groupPortRowsFor(gid).find(r=>r.src===src && r.tgt===tgt && r.dir===dir && (r.dom||'')===(dom||''));
 }
 // Absolute attachment point of one end of a group edge, plus the direction the
 // wire leaves/arrives in (+1 rightward, -1 leftward).
-function groupPortAnchor(gid, src, tgt, dir){
+function groupPortAnchor(gid, src, tgt, dir, dom){
   const rect = groupBlockRect(gid);
   const g = groupsWithUngrouped().find(x=>x.id===gid);
-  const r = groupPortOf(gid, src, tgt, dir);
+  const r = groupPortOf(gid, src, tgt, dir, dom);
   if (!r) return { x: rect.x + (dir==='in' ? 0 : rect.w), y: rect.y + rect.h/2, side:(dir==='in'?'left':'right'), sign:1 };
   const left = r.side==='left';
   return {
@@ -1159,7 +1170,7 @@ class MinHeap{
 // PORTS and WAYPOINTS need to be on the grid for straight runs to meet them,
 // and both are (start/goal rows are part of every lattice).
 const LANE_PITCH = 14, LANE_MAX = 6;
-function laneOf(src, tgt){ return S.groupEdgeLanes[groupEdgeRouteKey(src,tgt)] || 0; }
+function laneOf(src, tgt, dom){ return S.groupEdgeLanes[groupEdgeRouteKey(src,tgt,dom)] || 0; }
 function latticeRoute(start, goal, obstacles, lane){
   const pads = obstacles.map(padForRoute);
   const d = (lane||0)*LANE_PITCH;
@@ -1564,13 +1575,13 @@ function assignRouteLanes(){
   invalidateGroupPorts();
   const obstacles = visibleGroups().map(g=>groupBlockRect(g.id));
   const edges = computeGroupEdges().slice()
-    .sort((a,b)=>groupEdgeRouteKey(a.source,a.target).localeCompare(groupEdgeRouteKey(b.source,b.target)));
+    .sort((a,b)=>groupEdgeRouteKey(a.source,a.target,a.dom).localeCompare(groupEdgeRouteKey(b.source,b.target,b.dom)));
   const placed = [];
   for (const e of edges){
-    const key = groupEdgeRouteKey(e.source,e.target);
-    const manual = groupEdgeRouteOf(e.source,e.target);
-    const pa = groupPortAnchor(e.source, e.source, e.target, 'out');
-    const pb = groupPortAnchor(e.target, e.source, e.target, 'in');
+    const key = groupEdgeRouteKey(e.source,e.target,e.dom);
+    const manual = groupEdgeRouteOf(e.source,e.target,e.dom);
+    const pa = groupPortAnchor(e.source, e.source, e.target, 'out', e.dom);
+    const pb = groupPortAnchor(e.target, e.source, e.target, 'in', e.dom);
     let bestLane = 0, bestPts = null, bestOv = Infinity;
     const lanes = manual ? 1 : LANE_MAX+1;   // hand-routed wires don't use the lattice
     for (let lane=0; lane<lanes; lane++){
@@ -1674,9 +1685,7 @@ function validateTrace(){
   } else if (S.sel && S.sel.type==='groupEdge'){
     const e = computeGroupEdges().find(x=>x.id===S.sel.id); nets = e && e.nets;
   } else if (S.sel && S.sel.type==='portal'){
-    const [dir, otherId] = S.sel.id.split(/:(.+)/);
-    const { incoming, outgoing } = openGroupPortals();
-    const it = (dir==='in'?incoming:outgoing).find(x=>(dir==='in'?x.source:x.target)===otherId);
+    const it = portalItemOfKey(S.sel.id);
     nets = it && it.nets;
   }
   if (!nets || !nets.some(n=>n.name===S.traceNet)) S.traceNet = null;
@@ -1730,10 +1739,22 @@ function render(){
 function openGroupPortals(){
   if (isTopLevel()) return { incoming:[], outgoing:[] };
   const incoming = computeGroupEdges().filter(e=>e.target===S.openGroup)
-    .sort((a,b)=>a.source.localeCompare(b.source));
+    .sort((a,b)=>a.source.localeCompare(b.source) || a.dom.localeCompare(b.dom));
   const outgoing = computeGroupEdges().filter(e=>e.source===S.openGroup)
-    .sort((a,b)=>a.target.localeCompare(b.target));
+    .sort((a,b)=>a.target.localeCompare(b.target) || a.dom.localeCompare(b.dom));
   return { incoming, outgoing };
+}
+// A portal's key names its direction, neighbour AND insulation domain
+// ('in:GID' / 'in:GID#hv') — the LV and HV halves of a boundary are separate
+// portals. This resolves a key back to its group edge.
+function portalKeyOf(dir, item){ return dir+':'+(dir==='in'?item.source:item.target)+(item.dom==='hv'?'#hv':''); }
+function portalItemOfKey(key){
+  const [dir, rest] = key.split(/:(.+)/);
+  const hv = rest.endsWith('#hv');
+  const otherId = hv ? rest.slice(0, -3) : rest;
+  const { incoming, outgoing } = openGroupPortals();
+  return (dir==='in'?incoming:outgoing).find(x=>
+    (dir==='in'?x.source:x.target)===otherId && (x.dom==='hv')===hv);
 }
 
 // PORTAL_MARGIN is the BASE routing corridor between a portal column and the
@@ -1918,13 +1939,18 @@ function drillSheet(){
   const inMaxLane = lanesFrom(liveB.minX - (inX + portalW)), outMaxLane = lanesFrom(outX - liveB.maxX);
   // A portal's wires, in slot order: alphabetical by default, but a manual
   // order (slot-handle drag, S.portalOrder) wins; edges it doesn't know append.
+  // The LV and HV portals of one boundary split the wires between them: a
+  // node edge rides the HV portal when ANY of its nets is HV-domain (the
+  // conservative choice for the rare mixed edge).
+  const edgeHv = e => e.nets.some(isHvNet);
   const undersFor = (dir, item) => {
+    const wantHv = item.dom==='hv';
     const base = dir==='in'
-      ? all.filter(e=>memberSet.has(e.target) && idx.get(e.source)===item.source)
+      ? all.filter(e=>memberSet.has(e.target) && idx.get(e.source)===item.source && edgeHv(e)===wantHv)
           .sort((a,b)=>(a.target+'|'+a.id).localeCompare(b.target+'|'+b.id))
-      : all.filter(e=>memberSet.has(e.source) && idx.get(e.target)===item.target)
+      : all.filter(e=>memberSet.has(e.source) && idx.get(e.target)===item.target && edgeHv(e)===wantHv)
           .sort((a,b)=>(a.source+'|'+a.id).localeCompare(b.source+'|'+b.id));
-    const ord = (S.portalOrder[S.openGroup]||{})[dir==='in' ? 'in:'+item.source : 'out:'+item.target];
+    const ord = (S.portalOrder[S.openGroup]||{})[portalKeyOf(dir, item)];
     if (!ord) return base;
     const pos = new Map(ord.map((id,i)=>[id,i]));
     return base.slice().sort((a,b)=>(pos.has(a.id)?pos.get(a.id):1e9)-(pos.has(b.id)?pos.get(b.id):1e9));
@@ -1936,7 +1962,7 @@ function drillSheet(){
   const heightFor = k => Math.max(PORTAL_H, Math.ceil(((k-1)*PORTAL_SLOT + GRID)/GRID)*GRID);
   const buildColumn = (list, dir, x, off, maxLane) => {
     const col = list.map(item => ({ item, dir, maxLane,
-      key: dir==='in' ? 'in:'+item.source : 'out:'+item.target,
+      key: portalKeyOf(dir, item),
       unders: undersFor(dir, item) }));
     const total = col.reduce((a,p)=>a+heightFor(p.unders.length),0) + Math.max(0,col.length-1)*PORTAL_VGAP;
     let y = snapG((bounds.minY+bounds.maxY)/2 - total/2 + off.dy);
@@ -2193,6 +2219,7 @@ function portalMarkupFor(p, selected, wires, traced, dim){
   // keeps the same silhouette instead of bulging into a giant lens: at the
   // base height the two arcs meet and it IS a semicircle, taller boxes just
   // grow a straight run between them.
+  const hvDom = item.dom==='hv';   // the HV half of a boundary wears the HV red
   const cr = 6, sr = Math.min(r.h/2, PORTAL_H/2);   // flat-corner radius, cap radius
   const boxD = dir==='in'
     ? `M ${r.x+sr} ${r.y} L ${r.x+r.w-cr} ${r.y} A ${cr} ${cr} 0 0 1 ${r.x+r.w} ${r.y+cr}
@@ -2212,8 +2239,8 @@ function portalMarkupFor(p, selected, wires, traced, dim){
   return `<g class="portal${dim?' dim':''}" data-portal="${esc(p.key)}" data-x="${r.x}" data-y="${r.y}" data-w="${r.w}" data-h="${r.h}" style="cursor:move">
     ${wires}
     <path d="${boxD}" fill="var(--vellum)"
-      stroke="${(selected||traced)?'var(--probe)':'var(--ink-soft)'}" stroke-width="${(selected||traced)?2.5:1.5}" stroke-dasharray="4 3"/>
-    <text x="${tx}" y="${cy-8}" font-family="var(--mono)" font-size="9" letter-spacing=".08em" fill="var(--ink-soft)">${dir==='in'?'FROM':'TO'}</text>
+      stroke="${(selected||traced)?'var(--probe)':(hvDom?'var(--sig-hv)':'var(--ink-soft)')}" stroke-width="${(selected||traced)?2.5:1.5}" stroke-dasharray="4 3"/>
+    <text x="${tx}" y="${cy-8}" font-family="var(--mono)" font-size="9" letter-spacing=".08em" fill="${hvDom?'var(--sig-hv)':'var(--ink-soft)'}">${dir==='in'?'FROM':'TO'}${hvDom?' · HV':''}</text>
     <text x="${tx}" y="${cy+10}" font-family="var(--mono)" font-size="12" font-weight="600" fill="var(--ink)">${esc(label)}</text>
     <circle cx="${bcx}" cy="${cy}" r="9" fill="var(--paper)" stroke="${style.color}" stroke-width="1.2"/>
     <text x="${bcx}" y="${cy+3.5}" text-anchor="middle" font-family="var(--mono)" font-size="9.5" fill="var(--ink)">${item.nets.length}</text>
@@ -2294,24 +2321,27 @@ function renderTopLevel(){
   lastPorts = null;
   const obstacleRects = groups.map(g=>groupBlockRect(g.id));
   renderGrid(true);
-  const catOf = new Map(gEdges.map(e=>[e.id, edgeCategory(e)]));
+  // An HV-domain connection is ALWAYS drawn in the HV red, whatever signal
+  // types it carries — the split guarantees it holds nothing but HV nets.
+  const catOfEdge = e => e.dom==='hv' ? 'hv' : edgeCategory(e);
+  const catOf = new Map(gEdges.map(e=>[e.id, catOfEdge(e)]));
   // Forget routes for connections that no longer exist (regrouping, deletions).
   // 'n|'-prefixed entries belong to the drill-down views and are pruned there.
-  const live = new Set(gEdges.map(e=>groupEdgeRouteKey(e.source,e.target)));
+  const live = new Set(gEdges.map(e=>groupEdgeRouteKey(e.source,e.target,e.dom)));
   for (const k of _routeCache.keys()) if (!k.startsWith(NODE_ROUTE_PREFIX) && !live.has(k)) _routeCache.delete(k);
   const titleOf = new Map(groupsWithUngrouped().map(g=>[g.id, g.title||g.id]));
 
   edgesG.innerHTML = gEdges.map(e=>{
-    const cat = edgeCategory(e), style = NET_CATEGORY_STYLE[cat];
+    const cat = catOfEdge(e), style = NET_CATEGORY_STYLE[cat];
     const selected = S.sel && S.sel.type==='groupEdge' && S.sel.id===e.id;
     const traced = trace && e.nets.some(nn=>nn.name===trace.name);
-    const pa = groupPortAnchor(e.source, e.source, e.target, 'out');
-    const pb = groupPortAnchor(e.target, e.source, e.target, 'in');
-    const route = groupEdgeRouteOf(e.source,e.target);
-    const { pts, geo, manual } = groupEdgePtsCached(groupEdgeRouteKey(e.source,e.target), pa, pb, route, obstacleRects, laneOf(e.source,e.target));
+    const pa = groupPortAnchor(e.source, e.source, e.target, 'out', e.dom);
+    const pb = groupPortAnchor(e.target, e.source, e.target, 'in', e.dom);
+    const route = groupEdgeRouteOf(e.source,e.target,e.dom);
+    const { pts, geo, manual } = groupEdgePtsCached(groupEdgeRouteKey(e.source,e.target,e.dom), pa, pb, route, obstacleRects, laneOf(e.source,e.target,e.dom));
     const mid = ptsBadgePos(pts);
     const w = selected ? GROUP_EDGE_STROKE_W+1.6 : traced ? GROUP_EDGE_STROKE_W+1.2 : GROUP_EDGE_STROKE_W;
-    const segAttrs = ` data-src="${esc(e.source)}" data-tgt="${esc(e.target)}"`;
+    const segAttrs = ` data-src="${esc(e.source)}" data-tgt="${esc(e.target)}" data-dom="${esc(e.dom||'')}"`;
     const d = ptsPathD(pts);
     return `<g class="edge${trace&&!traced&&!selected?' dim':''}" data-eid="${esc(e.id)}">
       <path d="${d}" fill="none" stroke="transparent" stroke-width="16" style="cursor:pointer"/>
@@ -2359,7 +2389,7 @@ function renderTopLevel(){
       return `
       <line x1="${left?0:W}" y1="${y}" x2="${left?bx:bx+bw}" y2="${y}" stroke="${color}" stroke-width="1.4" opacity=".5"/>
       <text x="${lx}" y="${y+3.5}" text-anchor="${left?'start':'end'}" font-family="var(--mono)" font-size="9" fill="var(--ink-soft)">${esc(label)}</text>
-      <g class="portnum" data-gid="${esc(g.id)}" data-src="${esc(r.src)}" data-tgt="${esc(r.tgt)}" data-dir="${esc(r.dir)}" style="cursor:move">
+      <g class="portnum" data-gid="${esc(g.id)}" data-src="${esc(r.src)}" data-tgt="${esc(r.tgt)}" data-dir="${esc(r.dir)}" data-dom="${esc(r.dom||'')}" style="cursor:move">
         <rect x="${bx}" y="${y-bh/2}" width="${bw}" height="${bh}" rx="8"
           fill="${selEdge?'var(--probe)':'var(--paper)'}" stroke="${color}" stroke-width="1.4"/>
         <text x="${bx+bw/2}" y="${y+4}" text-anchor="middle" font-family="var(--mono)" font-size="10" font-weight="600" fill="var(--ink)">${r.nets}</text>
@@ -2505,13 +2535,13 @@ function renderInspector(){
         commit();
         S.groups=S.groups.filter(x=>x.id!==g.id);
         delete S.groupPos[g.id];
-        Object.keys(S.groupEdgeRoutes).forEach(k=>{ if (k.startsWith(g.id+'→')||k.endsWith('→'+g.id)) delete S.groupEdgeRoutes[k]; });
-        Object.keys(S.groupPortSides).forEach(k=>{ if (k.startsWith(g.id+'|')||k.includes('|'+g.id+'→')||k.endsWith('→'+g.id)) delete S.groupPortSides[k]; });
+        Object.keys(S.groupEdgeRoutes).forEach(k=>{ if (k.startsWith(g.id+'→')||k.split('#')[0].endsWith('→'+g.id)) delete S.groupEdgeRoutes[k]; });
+        Object.keys(S.groupPortSides).forEach(k=>{ if (k.startsWith(g.id+'|')||k.includes('|'+g.id+'→')||k.split('#')[0].endsWith('→'+g.id)) delete S.groupPortSides[k]; });
         delete S.groupPortOrder[g.id];
         delete S.portalOffsets[g.id];
         delete S.portalOrder[g.id];
         delete S.portalAnchor[g.id];
-        Object.keys(S.groupEdgeLanes).forEach(k=>{ if (k.startsWith(g.id+'→')||k.endsWith('→'+g.id)) delete S.groupEdgeLanes[k]; });
+        Object.keys(S.groupEdgeLanes).forEach(k=>{ if (k.startsWith(g.id+'→')||k.split('#')[0].endsWith('→'+g.id)) delete S.groupEdgeLanes[k]; });
         S.sel=null; render(); fitView();
       };
     }
@@ -2524,10 +2554,10 @@ function renderInspector(){
     const e = computeGroupEdges().find(x=>x.id===S.sel.id);
     if (!e){ S.sel=null; renderInspector(); return; }
     const gs = visibleGroups().find(g=>g.id===e.source), gt = visibleGroups().find(g=>g.id===e.target);
-    const hasRoute = !!groupEdgeRouteOf(e.source,e.target);
-    const hasSides = !!(S.groupPortSides[groupPortKey(e.source,e.source,e.target)] || S.groupPortSides[groupPortKey(e.target,e.source,e.target)]);
-    eye.textContent='Group connection (read-only)';
-    title.textContent = `${gs?gs.title:e.source} → ${gt?gt.title:e.target}`;
+    const hasRoute = !!groupEdgeRouteOf(e.source,e.target,e.dom);
+    const hasSides = !!(S.groupPortSides[groupPortKey(e.source,e.source,e.target,e.dom)] || S.groupPortSides[groupPortKey(e.target,e.source,e.target,e.dom)]);
+    eye.textContent = e.dom==='hv' ? 'Group connection · HV domain (read-only)' : 'Group connection (read-only)';
+    title.textContent = `${gs?gs.title:e.source} → ${gt?gt.title:e.target}${e.dom==='hv'?' · HV':''}`;
     body.innerHTML = `
       <p style="color:var(--ink-soft)">Derived from ${e.nets.length} underlying net${e.nets.length===1?'':'s'} between member blocks. Open a group to edit its individual connections. Drag the vertical segments sideways or the horizontal segments up/down to reroute — including the last segment where the wire enters the block.</p>
       ${e.nets.map(n=>`
@@ -2538,25 +2568,25 @@ function renderInspector(){
       <p class="hint">Each end attaches in its block's port zone, under the member list. Drag a port's net-count badge sideways to move that input/output to the opposite edge of its block, or up/down to reorder it against the group's other ports — the wire and its routing follow.</p>
       ${(hasRoute||hasSides)?'<div class="btnrow"><button id="btnResetRoute">Reset routing &amp; ports</button></div>':''}`;
     const rb=$('btnResetRoute'); if (rb) rb.onclick=()=>{
-      delete S.groupEdgeRoutes[groupEdgeRouteKey(e.source,e.target)];
-      delete S.groupPortSides[groupPortKey(e.source, e.source, e.target)];
-      delete S.groupPortSides[groupPortKey(e.target, e.source, e.target)];
+      delete S.groupEdgeRoutes[groupEdgeRouteKey(e.source,e.target,e.dom)];
+      delete S.groupPortSides[groupPortKey(e.source, e.source, e.target, e.dom)];
+      delete S.groupPortSides[groupPortKey(e.target, e.source, e.target, e.dom)];
       render();
     };
     wireTraceCards(body);
     return;
   }
   if (S.sel.type==='portal'){
-    const [dir, otherId] = S.sel.id.split(/:(.+)/);
-    const { incoming, outgoing } = openGroupPortals();
-    const e = (dir==='in'?incoming:outgoing).find(x=>(dir==='in'?x.source:x.target)===otherId);
+    const dir = S.sel.id.split(':')[0];
+    const e = portalItemOfKey(S.sel.id);
     if (!e){ S.sel=null; renderInspector(); return; }
+    const otherId = dir==='in' ? e.source : e.target;
     const other = groupsWithUngrouped().find(g=>g.id===otherId);
     const here = groupsWithUngrouped().find(g=>g.id===S.openGroup);
-    eye.textContent='Portal (read-only)';
-    title.textContent = dir==='in'
+    eye.textContent = e.dom==='hv' ? 'Portal · HV domain (read-only)' : 'Portal (read-only)';
+    title.textContent = (dir==='in'
       ? `${other?other.title:otherId} → ${here?here.title:S.openGroup}`
-      : `${here?here.title:S.openGroup} → ${other?other.title:otherId}`;
+      : `${here?here.title:S.openGroup} → ${other?other.title:otherId}`) + (e.dom==='hv'?' · HV':'');
     body.innerHTML = `
       <p style="color:var(--ink-soft)">This connection leaves the open group. Derived from ${e.nets.length} underlying net${e.nets.length===1?'':'s'}. Open "${esc(other?other.title:otherId)}" to edit it from that side.</p>
       ${e.nets.map(n=>`
@@ -2838,7 +2868,7 @@ svg.addEventListener('pointerdown', ev=>{
     const mx = segEl.dataset.mx!=null ? +segEl.dataset.mx : null;
     const my = segEl.dataset.my!=null ? +segEl.dataset.my : null;
     const axis = segEl.dataset.axis || (cls.contains('seg-h') ? 'h' : 'v');
-    const key = topLevel ? groupEdgeRouteKey(segEl.dataset.src, segEl.dataset.tgt)
+    const key = topLevel ? groupEdgeRouteKey(segEl.dataset.src, segEl.dataset.tgt, segEl.dataset.dom)
                          : NODE_ROUTE_PREFIX + segEl.dataset.eid;
     const cached = _routeCache.get(key);
     let pts = cached ? cached.pts.map(p=>p.slice()) : null, segIdx = -1;
@@ -2850,7 +2880,7 @@ svg.addEventListener('pointerdown', ev=>{
     }
     S.sel = { type: topLevel?'groupEdge':'edge', id: segEl.dataset.eid };
     drag = { mode, eid: segEl.dataset.eid, axis, mx, my, snap:snapshotState(),
-      topLevel, src: segEl.dataset.src, tgt: segEl.dataset.tgt,
+      topLevel, src: segEl.dataset.src, tgt: segEl.dataset.tgt, dom: segEl.dataset.dom||'',
       pts: segIdx>=0 ? pts : null, segIdx };
     render();
     return;
@@ -2861,8 +2891,8 @@ svg.addEventListener('pointerdown', ev=>{
   if (numEl){
     const d = numEl.dataset;
     if (isTopLevel()){
-      S.sel = { type:'groupEdge', id:d.eid || (computeGroupEdges().find(x=>x.source===d.src && x.target===d.tgt)||{}).id };
-      drag = { mode:'portside', gid:d.gid, src:d.src, tgt:d.tgt, dir:d.dir, snap:snapshotState() };
+      S.sel = { type:'groupEdge', id:d.eid || (computeGroupEdges().find(x=>x.source===d.src && x.target===d.tgt && (x.dom||'')===(d.dom||''))||{}).id };
+      drag = { mode:'portside', gid:d.gid, src:d.src, tgt:d.tgt, dom:d.dom||'', dir:d.dir, snap:snapshotState() };
     } else {
       S.sel = { type:'edge', id:d.eid };
       drag = { mode:'nodeportside', nid:d.gid, src:d.src, tgt:d.tgt, dir:d.dir, snap:snapshotState() };
@@ -2953,7 +2983,7 @@ svg.addEventListener('pointermove', ev=>{
     const rect = groupBlockRect(drag.gid);
     const g = groupsWithUngrouped().find(x=>x.id===drag.gid);
     let changed = false;
-    const row = groupPortOf(drag.gid, drag.src, drag.tgt, drag.dir);
+    const row = groupPortOf(drag.gid, drag.src, drag.tgt, drag.dir, drag.dom);
     const wantedSide = w.x > rect.x + rect.w/2 ? 'right' : 'left';
     if (row && row.pinned){
       // Isolation barrier: an HV port can't be dragged onto the LV half, nor the
@@ -2962,13 +2992,13 @@ svg.addEventListener('pointermove', ev=>{
         drag.warned = true;
         toast(`${row.hv?'HV':'LV'} connections stay on the ${row.hv?'HV':'LV'} side of this block`);
       }
-    } else if (groupPortSideOf(drag.gid, drag.src, drag.tgt, drag.dir) !== wantedSide){
-      setGroupPortSide(drag.gid, drag.src, drag.tgt, wantedSide);
+    } else if (groupPortSideOf(drag.gid, drag.src, drag.tgt, drag.dir, drag.dom) !== wantedSide){
+      setGroupPortSide(drag.gid, drag.src, drag.tgt, wantedSide, drag.dom);
       changed = true;
     }
     const zoneTop = rect.y + groupPortZoneTop(g);
     const wantedRow = Math.floor((w.y - zoneTop) / GROUP_PORT_ROW_H);
-    if (moveGroupPortToRow(drag.gid, groupEdgeRouteKey(drag.src, drag.tgt), wantedRow)) changed = true;
+    if (moveGroupPortToRow(drag.gid, groupEdgeRouteKey(drag.src, drag.tgt, drag.dom), wantedRow)) changed = true;
     if (changed){ commitGesture(drag); render(); }
     return;
   }
@@ -3055,7 +3085,7 @@ svg.addEventListener('pointermove', ev=>{
       route = drag.axis==='v' ? { wx: fixed, wy } : { wx, wy: fixed };
     }
     commitGesture(drag);
-    if (drag.topLevel) setGroupEdgeRoute(drag.src, drag.tgt, route);
+    if (drag.topLevel) setGroupEdgeRoute(drag.src, drag.tgt, route, drag.dom);
     else { const e=S.edges.find(x=>x.id===drag.eid); if (e) e.route = route; }
     render();
     return;

@@ -124,7 +124,7 @@ mv.x=ox; mv.y=oy; delete S.groupEdgeRoutes[key]; T._routeCache.clear(); T.render
 {
   const src = fs.readFileSync('app.js','utf8');
   check('drill-down segment drags share the top-level route store write',
-    /if \(drag\.topLevel\) setGroupEdgeRoute\(drag\.src, drag\.tgt, route\);/.test(src) &&
+    /if \(drag\.topLevel\) setGroupEdgeRoute\(drag\.src, drag\.tgt, route, drag\.dom\);/.test(src) &&
     /if \(e\) e\.route = route;/.test(src));
   check('the drag translates the grabbed segment in place',
     /translateWireSegment\(drag\.pts, drag\.segIdx, drag\.axis, raw, obstacles, dir\)/.test(src));
