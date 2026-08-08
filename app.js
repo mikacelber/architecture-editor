@@ -17,7 +17,7 @@ const S = {
   groupPortSides: {}, // {[gid+'|'+srcId+'→'+tgtId]: 'left'|'right'} — port dragged to the other edge of its block
   groupEdgeLanes: {}, // {[srcId+'→'+tgtId]: laneIndex} — routing lane frozen at layout time
   groupPortOrder: {}, // {[gid]: ['srcId→tgtId', ...]} — port rows dragged into a manual vertical order
-  portalOffsets: {}, // {[gid]: {in:{dx,dy}, out:{dx,dy}}} — each portal COLUMN dragged as a whole (in: dx≤0, out: dx≥0)
+  portalOffsets: {}, // {[gid]: {in:{dx,dy}, out:{dx,dy}}} — each portal COLUMN dragged as a whole (any direction; the design minimum distance to the blocks clamps at render)
   portalOrder: {}, // {[gid]: {[portalKey]: [edgeId,...]}} — a portal's exit slots dragged into a manual vertical order
   portalAnchor: {}, // {[gid]: {minY,maxY}} — vertical anchor the FROM/TO columns are centred on, frozen so block drags never tow them
   ungroupedHvFlip: undefined, // LV|HV flip of the implicit UNGROUPED block (real groups keep g.hvFlip on themselves)
@@ -1760,12 +1760,15 @@ function portalSlotY(p, j){
 }
 // Every boundary wire on a side may need its own vertical line in the corridor.
 function portalMargin(wireCount){ return PORTAL_MARGIN + wireCount*LANE_PITCH; }
-// Manual column displacement. FROM may only move LEFT (dx≤0) and TO only RIGHT
-// (dx≥0) — a drag can widen the routing corridor, never crush it; dy is free.
+// Manual column displacement, both axes free. The stored offset is a WISH:
+// the render-time clamp in drillSheet (colXFor) floors the column at the
+// design minimum distance to the blocks (PORTAL_MIN_CLEAR), whichever side
+// it is approached from. The routing-corridor margin only sets the default
+// import-time position — the user may park a column well inside it.
 function portalOffsetOf(gid, dir){ return (S.portalOffsets[gid]||{})[dir] || { dx:0, dy:0 }; }
 function setPortalOffset(gid, dir, dx, dy){
   const o = S.portalOffsets[gid] || (S.portalOffsets[gid] = {});
-  o[dir] = { dx: dir==='in' ? Math.min(0,dx) : Math.max(0,dx), dy };
+  o[dir] = { dx, dy };
 }
 // First movement of a FROM/TO column drag: pin the column's auto-routed
 // boundary wires to their CURRENT shapes (as persisted manual routes). From
@@ -1879,13 +1882,17 @@ function drillSheet(){
     || (S.openGroup ? (S.portalAnchor[S.openGroup] = { ...liveB }) : liveB);
   if (anchor.minX == null){ anchor.minX = liveB.minX; anchor.maxX = liveB.maxX; }  // sessions saved when only Y was frozen
   const bounds = { minX:anchor.minX, maxX:anchor.maxX, minY:anchor.minY, maxY:anchor.maxY };
-  // A column's X: parked at its corridor offset from the FROZEN anchor, and
-  // only PUSHED further out while a block actually crowds it — closer than
-  // PORTAL_MIN_CLEAR to the boxes. It returns to the parked spot as the space
-  // frees up: approaching blocks shove it, retreating blocks never tow it.
+  // A column's X: parked at its corridor offset from the FROZEN anchor plus
+  // whatever the user dragged it (off.dx, either direction) — but NEVER
+  // closer than PORTAL_MIN_CLEAR to the blocks. That one clamp makes the
+  // design minimum symmetric: drag the column against the blocks and it
+  // stops there; push a block against the column and it is shoved away,
+  // returning to its spot as the space frees up. The corridor margin is the
+  // IMPORT-TIME default only, not a constraint — the user may park a column
+  // well inside it, down to the design minimum.
   const colXFor = (dir, margin, off, w) => dir==='in'
-    ? Math.min(anchor.minX - margin, liveB.minX - PORTAL_MIN_CLEAR) - w + off.dx
-    : Math.max(anchor.maxX + margin, liveB.maxX + PORTAL_MIN_CLEAR) + off.dx;
+    ? Math.min(anchor.minX - margin + off.dx, liveB.minX - PORTAL_MIN_CLEAR) - w
+    : Math.max(anchor.maxX + margin + off.dx, liveB.maxX + PORTAL_MIN_CLEAR);
   const all = diagramEdges(S.edges);
   const internal = all.filter(e=>memberSet.has(e.source) && memberSet.has(e.target));
   const { incoming, outgoing } = openGroupPortals();
@@ -1896,16 +1903,19 @@ function drillSheet(){
   const outCount = all.filter(e=>memberSet.has(e.source) && !memberSet.has(e.target)).length;
   const inMargin = portalMargin(inCount), outMargin = portalMargin(outCount);
   const inOff = portalOffsetOf(S.openGroup,'in'), outOff = portalOffsetOf(S.openGroup,'out');
-  // How many routing lanes fit in each corridor (stub + lane offset must land
-  // inside it): the dragged-out distance buys extra lanes.
-  const lanesFor = (margin, off) =>
-    Math.max(0, Math.min(LANE_MAX, Math.floor((margin + Math.abs(off.dx) - GROUP_PORT_STUB - ROUTE_CLEARANCE)/LANE_PITCH)));
-  const inMaxLane = lanesFor(inMargin, inOff), outMaxLane = lanesFor(outMargin, outOff);
   // ONE width for every portal on this sheet — sized so the longest neighbour
   // title fits untruncated, and both columns stay uniform.
   const titleOf = id => { const gg = groupsWithUngrouped().find(x=>x.id===id); return gg ? gg.title : id; };
   const portalW = portalWidthFor([
     ...incoming.map(x=>titleOf(x.source)), ...outgoing.map(x=>titleOf(x.target))]);
+  const inX = colXFor('in', inMargin, inOff, portalW);
+  const outX = colXFor('out', outMargin, outOff, portalW);
+  // How many routing lanes fit in each corridor (stub + lane offset must land
+  // inside it) — measured from the column's REAL position, so dragging it
+  // outward buys extra lanes and parking it near the blocks sheds them.
+  const lanesFrom = gap =>
+    Math.max(0, Math.min(LANE_MAX, Math.floor((gap - GROUP_PORT_STUB - ROUTE_CLEARANCE)/LANE_PITCH)));
+  const inMaxLane = lanesFrom(liveB.minX - (inX + portalW)), outMaxLane = lanesFrom(outX - liveB.maxX);
   // A portal's wires, in slot order: alphabetical by default, but a manual
   // order (slot-handle drag, S.portalOrder) wins; edges it doesn't know append.
   const undersFor = (dir, item) => {
@@ -1924,19 +1934,18 @@ function drillSheet(){
   // wires fit in the base height), a GRID gap between boxes, the whole column
   // centred on the (frozen) member midline and snapped onto the lattice.
   const heightFor = k => Math.max(PORTAL_H, Math.ceil(((k-1)*PORTAL_SLOT + GRID)/GRID)*GRID);
-  const buildColumn = (list, dir, margin, off, maxLane) => {
+  const buildColumn = (list, dir, x, off, maxLane) => {
     const col = list.map(item => ({ item, dir, maxLane,
       key: dir==='in' ? 'in:'+item.source : 'out:'+item.target,
       unders: undersFor(dir, item) }));
     const total = col.reduce((a,p)=>a+heightFor(p.unders.length),0) + Math.max(0,col.length-1)*PORTAL_VGAP;
-    const x = colXFor(dir, margin, off, portalW);
     let y = snapG((bounds.minY+bounds.maxY)/2 - total/2 + off.dy);
     for (const p of col){ p.r = { x, y, w:portalW, h:heightFor(p.unders.length) }; y += p.r.h + PORTAL_VGAP; }
     return col;
   };
   const portals = [
-    ...buildColumn(incoming, 'in', inMargin, inOff, inMaxLane),
-    ...buildColumn(outgoing, 'out', outMargin, outOff, outMaxLane)
+    ...buildColumn(incoming, 'in', inX, inOff, inMaxLane),
+    ...buildColumn(outgoing, 'out', outX, outOff, outMaxLane)
   ];
   const obstacles = [ ...memberObstacleRects(members),
     ...portals.map(p=>({ id:'portal:'+p.key, x:p.r.x, y:p.r.y, w:p.r.w, h:p.r.h })) ];
@@ -1979,7 +1988,7 @@ function drillSheet(){
     return { cx: r.x + r.w/2, cy: r.y + r.h/2 };
   };
   const portalAdd = { in: addSlotFor('in'), out: addSlotFor('out') };
-  return { g, members, bounds, portals, obstacles, specs, portalAdd };
+  return { g, members, bounds, live: liveB, inMargin, outMargin, portals, obstacles, specs, portalAdd };
 }
 // Same corridor-separation rule as assignRouteLanes, for every wire drawn in the
 // open group — internal AND boundary. Lanes live in S.groupEdgeLanes under
@@ -2178,8 +2187,8 @@ function portalMarkupFor(p, selected, wires, traced, dim){
   const style = NET_CATEGORY_STYLE[edgeCategory(item)];
   // Off-sheet-connector silhouette: the OUTER end (left of a FROM, right of a
   // TO) is a semicircle, the block-facing end stays flat — the shape itself
-  // says which way the signal flows. Dragging the box moves the whole column
-  // (FROM only leftward, TO only rightward, both freely up/down).
+  // says which way the signal flows. Dragging the box moves the whole column,
+  // any direction — floored at the design minimum distance to the blocks.
   // The cap radius is capped at PORTAL_H/2 so a box grown to fit more wires
   // keeps the same silhouette instead of bulging into a giant lens: at the
   // base height the two arcs meet and it IS a semicircle, taller boxes just
@@ -2880,8 +2889,8 @@ svg.addEventListener('pointerdown', ev=>{
     return;
   }
   if (portalEl){
-    // A drag moves the WHOLE column (dx clamped by direction); a plain click
-    // (no movement) selects — resolved at pointerup, like block drags.
+    // A drag moves the WHOLE column (floored at the design minimum distance
+    // to the blocks); a plain click selects — resolved at pointerup.
     const dir = portalEl.dataset.portal.split(':')[0];
     const w = toWorld(ev.clientX, ev.clientY);
     const off = portalOffsetOf(S.openGroup, dir);
@@ -2998,12 +3007,18 @@ svg.addEventListener('pointermove', ev=>{
     return;
   }
   if (drag.mode==='portalcol'){
-    // The whole FROM (or TO) column follows the pointer: dx clamped so the
-    // corridor can only widen, dy free — snapped to the visible grid pitch.
-    const nx = snapView(w.x - drag.dx), ny = snapView(w.y - drag.dy);
+    // The whole FROM (or TO) column follows the pointer, both directions and
+    // dy free — snapped to the visible grid pitch. Toward the blocks the
+    // STORED offset stops at the design minimum distance (the same floor
+    // colXFor renders), so a released column stays parked where it shows and
+    // never chases the blocks when they later move away.
+    const nxRaw = snapView(w.x - drag.dx), ny = snapView(w.y - drag.dy);
     const off = portalOffsetOf(S.openGroup, drag.dir);
-    const clamped = drag.dir==='in' ? Math.min(0,nx) : Math.max(0,nx);
-    if (clamped !== off.dx || ny !== off.dy){
+    const sh = drillSheet();
+    const nx = drag.dir==='in'
+      ? Math.min(nxRaw, sh.live.minX - PORTAL_MIN_CLEAR - (sh.bounds.minX - sh.inMargin))
+      : Math.max(nxRaw, sh.live.maxX + PORTAL_MIN_CLEAR - (sh.bounds.maxX + sh.outMargin));
+    if (nx !== off.dx || ny !== off.dy){
       commitGesture(drag);   // snapshot first — undo also removes the pins below
       if (!drag.pinned){ drag.pinned = true; pinPortalWires(drag.dir); }
       drag.moved = true;

@@ -187,11 +187,20 @@ check('every in-group connection carries a routing lane',
   check('TO corridor width scales with the number of outputs',
     outPortals.every(p=>p.r.x-maxX >= T.PORTAL_MARGIN + outWires*T.LANE_PITCH - 0.01));
 
-  // clamps: FROM only widens leftward, TO only rightward
-  T.setPortalOffset(best.id,'in',100,0);
-  check('a FROM column can never be pushed toward the blocks (dx clamped to 0)', T.portalOffsetOf(best.id,'in').dx===0);
-  T.setPortalOffset(best.id,'out',-100,0);
-  check('a TO column can never be pushed toward the blocks (dx clamped to 0)', T.portalOffsetOf(best.id,'out').dx===0);
+  // the DESIGN minimum distance floors both columns, however hard they are
+  // pushed toward the blocks — the corridor margin is only the import default
+  T.setPortalOffset(best.id,'in',10000,0); T.render();
+  check('a FROM column dragged at the blocks stops at the design minimum distance',
+    Math.abs(Math.min(...T.drillSheet().obstacles.filter(r=>memberSet.has(r.id)).map(r=>r.x))
+      - Math.max(...T.drillSheet().portals.filter(p=>p.dir==='in').map(p=>p.r.x+p.r.w)) - 2*T.GRID)<0.01);
+  T.setPortalOffset(best.id,'out',-10000,0); T.render();
+  check('a TO column dragged at the blocks stops at the design minimum distance',
+    Math.abs(Math.min(...T.drillSheet().portals.filter(p=>p.dir==='out').map(p=>p.r.x))
+      - Math.max(...T.drillSheet().obstacles.filter(r=>memberSet.has(r.id)).map(r=>r.x+r.w)) - 2*T.GRID)<0.01);
+  check('...and closer than the corridor default IS allowed (import layout, not a constraint)',
+    Math.max(...T.drillSheet().portals.filter(p=>p.dir==='in').map(p=>p.r.x+p.r.w)) >
+    Math.min(...T.drillSheet().obstacles.filter(r=>memberSet.has(r.id)).map(r=>r.x)) - T.PORTAL_MARGIN);
+  T.setPortalOffset(best.id,'in',0,0); T.setPortalOffset(best.id,'out',0,0); T.render();
 
   // the whole column moves together, and only that column
   const before=T.drillSheet().portals.map(p=>({key:p.key,x:p.r.x,y:p.r.y}));
