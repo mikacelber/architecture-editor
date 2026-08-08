@@ -15,7 +15,7 @@ window.__T={get S(){return S;},loadFromContract,render,openGroupView,closeGroupV
  drillSheet,portalOffsetOf,setPortalOffset,PORTAL_MARGIN:PORTAL_MARGIN,LANE_PITCH:LANE_PITCH,PORTAL_H:PORTAL_H,
  translateWireSegment,nodeBlockWidth,textWidth,isHvNet,netCategory,nodeSide,
  openAddPortalModal,candidateNetsForPortal,groupNetIndex,nodeGroupIndex,computeGroupEdges,traceSets,
- movePortalSlotToRow,pinPortalWires,nodeEdgeRouteOf,commit,undo};`);
+ movePortalSlotToRow,pinPortalWires,nodeEdgeRouteOf,groupPortRowsFor,commit,undo};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -791,6 +791,65 @@ check('every in-group connection carries a routing lane',
     inSpecs.every(s=>{ const e=S.edges.find(x=>x.id===s.e.id); return e && !T.nodeEdgeRouteOf(e); }));
 }
 
-T.closeGroupView();
+/* ---- rule 20: a group connection never mixes insulation domains — HV nets
+   get their own red connection, and the FROM/TO portals split in two ---- */
+{
+  T.closeGroupView(); T.render();
+  // find (or force) a group pair whose nets span both domains
+  const idx=T.nodeGroupIndex();
+  let pairEdge=T.diagramEdges(S.edges).find(e=>{
+    const gs=idx.get(e.source), gt=idx.get(e.target);
+    return gs&&gt&&gs!==gt&&e.nets.length>=2;
+  });
+  T.commit();
+  const realEdge=S.edges.find(x=>x.id===pairEdge.id);
+  realEdge.nets[0].hv=true; realEdge.nets[1].hv=false;
+  T.render();
+  const gs=idx.get(pairEdge.source), gt=idx.get(pairEdge.target);
+  const splits=T.computeGroupEdges().filter(e=>e.source===gs&&e.target===gt);
+  check('a mixed pair derives TWO group connections, one per domain',
+    splits.length===2 && splits.some(e=>e.dom==='hv') && splits.some(e=>e.dom===''));
+  const hvE=splits.find(e=>e.dom==='hv'), lvE=splits.find(e=>e.dom==='');
+  check('the HV connection carries ONLY HV-domain nets', hvE.nets.every(n=>T.isHvNet(n)));
+  check('the LV connection carries NO HV-domain net', lvE.nets.every(n=>!T.isHvNet(n)));
+  check('the two connections are separately selectable (distinct ids)', hvE.id!==lvE.id);
+  const hvPath=doc.querySelector(`#edgesG .edge[data-eid="${hvE.id}"] path[stroke="var(--sig-hv)"]`);
+  check('the HV group connection is drawn in the HV red', !!hvPath);
+  const lvPath=doc.querySelector(`#edgesG .edge[data-eid="${lvE.id}"] path[stroke="var(--sig-hv)"]`);
+  check('the LV group connection keeps its normal colour', !lvPath);
+  // each domain has its own port row on both group blocks
+  const rowsAt=gid=>T.groupPortRowsFor(gid).filter(r=>r.src===gs&&r.tgt===gt);
+  check('each domain gets its own port row on the blocks',
+    rowsAt(gs).length===2 && rowsAt(gt).length===2 &&
+    rowsAt(gs).some(r=>r.dom==='hv') && rowsAt(gs).some(r=>!r.dom));
+
+  // drill view: the boundary splits into an LV and an HV portal
+  T.openGroupView(gt); T.render();
+  const ps=T.drillSheet().portals.filter(p=>p.dir==='in' && p.item.source===gs);
+  check('the FROM boundary splits into an LV and an HV portal',
+    ps.length===2 && ps.some(p=>p.item.dom==='hv') && ps.some(p=>p.item.dom===''));
+  const hvP=ps.find(p=>p.item.dom==='hv');
+  check('the HV portal key carries the domain (#hv)', hvP.key.endsWith('#hv'));
+  check('the HV portal wires all carry an HV net',
+    hvP.unders.length>0 && hvP.unders.every(e=>e.nets.some(n=>T.isHvNet(n))));
+  const lvP=ps.find(p=>p.item.dom==='');
+  check('the LV portal wires never carry an HV net',
+    lvP.unders.every(e=>e.nets.every(n=>!T.isHvNet(n))));
+  check('the HV portal box is drawn in the HV red',
+    !!doc.querySelector(`#edgesG .portal[data-portal="${hvP.key.replace(/"/g,'')}"] path[stroke="var(--sig-hv)"]`));
+  // a domain flip re-anchors ports, so lanes go stale — the in-group
+  // Auto-layout (what a user does after re-domaining) must leave the split
+  // sheet fully clean
+  doc.getElementById('btnLayout').onclick();
+  let bad=null;
+  for (const w of wirePts()){ const hit=crossesAny(w.pts, T.openGroupObstacleRects()); if (hit) bad=w.eid+' over '+hit; }
+  check('wires clear of every block with split portals (after in-group auto-layout)'+(bad?' ['+bad+']':''), !bad);
+
+  T.closeGroupView();
+  T.undo(); T.undo(); T.render();   // unwind the auto-layout, then the domain flip
+  check('undo merges the pair back into one connection',
+    T.computeGroupEdges().filter(e=>e.source===gs&&e.target===gt).length===1);
+}
+
 console.log('\n'+pass+' passed, '+fail+' failed');
 process.exit(fail?1:0);

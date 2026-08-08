@@ -83,9 +83,9 @@ const key=e=>T.groupEdgeRouteKey(e.source,e.target);
   // a stored override cannot cross the domain
   const g=barrierGroups.find(x=>T.groupPortRowsFor(x.id).some(r=>r.hv));
   const hvRow=T.groupPortRowsFor(g.id).find(r=>r.hv);
-  T.setGroupPortSide(g.id, hvRow.src, hvRow.tgt, 'left');   // simulate a forbidden drag having been stored
+  T.setGroupPortSide(g.id, hvRow.src, hvRow.tgt, 'left', hvRow.dom);   // simulate a forbidden drag having been stored
   T.render();
-  const after=T.groupPortOf(g.id, hvRow.src, hvRow.tgt, hvRow.dir);
+  const after=T.groupPortOf(g.id, hvRow.src, hvRow.tgt, hvRow.dir, hvRow.dom);
   check('even a stored override cannot move an HV port to the LV half', after.side==='right');
   // vertical reordering still allowed on barrier blocks \u2014 within the port's
   // own column (rows are per-side now). Search every barrier group for a
