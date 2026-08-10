@@ -1342,6 +1342,55 @@ class MinHeap{
 // and both are (start/goal rows are part of every lattice).
 const LANE_PITCH = 14, LANE_MAX = 6;
 function laneOf(src, tgt, dom){ return S.groupEdgeLanes[groupEdgeRouteKey(src,tgt,dom)] || 0; }
+
+/* ------------------------------------------------------------------
+   EXIT-FAN NESTING — deterministic lane assignment. Wires that leave a
+   block (or portal) side horizontally and then turn vertically form a
+   FAN: to never cross each other they must turn in NESTED order —
+   turning UP, the topmost port turns first (closest to the block) and
+   each next one a LANE_PITCH further out; turning DOWN, the bottom
+   port turns first. Same rule mirrored at the ARRIVING end. This
+   dominates net length: fan wires keep a constant offset between
+   them instead of crossing.
+   Ends sharing the same edge X (aligned columns, a whole portal
+   column) fan TOGETHER, so the nesting holds across stacked blocks
+   too. Straight runs and same-direction pairs cost nothing extra.
+   ------------------------------------------------------------------ */
+function fanAssignLanes(items){
+  // items: [{ key, pa, pb, cap }] → Map key → {a,b} per-end lanes
+  const lanes = new Map(items.map(it=>[it.key, { a:0, b:0 }]));
+  const groups = new Map();
+  const addEnd = (it, end) => {
+    const p = end==='a' ? it.pa : it.pb, o = end==='a' ? it.pb : it.pa;
+    if (Math.abs(o.y - p.y) < 0.5) return;            // straight — no bend at this end
+    const vd = o.y < p.y ? -1 : 1;                    // -1: the wire heads UP from here
+    const gk = `${Math.round(p.x)}|${p.sign}`;        // one pool per edge X and exit direction
+    if (!groups.has(gk)) groups.set(gk, []);
+    groups.get(gk).push({ it, end, vd, y:p.y, lo:Math.min(p.y,o.y), hi:Math.max(p.y,o.y) });
+  };
+  for (const it of items){ addEnd(it, 'a'); addEnd(it, 'b'); }
+  for (const ends of groups.values()){
+    // Nesting priority first (up-turners top-first, then down-turners
+    // bottom-first), then GREEDY interval colouring: an end takes the
+    // smallest lane whose already-placed verticals don't overlap its own
+    // span. Non-overlapping wires share lanes (no length wasted); the ones
+    // that would cross get exactly one LANE_PITCH of offset each — nested,
+    // never crossed. Up- and down-turners share the pool so their verticals
+    // never end up collinear either.
+    ends.sort((p,q)=>(p.vd - q.vd) || (p.vd < 0 ? p.y - q.y : q.y - p.y)
+      || String(p.it.key).localeCompare(String(q.it.key)));
+    const placed = [];
+    for (const m of ends){
+      let r = 0;
+      while (placed.some(x=>x.rank===r && x.lo < m.hi && x.hi > m.lo)) r++;
+      const cap = m.it.cap != null ? m.it.cap : LANE_MAX;
+      r = Math.min(r, cap);
+      placed.push({ rank:r, lo:m.lo, hi:m.hi });
+      lanes.get(m.it.key)[m.end] = r;
+    }
+  }
+  return lanes;
+}
 function latticeRoute(start, goal, obstacles, lane){
   const pads = obstacles.map(padForRoute);
   const d = (lane||0)*LANE_PITCH;
@@ -1484,22 +1533,38 @@ function reglueRoute(pts, pa, pb, obstacles){
   if (ptsInsideAnyBlock(p, obstacles)) return null;
   return p;
 }
+// A lane may be a plain number (both ends share it — the historical form) or
+// {a,b} with an independent lane per END: `a` sizes the stub at pa, `b` at
+// pb. Per-end lanes are what the exit-fan nesting rule needs — each wire of
+// a fan turns at its own distance (see fanAssignLanes).
+function laneEnd(lane, end){
+  if (lane && typeof lane==='object') return (end==='a' ? lane.a : lane.b) || 0;
+  return lane || 0;
+}
+function laneSig(lane){ return laneEnd(lane,'a')+':'+laneEnd(lane,'b'); }
 function groupEdgePts(pa, pb, route, obstacles, lane){
   const geo = sidedGeometry(pa, pb, null);
   const ptsOf = g => simplifyPts([[g.x1,g.y1],[g.bendX,g.y1],[g.bendX,g.bendY],
     [g.entryX,g.bendY],[g.entryX,g.y2],[g.x2,g.y2]]);
   const anchorsAt = l => {
-    const stub = GROUP_PORT_STUB + l*LANE_PITCH;
-    return { start: { x: pa.x + pa.sign*stub, y: pa.y },
-             goal:  { x: pb.x - pb.sign*stub, y: pb.y } };
+    const stubA = GROUP_PORT_STUB + laneEnd(l,'a')*LANE_PITCH;
+    const stubB = GROUP_PORT_STUB + laneEnd(l,'b')*LANE_PITCH;
+    return { start: { x: pa.x + pa.sign*stubA, y: pa.y },
+             goal:  { x: pb.x - pb.sign*stubB, y: pb.y } };
   };
   // A lane offset can push the stub endpoints inside a NEIGHBOURING block
   // (backward edges in tight sheets), which makes the lattice unreachable.
-  // Stepping the lane down until a route exists keeps the wire legal — far
+  // Stepping the lanes down until a route exists keeps the wire legal — far
   // better than falling back to an elbow that lies across a block.
   const tryLanes = fn => {
-    for (let l=lane||0; l>=0; l--){ const r = fn(l, anchorsAt(l)); if (r) return r; }
-    return null;
+    let a = laneEnd(lane,'a'), b = laneEnd(lane,'b');
+    for (;;){
+      const l = { a, b };
+      const r = fn(l, anchorsAt(l));
+      if (r) return r;
+      if (a===0 && b===0) return null;
+      a = Math.max(0, a-1); b = Math.max(0, b-1);
+    }
   };
   // A segment-translated wire stores its FULL polyline (route.pts): it is
   // honoured verbatim while its endpoints still meet the ports and no block has
@@ -1522,14 +1587,31 @@ function groupEdgePts(pa, pb, route, obstacles, lane){
     const at = ptsBadgePos(mp);
     route = { wx: at.x, wy: at.y };
   }
+  // FAN-DISCIPLINED shape first: the wire executes its 90° turn at ITS OWN
+  // lane distance from the exit — the nesting order made real geometry. With
+  // every wire of a fan turning right where its lane says, fans nest with a
+  // LANE_PITCH offset and never cross; a free-form router would put the
+  // vertical anywhere between the blocks and mix the disciplines. Only a
+  // shape that would cross a block falls through to the lattice.
+  if (!route && Math.abs(pa.y-pb.y)>=0.5){
+    const bxA = pa.x + pa.sign*(GROUP_PORT_STUB + laneEnd(lane,'a')*LANE_PITCH);
+    const bxB = pb.x - pb.sign*(GROUP_PORT_STUB + laneEnd(lane,'b')*LANE_PITCH);
+    for (const bx of [bxA, bxB]){
+      if ((bx - pa.x)*pa.sign < GROUP_PORT_STUB-0.5) continue;   // must still LEAVE the port
+      if ((pb.x - bx)*pb.sign < GROUP_PORT_STUB-0.5) continue;   // and ENTER the far one head-on
+      const z = [[pa.x,pa.y],[bx,pa.y],[bx,pb.y],[pb.x,pb.y]];
+      if (ptsClearOf(z, obstacles)) return { pts: simplifyPts(z), geo, manual:false };
+    }
+  }
   // A waypoint route ({wx,wy}) reroutes the wire THROUGH that point: the router
   // finds a legal path in and out of it. Used when a stored shape has to be
   // abandoned (above) — a point has far more legal positions than a shape.
   if (route && route.wx!=null && route.wy!=null){
     const wp = { x: route.wx, y: route.wy };
     const manual = tryLanes((l,{start,goal})=>{
-      const inPart  = latticeRoute(start, wp, obstacles, l);
-      const outPart = latticeRoute(wp, goal, obstacles, l);
+      const ln = Math.max(laneEnd(l,'a'), laneEnd(l,'b'));   // lattice wants a number
+      const inPart  = latticeRoute(start, wp, obstacles, ln);
+      const outPart = latticeRoute(wp, goal, obstacles, ln);
       return (inPart && outPart)
         ? { pts: simplifyPts([[pa.x,pa.y], ...inPart, ...outPart.slice(1), [pb.x,pb.y]]), geo, manual:true }
         : null;
@@ -1540,7 +1622,7 @@ function groupEdgePts(pa, pb, route, obstacles, lane){
   const plain = ptsOf(geo);
   if (ptsClearOf(plain, obstacles)) return { pts: plain, geo, manual:false };
   const auto = tryLanes((l,{start,goal})=>{
-    const mid = latticeRoute(start, goal, obstacles, l);
+    const mid = latticeRoute(start, goal, obstacles, Math.max(laneEnd(l,'a'), laneEnd(l,'b')));
     return mid ? { pts: simplifyPts([[pa.x,pa.y], ...mid, [pb.x,pb.y]]), geo, manual:false } : null;
   });
   return auto || { pts: plain, geo, manual:false };
@@ -1681,7 +1763,7 @@ function corridorObstacleSig(bbox, obstacles){
   return parts.sort().join('|');
 }
 function groupEdgePtsCached(key, pa, pb, route, obstacles, lane){
-  const anchorSig = `${pa.x},${pa.y},${pa.sign};${pb.x},${pb.y},${pb.sign};${route?JSON.stringify(route):''};L${lane||0}`;
+  const anchorSig = `${pa.x},${pa.y},${pa.sign};${pb.x},${pb.y},${pb.sign};${route?JSON.stringify(route):''};L${laneSig(lane)}`;
   const hit = _routeCache.get(key);
   if (hit && hit.anchorSig===anchorSig && hit.obsSig===corridorObstacleSig(hit.bbox, obstacles)) return hit;
   const res = groupEdgePts(pa, pb, route, obstacles, lane);
@@ -1750,26 +1832,11 @@ function assignRouteLanes(){
   const obstacles = visibleGroups().map(g=>groupBlockRect(g.id));
   const edges = computeGroupEdges().slice()
     .sort((a,b)=>groupEdgeRouteKey(a.source,a.target,a.dom).localeCompare(groupEdgeRouteKey(b.source,b.target,b.dom)));
-  const placed = [];
-  for (const e of edges){
-    const key = groupEdgeRouteKey(e.source,e.target,e.dom);
-    const manual = groupEdgeRouteOf(e.source,e.target,e.dom);
-    const pa = groupPortAnchor(e.source, e.source, e.target, 'out', e.dom);
-    const pb = groupPortAnchor(e.target, e.source, e.target, 'in', e.dom);
-    let bestLane = 0, bestPts = null, bestOv = Infinity;
-    const lanes = manual ? 1 : LANE_MAX+1;   // hand-routed wires don't use the lattice
-    for (let lane=0; lane<lanes; lane++){
-      const r = groupEdgePts(pa, pb, manual, obstacles, lane);
-      // A lane whose route degraded to a block-crossing fallback must never win
-      // on "zero overlap" — being clear of blocks outranks corridor sharing.
-      const ov = overlapLength(r.pts, placed) + (ptsInsideAnyBlock(r.pts, obstacles) ? 1e6 : 0);
-      if (ov < bestOv){ bestOv = ov; bestLane = lane; bestPts = r.pts; }
-      if (ov === 0) break;
-    }
-    S.groupEdgeLanes[key] = bestLane;
-    if (bestPts) placed.push(...routeSegments(bestPts));
-  }
-  _routeCache.clear();
+  const items = edges.map(e=>({ key: groupEdgeRouteKey(e.source,e.target,e.dom),
+    pa: groupPortAnchor(e.source, e.source, e.target, 'out', e.dom),
+    pb: groupPortAnchor(e.target, e.source, e.target, 'in', e.dom),
+    manual: groupEdgeRouteOf(e.source,e.target,e.dom) }));
+  assignLanesNested(items, obstacles);
 }
 
 /* ============================================================
@@ -1983,6 +2050,19 @@ function pinPortalWires(dir){
       undefined, obstacles, S.groupEdgeLanes[nodeEdgeLaneKey(s.e)] || 0);
     e.route = { pts: r.pts.map(p=>p.slice()) };
   }
+}
+// Move a whole FROM/TO box one step up or down within its column (the
+// inspector's Move up / Move down buttons) — stored in the same S.portalSeq
+// order the auto-layout writes, so the user can override its choice freely.
+function movePortalBoxStep(key, delta){
+  const dir = key.split(':')[0];
+  const col = drillSheet().portals.filter(p=>p.dir===dir);
+  const keys = col.map(p=>p.key);
+  const i = keys.indexOf(key), j = i+delta;
+  if (i<0 || j<0 || j>=keys.length) return false;
+  [keys[i], keys[j]] = [keys[j], keys[i]];
+  (S.portalSeq[S.openGroup] || (S.portalSeq[S.openGroup]={}))[dir] = keys;
+  return true;
 }
 // Vertical reorder of one portal's exit slots — the portal twin of
 // moveNodePortToRow: drag a slot's ring up/down and the other slots shuffle.
@@ -2210,21 +2290,39 @@ function drillSheet(){
 function assignNodeEdgeLanes(){
   const { specs, obstacles } = drillSheet();
   const ordered = specs.slice().sort((a,b)=>String(a.e.id).localeCompare(String(b.e.id)));
+  const items = ordered.map(s=>({ key: nodeEdgeLaneKey(s.e), pa: s.pa, pb: s.pb,
+    cap: s.kind==='internal' ? LANE_MAX : (s.maxLane ?? BOUNDARY_LANE_MAX),
+    manual: nodeEdgeRouteOf(s.e) }));
+  assignLanesNested(items, obstacles);
+}
+
+// The lane assigner both levels share. The exit-fan nesting lanes are the
+// FIRST candidate — the rule dominates net length, so fan wires keep their
+// constant offsets and never cross. A wire only leaves its fan lanes when
+// they are physically untenable: the route would lie across a block, or run
+// collinear over an already-placed wire. Fallbacks bump both ends together
+// first (preserving the fan's relative order), then sweep the legacy scalar
+// lanes, taking the first clean candidate — same 1e6 block penalty and
+// overlap scoring the old search used.
+function assignLanesNested(items, obstacles){
+  const fan = fanAssignLanes(items);
   const placed = [];
-  for (const s of ordered){
-    const manual = nodeEdgeRouteOf(s.e);
-    const maxLane = s.kind==='internal' ? LANE_MAX : (s.maxLane ?? BOUNDARY_LANE_MAX);
-    let bestLane = 0, bestPts = null, bestOv = Infinity;
-    const lanes = manual ? 1 : maxLane+1;   // hand-routed wires don't use the lattice
-    for (let lane=0; lane<lanes; lane++){
-      const r = groupEdgePts(s.pa, s.pb, manual, obstacles, lane);
-      // A lane whose route degraded to a block-crossing fallback must never win
-      // on "zero overlap" — being clear of blocks outranks corridor sharing.
-      const ov = overlapLength(r.pts, placed) + (ptsInsideAnyBlock(r.pts, obstacles) ? 1e6 : 0);
-      if (ov < bestOv){ bestOv = ov; bestLane = lane; bestPts = r.pts; }
-      if (ov === 0) break;
+  for (const it of items){
+    const base = fan.get(it.key);
+    const cap = it.cap != null ? it.cap : LANE_MAX;
+    const cands = [ { a:base.a, b:base.b } ];
+    if (!it.manual){   // hand-routed wires don't use the lattice — one pass for the score books
+      for (let k=1; k<=cap; k++) cands.push({ a:Math.min(base.a+k,cap), b:Math.min(base.b+k,cap) });
+      for (let l=0; l<=cap; l++) cands.push({ a:l, b:l });
     }
-    S.groupEdgeLanes[nodeEdgeLaneKey(s.e)] = bestLane;
+    let best = cands[0], bestScore = Infinity, bestPts = null;
+    for (const c of cands){
+      const r = groupEdgePts(it.pa, it.pb, it.manual, obstacles, c);
+      const score = (ptsInsideAnyBlock(r.pts, obstacles) ? 1e6 : 0) + overlapLength(r.pts, placed);
+      if (score < bestScore){ best = c; bestScore = score; bestPts = r.pts; }
+      if (score === 0) break;
+    }
+    S.groupEdgeLanes[it.key] = best;
     if (bestPts) placed.push(...routeSegments(bestPts));
   }
   _routeCache.clear();
@@ -2782,7 +2880,19 @@ function renderInspector(){
           <div class="nettop"><span class="netname">${esc(n.name)}</span><span class="nettype">${esc(n.type)}</span></div>
           ${n.description?`<div class="netdesc">${esc(n.description)}</div>`:''}
         </div>`).join('')}
+      <div class="btnrow">
+        <button id="btnPortalUp">▲ Move up</button>
+        <button id="btnPortalDown">▼ Move down</button>
+      </div>
+      <p class="hint">Move this ${dir==='in'?'FROM':'TO'} box up or down within its column to order the portals as you like.</p>
       ${other&&other.members.length?`<div class="btnrow"><button id="btnOpenOther">Open "${esc(other.title)}"</button></div>`:''}`;
+    const col = drillSheet().portals.filter(p=>p.dir===dir).map(p=>p.key);
+    const pos = col.indexOf(S.sel.id);
+    $('btnPortalUp').disabled = pos<=0;
+    $('btnPortalDown').disabled = pos<0 || pos>=col.length-1;
+    const stepBox = delta => { const snap=snapshotState(); if (movePortalBoxStep(S.sel.id, delta)){ commit(snap); render(); } };
+    $('btnPortalUp').onclick = ()=>stepBox(-1);
+    $('btnPortalDown').onclick = ()=>stepBox(1);
     const btn = $('btnOpenOther'); if (btn) btn.onclick=()=>openGroupView(otherId);
     wireTraceCards(body);
     return;
