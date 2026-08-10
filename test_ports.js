@@ -300,5 +300,30 @@ check('reset clears the flipped sides', !Object.keys(S.groupPortSides).some(k=>k
   check('drag far below clamps to the last row', Math.max(0, Math.min(nRows-1, below))===nRows-1);
 }
 
+/* ---------- IC bodies share the external blocks' surface ----------
+   No dark chip in either theme: the IC tokens are defined ONCE against
+   --paper/--ink, so they follow the active theme and can never drift from
+   the external blocks. An IC still reads as an IC — solid outline plus its
+   drop shadow, where an external block is a dashed soft outline. */
+{
+  const css = fs.readFileSync('styles.css','utf8');
+  const app = fs.readFileSync('app.js','utf8');
+  check('the IC body uses the external blocks\' fill token, and readable ink',
+    /--epoxy:\s*var\(--paper\)/.test(css) && /--silk:\s*var\(--ink\)/.test(css));
+  const darkBlock = (css.match(/:root\[data-theme="dark"\]\{[^}]*\}/)||[''])[0];
+  check('the dark theme does not re-darken them — one definition, both views',
+    !/--epoxy|--silk|--epoxy-edge/.test(darkBlock));
+  check('no hard-coded chip greys are left in the IC markup', !/#B9BEC4/i.test(app));
+  const icStart = app.indexOf('rx="5" fill="var(--epoxy)"');
+  const icMarkup = icStart>=0 ? app.slice(icStart-260, icStart+900) : '';
+  check('the IC rect still fills with var(--epoxy)', /fill="var\(--epoxy\)"/.test(icMarkup));
+  check('its label and separator use theme ink, not a light silkscreen',
+    !/#F2F3F4/.test(icMarkup) && /var\(--silk\)/.test(icMarkup));
+  // both block kinds paint on the same surface token
+  const extMarkup = app.slice(app.indexOf('EXTERNAL</text>')-700, app.indexOf('EXTERNAL</text>'));
+  check('external blocks are unchanged (paper fill, dashed outline)',
+    /fill="var\(--paper\)"/.test(extMarkup) && /stroke-dasharray/.test(extMarkup));
+}
+
 console.log('\n'+pass+' passed, '+fail+' failed');
 process.exit(fail?1:0);

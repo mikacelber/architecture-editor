@@ -2572,7 +2572,7 @@ function renderDrillDown(){
       const lx = left ? bx+bw+6 : bx-6;
       const selEdge = S.sel && (S.sel.type==='edge' || S.sel.type==='portal') && (S.sel.id===r.eid ||
         (S.sel.type==='portal' && specs.some(s=>s.e.id===r.eid && s.portalKey===S.sel.id)));
-      const labelColor = n.kind==='ic' ? '#B9BEC4' : 'var(--ink-soft)';
+      const labelColor = 'var(--ink-soft)';
       return `
       <line x1="${left?0:n.w}" y1="${y}" x2="${left?bx:bx+bw}" y2="${y}" stroke="${color}" stroke-width="1.4" opacity=".5"/>
       <text x="${lx}" y="${y+3.5}" text-anchor="${left?'start':'end'}" font-family="var(--mono)" font-size="9" fill="${labelColor}">${esc(nodePortRowLabel(r))}</text>
@@ -2591,7 +2591,7 @@ function renderDrillDown(){
         ${hvOverlayMarkup(side, n.w, n.h, 5, 'hvclip-'+safeId(n.id), n.hvFlip)}
         <circle cx="13" cy="13" r="3.6" fill="var(--silk)"/>
         <text x="26" y="26" font-family="var(--mono)" font-size="13.5" font-weight="600" fill="var(--silk)">${esc(n.label)}</text>
-        <text x="26" y="44" font-family="var(--sans)" font-size="10" fill="#B9BEC4">${esc((n.data.ic_type||'').slice(0,30))}</text>
+        <text x="26" y="44" font-family="var(--sans)" font-size="10" fill="var(--ink-soft)">${esc((n.data.ic_type||'').slice(0,30))}</text>
         ${hvSideTag(side, n.w, n.hvFlip)}
         <line x1="10" y1="${sepY}" x2="${n.w-10}" y2="${sepY}" stroke="var(--silk)" stroke-width="1" opacity=".25"/>
         ${portRows}
