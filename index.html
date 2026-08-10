@@ -85,6 +85,49 @@
         <g id="nodesG"></g>
       </g>
     </svg>
+
+    <!-- Empty sheet: nothing is loaded at boot, so the canvas offers the one
+         action that makes sense — a "+" card that opens Import. Hidden as
+         soon as the diagram has blocks (see renderEmptyState). -->
+    <div id="emptyState" hidden>
+      <button id="emptyAdd" title="Import a system JSON or a saved session">
+        <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round">
+          <line x1="24" y1="12" x2="24" y2="36"/>
+          <line x1="12" y1="24" x2="36" y2="24"/>
+        </svg>
+      </button>
+      <p class="es-title">No system loaded</p>
+      <p class="es-hint">Click <b>+</b> to import a system JSON or a saved session.</p>
+    </div>
+
+    <!-- View controls, bottom-right of the sheet: zoom out / zoom in / fit.
+         Icons only — each one names itself on hover. -->
+    <div id="viewTools">
+      <button id="btnZoomOut" title="Zoom out">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+          <circle cx="10.5" cy="10.5" r="6.5"/>
+          <line x1="15.4" y1="15.4" x2="20.5" y2="20.5"/>
+          <line x1="7.5" y1="10.5" x2="13.5" y2="10.5"/>
+        </svg>
+      </button>
+      <button id="btnZoomIn" title="Zoom in">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+          <circle cx="10.5" cy="10.5" r="6.5"/>
+          <line x1="15.4" y1="15.4" x2="20.5" y2="20.5"/>
+          <line x1="7.5" y1="10.5" x2="13.5" y2="10.5"/>
+          <line x1="10.5" y1="7.5" x2="10.5" y2="13.5"/>
+        </svg>
+      </button>
+      <button id="btnZoomFit" title="Fit diagram to view">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="3,8 3,3 8,3"/>
+          <polyline points="16,3 21,3 21,8"/>
+          <polyline points="21,16 21,21 16,21"/>
+          <polyline points="8,21 3,21 3,16"/>
+          <rect x="7.5" y="7.5" width="9" height="9" rx="1"/>
+        </svg>
+      </button>
+    </div>
   </div>
 
   <aside id="inspector">
