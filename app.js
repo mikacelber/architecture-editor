@@ -26,6 +26,7 @@ const S = {
   portalSeq: {}, // {[gid]: {in:[portalKey,...], out:[portalKey,...]}} — vertical order of the FROM/TO boxes, written by auto-layout (barycentric)
   portalAnchor: {}, // {[gid]: {minY,maxY}} — vertical anchor the FROM/TO columns are centred on, frozen so block drags never tow them
   ungroupedHvFlip: undefined, // LV|HV flip of the implicit UNGROUPED block (real groups keep g.hvFlip on themselves)
+  project: {}, // Project Options (PDF title block + page setup): {client, designer, date, initials, pageSize:'A3'|'A4', orientation:'landscape'|'portrait'}
   openGroup: null, // null = top-level view; groupId = drilled into that group (phase c)
   view: { tx:60, ty:40, k:1 },
   sel: null,   // {type:'node'|'edge'|'group'|'groupEdge'|'portal', id}
@@ -1937,6 +1938,7 @@ function restoreState(json){
   S.portalSeq = s.portalSeq || {};
   S.portalAnchor = s.portalAnchor || {};
   S.ungroupedHvFlip = s.ungroupedHvFlip || undefined;
+  S.project = s.project || {};
   S.openGroup = s.openGroup ?? null;
   S.edgeSeq = Math.max(0, ...S.edges.map(e=>+String(e.id).replace(/^e/,'')||0)) + 1;
   S.sel = null; S.link = null; S.traceNet = null;
@@ -2879,9 +2881,11 @@ function renderInspector(){
       <div class="kv"><label>Blocks</label><div class="val">${S.nodes.filter(n=>n.kind==='ic').length} ICs · ${S.nodes.filter(n=>n.kind==='external').length} external</div></div>
       <div class="kv"><label>Connections</label><div class="val">${S.edges.length} edges · ${S.edges.reduce((s,e)=>s+e.nets.length,0)} nets</div></div>
       <div class="kv"><label>Groups</label><div class="val">${groups.length} shown${ungrouped&&ungrouped.members.length?` · ${ungrouped.members.length} ungrouped`:''}</div></div>
+      <div class="btnrow"><button id="btnProjOpts">Project Options</button></div>
       <p style="margin-top:14px">${isTopLevel()
         ? 'System-level view — each block is a functional group, derived automatically from the underlying connections. Select a group or a connection to inspect it, or double-click a group to open it. Drag a group to reposition it.'
         : 'Select a block or a connection to inspect it. Press <b>Delete</b> to remove the selection. Click "System" above to return to the top level.'}</p>`;
+    $('btnProjOpts').onclick = openProjectOptionsModal;
     if (descTruncated) $('btnFullDesc').onclick = () => {
       openModal(S.meta.title||'System description',
         `<p style="white-space:pre-wrap;line-height:1.6">${esc(S.meta.description)}</p>`,
@@ -4149,13 +4153,255 @@ function openImportModal(){
 $('btnImport').onclick=openImportModal;
 $('emptyAdd').onclick=openImportModal;   // the blank sheet's "+" card
 
+/* ============================================================
+   PROJECT OPTIONS + PDF DRAWING EXPORT
+   ============================================================
+   One PDF page per sheet — the system view first, then every group — each
+   framed like an Altium schematic sheet: double border with numbered/lettered
+   zones, an Altium-style title block bottom-right (client, design house,
+   date, engineer initials, project title, sheet title, Sheet: n of N, size)
+   and a net-type table bottom-left (swatch line exactly as the on-screen
+   legend, plus the count of nets of that type on the sheet). The diagram is
+   centred and scaled to fill everything above the bottom band, and the page
+   is always WHITE — the export flips to the light theme while it renders, so
+   a print never burns ink on a dark background, while every net/port color
+   is kept. All the title-block data lives in S.project (Project Options on
+   the System inspector) and rides the session export/import. */
+function projectOf(){
+  const p = S.project || {};
+  const d = new Date(), z = x => String(x).padStart(2,'0');
+  return { client: p.client||'', designer: p.designer||'',
+           date: p.date || (z(d.getDate())+'/'+z(d.getMonth()+1)+'/'+d.getFullYear()),
+           initials: p.initials||'',
+           pageSize: p.pageSize==='A4' ? 'A4' : 'A3',
+           orientation: p.orientation==='portrait' ? 'portrait' : 'landscape' };
+}
+function openProjectOptionsModal(){
+  const p = projectOf();
+  openModal('Project Options', `
+    <div class="kv"><label>Project title</label><input type="text" id="poTitle" value="${esc(S.meta.title||'')}"></div>
+    <div class="row">
+      <div class="kv"><label>Designed for (client)</label><input type="text" id="poClient" placeholder="ACME Corp." value="${esc(p.client)}"></div>
+      <div class="kv"><label>Designed by (company)</label><input type="text" id="poDesigner" placeholder="NX Design" value="${esc(p.designer)}"></div>
+    </div>
+    <div class="row">
+      <div class="kv"><label>Date (dd/mm/yyyy)</label><input type="text" id="poDate" value="${esc(p.date)}"></div>
+      <div class="kv"><label>Engineer initials</label><input type="text" id="poInitials" placeholder="J.D." value="${esc(p.initials)}"></div>
+    </div>
+    <fieldset class="subpane"><legend>PDF Export Options</legend>
+      <div class="row">
+        <div class="kv"><label>Page size</label>
+          <select id="poSize"><option ${p.pageSize==='A3'?'selected':''}>A3</option><option ${p.pageSize==='A4'?'selected':''}>A4</option></select></div>
+        <div class="kv"><label>Orientation</label>
+          <select id="poOrient">
+            <option value="landscape" ${p.orientation==='landscape'?'selected':''}>Horizontal</option>
+            <option value="portrait" ${p.orientation==='portrait'?'selected':''}>Vertical</option>
+          </select></div>
+      </div>
+    </fieldset>
+    <p class="hint">These fields fill the drawing frame's title block on every page of Export → PDF drawing, and they are saved with the session.</p>
+  `, `<button id="mCancel">Cancel</button><button class="primary" id="mOk">Save</button>`);
+  $('mCancel').onclick=closeModal;
+  $('mOk').onclick=()=>{
+    commit();
+    S.meta.title = $('poTitle').value.trim();
+    S.project = { client:$('poClient').value.trim(), designer:$('poDesigner').value.trim(),
+      date:$('poDate').value.trim(), initials:$('poInitials').value.trim(),
+      pageSize:$('poSize').value, orientation:$('poOrient').value };
+    closeModal(); render(); toast('Project options saved');
+  };
+}
+// The pages of the drawing set: system view first, then every group with members.
+function pdfSheetList(){
+  return [ { gid:null, title:'System' },
+    ...groupsWithUngrouped().filter(g=>g.members.length).map(g=>({ gid:g.id, title:g.title })) ];
+}
+// Net-type rows for the CURRENT sheet: [{cat,label,count}], drawn categories only.
+function sheetNetCounts(){
+  const counts = {};
+  const bump = nets => { for (const n of nets) if (!isGroundNet(n)){ const c=netCategory(n); counts[c]=(counts[c]||0)+1; } };
+  if (isTopLevel()) for (const e of computeGroupEdges()) bump(e.nets);
+  else for (const s of drillSheet().specs) bump(s.e.nets);
+  return CATEGORY_PRIORITY.filter(c=>counts[c]).map(c=>({ cat:c, label:LEGEND_LABELS[c], count:counts[c] }));
+}
+const cssVar = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+// svg2pdf must see CONCRETE values — the live SVG leans on CSS custom
+// properties and class rules, so each clone gets its computed style stamped
+// on as plain attributes (resolved against the LIGHT theme active during
+// export). Walked in parallel: cloneNode keeps the child order identical.
+const PDF_STYLE_PROPS = ['fill','stroke','stroke-width','stroke-dasharray','stroke-linecap','stroke-linejoin',
+  'opacity','fill-opacity','stroke-opacity','font-family','font-size','font-weight','text-anchor','letter-spacing'];
+function inlineComputedStyles(srcEl, dstEl){
+  if (srcEl.nodeType!==1) return;
+  const cs = getComputedStyle(srcEl);
+  for (const prop of PDF_STYLE_PROPS){
+    const v = cs.getPropertyValue(prop);
+    if (v) dstEl.setAttribute(prop, v);
+  }
+  dstEl.removeAttribute('style');
+  dstEl.removeAttribute('filter');   // glow filters have no PDF meaning
+  for (let i=0;i<srcEl.children.length;i++) inlineComputedStyles(srcEl.children[i], dstEl.children[i]);
+}
+// ---- page furniture (all coordinates in mm) ----
+const PDF_FRAME = { outer:5, inner:10 };
+function pdfDrawFrame(doc, W, H){
+  const o=PDF_FRAME.outer, n=PDF_FRAME.inner;
+  doc.setDrawColor(30); doc.setLineWidth(0.5); doc.rect(o,o,W-2*o,H-2*o);
+  doc.setLineWidth(0.25); doc.rect(n,n,W-2*n,H-2*n);
+  // referencing zones, ISO-drawing style: numbers across, letters down
+  const cols=Math.max(4,Math.round(W/70)), rows=Math.max(3,Math.round(H/70));
+  doc.setFont('helvetica','normal'); doc.setFontSize(6); doc.setTextColor(90);
+  doc.setLineWidth(0.25);
+  for (let i=1;i<cols;i++){
+    const x=o+(W-2*o)*i/cols;
+    doc.line(x,o,x,n); doc.line(x,H-n,x,H-o);
+  }
+  for (let i=0;i<cols;i++){
+    const cx=o+(W-2*o)*(i+.5)/cols;
+    doc.text(String(i+1), cx, o+3.4, {align:'center'});
+    doc.text(String(i+1), cx, H-o-1.4, {align:'center'});
+  }
+  for (let i=1;i<rows;i++){
+    const y=o+(H-2*o)*i/rows;
+    doc.line(o,y,n,y); doc.line(W-n,y,W-o,y);
+  }
+  for (let i=0;i<rows;i++){
+    const cy=o+(H-2*o)*(i+.5)/rows + 1.1;
+    const ch=String.fromCharCode(65+i);
+    doc.text(ch, (o+n)/2, cy, {align:'center'});
+    doc.text(ch, W-(o+n)/2, cy, {align:'center'});
+  }
+}
+const PDF_TB = { h:23, rows:[7,7,9] };
+function pdfFitText(doc, text, w){
+  let t = String(text||'');
+  if (!t) return '';
+  while (t.length>1 && doc.getTextWidth(t) > w) t = t.slice(0,-1);
+  return t.length<String(text).length ? t.replace(/.$/,'…') : t;
+}
+function pdfCell(doc, x, y, w, h, cap, val, opts){
+  doc.setDrawColor(30); doc.setLineWidth(0.25); doc.rect(x,y,w,h);
+  doc.setFont('helvetica','normal'); doc.setFontSize(4.6); doc.setTextColor(120);
+  doc.text(cap, x+1.3, y+2.7);
+  doc.setFont('helvetica', (opts&&opts.bold)?'bold':'normal');
+  doc.setFontSize((opts&&opts.size)||8); doc.setTextColor(10);
+  doc.text(pdfFitText(doc, val||'—', w-2.6), x+1.3, y+h-2);
+}
+function pdfDrawTitleBlock(doc, W, H, p, sheetTitle, num, total){
+  const n=PDF_FRAME.inner;
+  const tw=Math.min(118,(W-2*n)*0.48), th=PDF_TB.h;
+  const x0=W-n-tw, y0=H-n-th;
+  const [r1,r2,r3]=PDF_TB.rows;
+  doc.setFillColor(255,255,255); doc.rect(x0,y0,tw,th,'F');
+  pdfCell(doc,x0,y0,tw*0.5,r1,'DESIGNED FOR',p.client);
+  pdfCell(doc,x0+tw*0.5,y0,tw*0.5,r1,'DESIGNED BY',p.designer);
+  pdfCell(doc,x0,y0+r1,tw,r2,'TITLE',S.meta.title||'Untitled system',{bold:true,size:8.5});
+  const w3=[tw*0.32,tw*0.20,tw*0.11,tw*0.10,tw*0.27];
+  let cx=x0; const y3=y0+r1+r2;
+  pdfCell(doc,cx,y3,w3[0],r3,'SHEET TITLE',sheetTitle,{bold:true,size:7.5}); cx+=w3[0];
+  pdfCell(doc,cx,y3,w3[1],r3,'DATE',p.date,{size:7}); cx+=w3[1];
+  pdfCell(doc,cx,y3,w3[2],r3,'ENG',p.initials,{size:7}); cx+=w3[2];
+  pdfCell(doc,cx,y3,w3[3],r3,'SIZE',p.pageSize,{size:7}); cx+=w3[3];
+  pdfCell(doc,cx,y3,w3[4],r3,'SHEET',`${num} of ${total}`,{size:7});
+  return { x:x0, y:y0, w:tw, h:th };
+}
+const PDF_LEGEND = { rowH:5.2, headH:6, typeW:44, countW:14 };
+function pdfDrawNetLegend(doc, W, H, rows){
+  if (!rows.length) return { h:0 };
+  const n=PDF_FRAME.inner, L=PDF_LEGEND;
+  const w=L.typeW+L.countW, h=L.headH+rows.length*L.rowH;
+  const x0=n, y0=H-n-h;
+  doc.setFillColor(255,255,255); doc.rect(x0,y0,w,h,'F');
+  doc.setDrawColor(30); doc.setLineWidth(0.25);
+  doc.rect(x0,y0,w,L.headH);
+  doc.setFont('helvetica','bold'); doc.setFontSize(5.4); doc.setTextColor(60);
+  doc.text('NET TYPE', x0+1.5, y0+L.headH-2);
+  doc.text('QTY', x0+L.typeW+1.5, y0+L.headH-2);
+  doc.setFont('helvetica','normal');
+  rows.forEach((r,i)=>{
+    const y=y0+L.headH+i*L.rowH;
+    doc.rect(x0,y,L.typeW,L.rowH); doc.rect(x0+L.typeW,y,L.countW,L.rowH);
+    // the swatch is the SAME line the canvas legend shows: category color + dash
+    const style=NET_CATEGORY_STYLE[r.cat];
+    const col=cssVar('--sig-'+(r.cat==='analog'?'analog':r.cat)) || '#000';
+    doc.setDrawColor(col); doc.setLineWidth(0.7);
+    doc.setLineDashPattern(style.dash ? style.dash.split(/\s+/).map(v=>+v*0.16) : [], 0);
+    doc.line(x0+1.5, y+L.rowH/2, x0+11, y+L.rowH/2);
+    doc.setLineDashPattern([],0); doc.setDrawColor(30); doc.setLineWidth(0.25);
+    doc.setFontSize(6.4); doc.setTextColor(10);
+    doc.text(r.label, x0+13, y+L.rowH-1.7);
+    doc.text(String(r.count), x0+L.typeW+L.countW-1.5, y+L.rowH-1.7, {align:'right'});
+  });
+  return { x:x0, y:y0, w, h };
+}
+// The current sheet's drawing, centred and maximized in `area` (mm).
+async function pdfAddDiagram(doc, area){
+  const bb = viewport.getBBox();
+  if (!(bb.width>0 && bb.height>0)) return;
+  const pad=10;
+  const vb = { x:bb.x-pad, y:bb.y-pad, w:bb.width+2*pad, h:bb.height+2*pad };
+  const k = Math.min(area.w/vb.w, area.h/vb.h);
+  const w=vb.w*k, h=vb.h*k;
+  const x=area.x+(area.w-w)/2, y=area.y+(area.h-h)/2;
+  const tmp=document.createElementNS('http://www.w3.org/2000/svg','svg');
+  tmp.setAttribute('viewBox', `${vb.x} ${vb.y} ${vb.w} ${vb.h}`);
+  const defs=svg.querySelector('defs');
+  const defsClone=defs.cloneNode(true); inlineComputedStyles(defs, defsClone);
+  tmp.appendChild(defsClone);
+  for (const gEl of [edgesG, nodesG]){
+    const c=gEl.cloneNode(true); inlineComputedStyles(gEl, c); tmp.appendChild(c);
+  }
+  tmp.style.position='fixed'; tmp.style.left='-10000px'; tmp.style.top='0';
+  tmp.style.width='10px'; tmp.style.height='10px';
+  document.body.appendChild(tmp);
+  try { await doc.svg(tmp, { x, y, width:w, height:h }); }
+  finally { tmp.remove(); }
+}
+async function exportPdfDrawing(){
+  if (!(window.jspdf && window.jspdf.jsPDF && window.jspdf.jsPDF.API.svg)){
+    toast('PDF engine not loaded (lib/jspdf + lib/svg2pdf)'); return;
+  }
+  const p = projectOf();
+  const doc = new window.jspdf.jsPDF({ orientation:p.orientation, unit:'mm',
+    format:p.pageSize.toLowerCase(), compress:true });
+  const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight();
+  const sheets = pdfSheetList();
+  const prev = { theme:document.documentElement.dataset.theme, open:S.openGroup,
+    sel:S.sel, trace:S.traceNet, view:{...S.view} };
+  // WHITE pages: render against the light theme whatever the screen uses —
+  // the printer's ink budget must not depend on the editor's dark mode.
+  document.documentElement.dataset.theme='light';
+  try {
+    for (let i=0;i<sheets.length;i++){
+      if (i) doc.addPage(p.pageSize.toLowerCase(), p.orientation);
+      S.openGroup=sheets[i].gid; S.sel=null; S.traceNet=null;
+      _routeCache.clear(); render();
+      pdfDrawFrame(doc, W, H);
+      const legendRows = sheetNetCounts();
+      pdfDrawTitleBlock(doc, W, H, p, sheets[i].title, i+1, sheets.length);
+      pdfDrawNetLegend(doc, W, H, legendRows);
+      const n=PDF_FRAME.inner, gap=3;
+      const bottomBand=Math.max(PDF_TB.h,
+        legendRows.length ? PDF_LEGEND.headH+legendRows.length*PDF_LEGEND.rowH : 0);
+      await pdfAddDiagram(doc, { x:n+gap, y:n+gap,
+        w:W-2*n-2*gap, h:H-2*n-2*gap-bottomBand });
+    }
+    doc.save((S.meta.id||'architecture')+'_drawings.pdf');
+  } finally {
+    document.documentElement.dataset.theme=prev.theme;
+    S.openGroup=prev.open; S.sel=prev.sel; S.traceNet=prev.trace; S.view=prev.view;
+    _routeCache.clear(); render();
+  }
+  return doc;
+}
+
 $('btnExport').onclick=()=>{
   const pipeline = buildPipelineJSON();
   const session = buildSessionJSON();
   const emptyEdges = S.edges.filter(e=>e.nets.length===0).length;
   openModal('Export', `
     ${emptyEdges?`<p class="hint" style="color:var(--warn)">Note: ${emptyEdges} connection(s) without nets will be omitted from the contract.</p>`:''}
-    <div class="tabs"><button class="on" id="tabP">Pipeline input</button><button id="tabS">Save session</button></div>
+    <div class="tabs"><button class="on" id="tabP">Pipeline input</button><button id="tabS">Save session</button><button id="tabF">PDF drawing</button></div>
     <div id="paneP">
       <p class="hint">Feed this JSON to <b>Prepare Blocks</b> (it carries <span style="font-family:var(--mono)">global_contract_override</span>, so the Architect agent is skipped).</p>
       <pre class="out" id="outP"></pre>
@@ -4164,14 +4410,38 @@ $('btnExport').onclick=()=>{
       <p class="hint">Keeps node positions and all edits — re-import later via Import → Saved session.</p>
       <pre class="out" id="outS"></pre>
     </div>
+    <div id="paneF" style="display:none">
+      <p class="hint">A drawing set on white paper, one page per sheet: the system view first, then every
+        group — ${pdfSheetList().length} page${pdfSheetList().length===1?'':'s'} of
+        ${projectOf().pageSize} ${projectOf().orientation==='landscape'?'horizontal':'vertical'}.
+        Each page carries the Altium-style frame with the title block (bottom-right) and the sheet's
+        net-type table (bottom-left). Fill the title block via <b>Project Options</b> on the System panel;
+        page size and orientation live in its <b>PDF Export Options</b>.</p>
+    </div>
   `, `<button id="mCopy">Copy</button><button class="primary" id="mDl">Download</button>`);
   const pTxt=JSON.stringify([pipeline],null,2), sTxt=JSON.stringify(session,null,2);
   $('outP').textContent=pTxt; $('outS').textContent=sTxt;
   let mode='P';
-  $('tabP').onclick=()=>{ mode='P'; $('tabP').classList.add('on'); $('tabS').classList.remove('on'); $('paneP').style.display=''; $('paneS').style.display='none'; };
-  $('tabS').onclick=()=>{ mode='S'; $('tabS').classList.add('on'); $('tabP').classList.remove('on'); $('paneS').style.display=''; $('paneP').style.display='none'; };
+  const setTab=m=>{
+    mode=m;
+    for (const [t,id] of [['P','tabP'],['S','tabS'],['F','tabF']]) $(id).classList.toggle('on', t===m);
+    for (const [t,id] of [['P','paneP'],['S','paneS'],['F','paneF']]) $(id).style.display = t===m ? '' : 'none';
+    // the PDF tab downloads a drawing, not text — Copy has nothing to copy there
+    $('mCopy').style.display = m==='F' ? 'none' : '';
+    $('mDl').textContent = m==='F' ? 'Generate PDF' : 'Download';
+  };
+  $('tabP').onclick=()=>setTab('P');
+  $('tabS').onclick=()=>setTab('S');
+  $('tabF').onclick=()=>setTab('F');
   $('mCopy').onclick=()=>{ navigator.clipboard.writeText(mode==='P'?pTxt:sTxt).then(()=>toast('Copied')); };
-  $('mDl').onclick=()=>{
+  $('mDl').onclick=async()=>{
+    if (mode==='F'){
+      $('mDl').disabled=true;
+      try { await exportPdfDrawing(); toast('PDF generated'); }
+      catch(err){ toast('PDF failed: '+err.message); }
+      finally { $('mDl').disabled=false; }
+      return;
+    }
     const blob=new Blob([mode==='P'?pTxt:sTxt],{type:'application/json'});
     const a=document.createElement('a');
     a.href=URL.createObjectURL(blob);
@@ -4238,6 +4508,7 @@ function buildSessionJSON(){
     portalSeq:JSON.parse(JSON.stringify(S.portalSeq)),
     portalAnchor:JSON.parse(JSON.stringify(S.portalAnchor)),
     ungroupedHvFlip:S.ungroupedHvFlip,
+    project:{ ...S.project },
     openGroup:S.openGroup,
     // Pan/zoom rides along so a re-imported session opens on the exact same
     // framing. Deliberately NOT read back by restoreState: undoing an edit
@@ -4264,6 +4535,7 @@ function loadSession(s){
   S.portalSeq = s.portalSeq || {};
   S.portalAnchor = s.portalAnchor || {};
   S.ungroupedHvFlip = s.ungroupedHvFlip || undefined;
+  S.project = s.project || {};
   S.openGroup = s.openGroup || null;
   S.edgeSeq = Math.max(0, ...S.edges.map(e=>+String(e.id).replace(/^e/,'')||0)) + 1;
   // Nothing of the outgoing document may leak into the restored one.
@@ -4284,7 +4556,7 @@ function loadFromContract(input, contract, groups){
   S.edgeSeq=0;
   const g = buildGraph(input, contract||{}, groups||[]);
   S.nodes=g.nodes; S.edges=g.edges; S.groups=g.groups;
-  S.groupPos={}; S.groupEdgeRoutes={}; S.groupPortSides={}; S.groupPortOrder={}; S.groupEdgeLanes={}; S.portalOffsets={}; S.portalOrder={}; S.portalSeq={}; S.portalAnchor={}; S.ungroupedHvFlip=undefined; S.openGroup=null; S.sel=null;
+  S.groupPos={}; S.groupEdgeRoutes={}; S.groupPortSides={}; S.groupPortOrder={}; S.groupEdgeLanes={}; S.portalOffsets={}; S.portalOrder={}; S.portalSeq={}; S.portalAnchor={}; S.ungroupedHvFlip=undefined; S.project={}; S.openGroup=null; S.sel=null;
   autoLayoutAllGroupMembers();
   autoLayoutGroups();
   assignRouteLanes();   // spread the wires apart before the first paint

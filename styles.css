@@ -166,6 +166,11 @@ footer{display:flex;align-items:center;gap:10px;padding:6px 16px;border-top:1px 
 #legend .litem{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;color:var(--ink-soft)}
 #legend .lswatch{width:16px;height:0;border-top-width:2.5px;border-top-style:solid;display:inline-block}
 
+/* ---------- Project Options: the PDF-export sub-window ---------- */
+fieldset.subpane{border:1.5px solid var(--line);border-radius:3px;padding:10px 12px 4px;margin:12px 0 10px}
+fieldset.subpane legend{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--ink-soft);padding:0 6px}
+
 /* ---------- empty sheet: the "+" card that opens Import ----------
    Shown only while nothing is loaded (renderEmptyState toggles [hidden]).
    It floats over the middle of the canvas and is the sheet's only offer:
