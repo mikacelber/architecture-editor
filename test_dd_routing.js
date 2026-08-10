@@ -15,8 +15,8 @@ window.__T={get S(){return S;},loadFromContract,render,openGroupView,closeGroupV
  drillSheet,portalOffsetOf,setPortalOffset,PORTAL_MARGIN:PORTAL_MARGIN,LANE_PITCH:LANE_PITCH,PORTAL_H:PORTAL_H,
  translateWireSegment,nodeBlockWidth,textWidth,isHvNet,netCategory,nodeSide,
  openAddPortalModal,candidateNetsForPortal,groupNetIndex,nodeGroupIndex,computeGroupEdges,traceSets,
- movePortalSlotToRow,pinPortalWires,nodeEdgeRouteOf,groupPortRowsFor,laneEnd,fanAssignLanes,nodeEdgeLaneKey,
- GROUP_PORT_STUB:GROUP_PORT_STUB,commit,undo};`);
+ movePortalSlotToRow,pinPortalWires,nodeEdgeRouteOf,groupPortRowsFor,laneEnd,fanAssignLanes,nodeEdgeLaneKey,fanStub,
+ GROUP_PORT_STUB:GROUP_PORT_STUB,FAN_PITCH:FAN_PITCH,commit,undo};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -644,9 +644,9 @@ check('every in-group connection carries a routing lane',
    anchoring against the mid blocks, vertical slot reorder ---- */
 {
   const onGrid=v=>Math.abs(v-Math.round(v/T.GRID)*T.GRID)<0.01;
-  // Slots ride the FINE lattice (GRID/2) — one of the zoom subdivision pitches —
-  // which keeps the fan compact while still landing dead on grid lines.
-  const fine=T.GRID/2;
+  // Slots ride the SAME pitch as a block's port rows (one full GRID), so the
+  // net-to-net distance stays constant from portal to block.
+  const fine=T.GRID;
   const onFine=v=>Math.abs(v-Math.round(v/fine)*fine)<0.01;
   const slotYOf=s=>s.kind==='in'?s.pa.y:s.pb.y;
   const sheet=T.drillSheet();
@@ -668,9 +668,9 @@ check('every in-group connection carries a routing lane',
     const mid=(ys[0]+ys[ys.length-1])/2;
     return spaced && Math.abs(mid-(p.r.y+p.r.h/2))<=fine/2+0.01;
   });
-  check('slots keep the compact half-GRID pitch, centred in their box', fanOk);
-  check('a box with up to 3 wires stays at the base height',
-    sheet.portals.every(p=>p.unders.length>3 || p.r.h===T.PORTAL_H));
+  check('slots keep the block-port pitch (one GRID), centred in their box', fanOk);
+  check('a box grows one GRID row per wire (base height up to 1 wire)',
+    sheet.portals.every(p=>p.r.h===Math.max(T.PORTAL_H,(p.unders.length+1)*T.GRID)));
   // the FROM/TO caption + title pair is centred on the box midline
   T.render();
   const textCentred=[...doc.querySelectorAll('#edgesG .portal')].every(el=>{
@@ -766,6 +766,11 @@ check('every in-group connection carries a routing lane',
   const kept=inSpecs.every(s=>{
     const a=before.get(s.e.id), b=ptsOfEdge(s.e.id);
     if (!a||!b) return false;
+    // a STRAIGHT wire whose portal end moved vertically needs a fresh bend —
+    // only its endpoints are checkable (port follows, member end pinned)
+    if (a.length===2)
+      return Math.abs(b[0][0]-(a[0][0]-96))<0.01 && Math.abs(b[0][1]-(a[0][1]+24))<0.01 &&
+             Math.abs(b[b.length-1][0]-a[1][0])<0.01 && Math.abs(b[b.length-1][1]-a[1][1])<0.01;
     const expect=simp([[a[0][0]-96,a[0][1]+24],[a[1][0],a[1][1]+24],...a.slice(2)]);
     return JSON.stringify(simp(b))===JSON.stringify(expect);
   });
@@ -774,8 +779,10 @@ check('every in-group connection carries a routing lane',
   for (const w of wirePts()){ const hit=crossesAny(w.pts, T.openGroupObstacleRects()); if (hit) bad=w.eid+' over '+hit; }
   check('stretched wires are still clear of every block'+(bad?' ['+bad+']':''), !bad);
 
-  // a hand-routed wire (manual pts) survives the move the same way
-  const manualSpec=inSpecs[0];
+  // a hand-routed wire (manual pts) survives the move the same way — pick one
+  // with an interior to preserve (a straight wire legitimately re-bends)
+  const manualSpec=inSpecs.find(s=>{ const e=S.edges.find(x=>x.id===s.e.id);
+    return e && e.route && e.route.pts && e.route.pts.length>=4; }) || inSpecs[0];
   const manualShape=S.edges.find(x=>x.id===manualSpec.e.id).route.pts.map(p=>p.slice());
   T.setPortalOffset(best.id,'in',-192,48); T.render();
   const after2=ptsOfEdge(manualSpec.e.id);
@@ -894,8 +901,8 @@ check('every in-group connection carries a routing lane',
     const key=T.nodeEdgeLaneKey(s.e);
     const lane=S.groupEdgeLanes[key], base=baseLanes.get(key);
     const atBase= base && T.laneEnd(lane,'a')===base.a && T.laneEnd(lane,'b')===base.b;
-    const bxA=s.pa.x + s.pa.sign*(T.GROUP_PORT_STUB + T.laneEnd(lane,'a')*T.LANE_PITCH);
-    const bxB=s.pb.x - s.pb.sign*(T.GROUP_PORT_STUB + T.laneEnd(lane,'b')*T.LANE_PITCH);
+    const bxA=s.pa.x + s.pa.sign*T.fanStub(s.pa, T.laneEnd(lane,'a'));
+    const bxB=s.pb.x - s.pb.sign*T.fanStub(s.pb, T.laneEnd(lane,'b'));
     let firstBend=null;
     for(let k=0;k<p.length-1;k++) if (Math.abs(p[k][1]-p[k+1][1])>=0.5){ firstBend=p[k][0]; break; }
     for (const [end,anchor,other] of [['a',s.pa,s.pb],['b',s.pb,s.pa]]){
@@ -940,14 +947,16 @@ check('every in-group connection carries a routing lane',
     // block) may still cross: those pairs are bounded, not forbidden.
     if (A.turnsHere && B.turnsHere){ zPairs++; zCrossings+=n; }
     else if (n>0) laxPairsCrossed++;
-    // the first-turn verticals keep at least one LANE_PITCH between them
-    if (Math.abs(bxA-bxB)<T.LANE_PITCH-0.5) spacedOk=false;
+    // wires turning on THIS fan's ladder keep at least one FULL GRID between
+    // their verticals — the same distance as two ports of a block (a wire
+    // turning at its other end rides a different, phase-shifted ladder)
+    if (A.turnsHere && B.turnsHere && Math.abs(bxA-bxB)<T.FAN_PITCH-0.5) spacedOk=false;
   }
   console.log('   '+fanPairs+' overlapping same-direction fan pairs ('+zPairs+' fully disciplined, '+laxPairsCrossed+' router-fallback pairs cross)');
   check('a disciplined fan exists to verify (test is meaningful)', zPairs>0);
   check('disciplined fan wires NEVER cross inside the fan region', zCrossings===0);
   check('router-fallback fan crossings never regress past the fixture baseline (≤16 pairs; was 23 before nesting)', laxPairsCrossed<=16);
-  check('fan wires keep at least one LANE_PITCH of horizontal offset', spacedOk);
+  check('fan wires keep at least one GRID (block-port pitch) of offset', spacedOk);
 }
 
 T.closeGroupView();
