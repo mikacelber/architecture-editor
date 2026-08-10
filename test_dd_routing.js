@@ -516,6 +516,53 @@ check('every in-group connection carries a routing lane',
   check('a new net as output drives the chosen counterpart',
     S.edges.some(e=>e.source===ext.id && e.target===other && e.nets.some(nn=>nn.name==='TEST_NEW_NET')));
 
+  // the NEW-net counterpart spans the WHOLE system, this group leading
+  S.sel={ type:'node', id:ext.id }; T.render();
+  const an3=doc.getElementById('anNet'); an3.value='__new__'; an3.onchange();
+  const sel=doc.getElementById('anOther');
+  const ogs=[...sel.querySelectorAll('optgroup')];
+  const allIds=new Set([...sel.options].map(o=>o.value));
+  const sysIds=S.nodes.map(x=>x.id).filter(id=>id!==ext.id);
+  check('the counterpart list offers every block of the system except this one',
+    sysIds.every(id=>allIds.has(id)) && !allIds.has(ext.id));
+  check('counterparts are grouped per group, this group first',
+    ogs.length>1 && /this group/i.test(ogs[0].label));
+  const idxG=T.nodeGroupIndex();
+  check('each optgroup holds exactly its own group\'s blocks',
+    ogs.every(og=>{
+      const ids=[...og.querySelectorAll('option')].map(o=>o.value);
+      const gset=new Set(ids.map(id=>idxG.get(id)));
+      return gset.size===1;
+    }));
+
+  // a cross-group counterpart creates the boundary edge, and everything
+  // else — TO portal here, FROM portal there, top-level wire — derives
+  const farBlock=[...sel.options].map(o=>o.value).find(id=>idxG.get(id)!==best.id);
+  check('a foreign-group counterpart is offered (test is meaningful)', !!farBlock);
+  const farGid=idxG.get(farBlock);
+  doc.getElementById('anName').value='TEST_XGROUP_NET';
+  doc.getElementById('anDir').value='out';
+  sel.value=farBlock;
+  doc.getElementById('btnAddNetNode').onclick();
+  check('the cross-group net creates the boundary edge to the far block',
+    S.edges.some(e=>e.source===ext.id && e.target===farBlock && e.nets.some(nn=>nn.name==='TEST_XGROUP_NET')));
+  const toPortal=T.drillSheet().portals.find(p=>p.dir==='out' && p.key.includes(farGid) &&
+    p.unders.some(e=>e.source===ext.id && e.target===farBlock));
+  check('a TO portal for the far group materializes on this sheet', !!toPortal);
+  T.closeGroupView(); T.openGroupView(farGid);
+  const fromPortal=T.drillSheet().portals.find(p=>p.dir==='in' && p.key.includes(best.id) &&
+    p.unders.some(e=>e.source===ext.id && e.target===farBlock));
+  check('the far group\'s sheet gains the matching FROM portal', !!fromPortal);
+  T.closeGroupView();
+  check('the group-to-group wire appears on the system level',
+    T.computeGroupEdges().some(e=>e.source===best.id && e.target===farGid));
+  T.openGroupView(best.id);
+  // leave the sheet as the later rules expect it — the cross-group net was
+  // committed once, so one undo removes it (and its derived portals/wire)
+  T.undo(); T.render();
+  check('undo removes the cross-group net and its derived boundary again',
+    !S.edges.some(e=>e.nets.some(nn=>nn.name==='TEST_XGROUP_NET')));
+
   // "+" buttons under both portal columns; the FROM modal creates the portal
   S.sel=null; T.render();
   check('a "+" button sits under both portal columns', doc.querySelectorAll('#edgesG .portaladd').length===2);
