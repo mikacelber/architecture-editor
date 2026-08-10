@@ -158,6 +158,36 @@ footer{display:flex;align-items:center;gap:10px;padding:6px 16px;border-top:1px 
 #legend .litem{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;color:var(--ink-soft)}
 #legend .lswatch{width:16px;height:0;border-top-width:2.5px;border-top-style:solid;display:inline-block}
 
+/* ---------- empty sheet: the "+" card that opens Import ----------
+   Shown only while nothing is loaded (renderEmptyState toggles [hidden]).
+   It floats over the middle of the canvas and is the sheet's only offer:
+   a diagram exists because the user imported one. */
+#emptyState{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:5;
+  display:flex;flex-direction:column;align-items:center;gap:10px;text-align:center;
+  background:var(--panel);border:1.5px solid var(--line);border-radius:6px;padding:28px 40px}
+#emptyState[hidden]{display:none}
+#emptyAdd{width:76px;height:76px;padding:0;display:flex;align-items:center;justify-content:center;
+  border:2px dashed var(--ink-soft);border-radius:8px;background:var(--field-bg);color:var(--ink-soft);
+  cursor:pointer;line-height:0;transition:color .12s,border-color .12s,background .12s}
+#emptyAdd:hover{color:var(--probe);border-color:var(--probe);background:var(--btn-hover)}
+#emptyAdd svg{width:40px;height:40px}
+#emptyState .es-title{margin:0;font-family:var(--mono);font-size:12px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--ink)}
+#emptyState .es-hint{margin:0;font-size:12px;color:var(--ink-soft);max-width:34ch;line-height:1.5}
+
+/* ---------- view controls (bottom-right of the sheet) ----------
+   Icons only — zoom out, zoom in, fit — each naming itself on hover via its
+   native title tooltip. */
+#viewTools{position:absolute;right:12px;bottom:12px;z-index:6;display:flex;flex-direction:column;
+  border:1.5px solid var(--line);border-radius:5px;background:var(--panel);overflow:hidden}
+#viewTools button{width:30px;height:30px;padding:0;display:flex;align-items:center;justify-content:center;
+  border:none;border-bottom:1px solid var(--line);border-radius:0;background:transparent;
+  color:var(--ink-soft);cursor:pointer;line-height:0}
+#viewTools button:last-child{border-bottom:none}
+#viewTools button:hover{color:var(--ink);background:var(--btn-hover)}
+#viewTools button:disabled{opacity:.4;cursor:default;background:transparent;color:var(--ink-soft)}
+#viewTools svg{width:17px;height:17px}
+
 /* ---------- LV|HV flip switch (barrier blocks) ----------
    `label.switch` (not just .switch): the generic `.kv label` block rule would
    otherwise out-rank the flex display and collapse the knob onto the text. */
