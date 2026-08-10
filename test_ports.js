@@ -137,8 +137,12 @@ check('auto-layout still deterministic with the taller blocks', p1===p2);
 T.render(); const r1=window.document.getElementById('nodesG').innerHTML;
 T.render(); const r2=window.document.getElementById('nodesG').innerHTML;
 check('render deterministic', r1===r2);
+// a full auto-layout re-aims every port (wiping older overrides), so a manual
+// flip made AFTER it must land in the session on top of what layout stored
+T.setGroupPortSide(e0.source, e0.source, e0.target, 'left', e0.dom);
 const sess = T.buildSessionJSON();
-check('port sides saved in the session', sess.groupPortSides && Object.keys(sess.groupPortSides).length===2);
+check('a manual port side lands in the saved session',
+  sess.groupPortSides && sess.groupPortSides[e0.source+'|'+e0.source+'→'+e0.target+(e0.dom==='hv'?'#hv':'')]==='left');
 check('export unaffected by port sides', JSON.stringify(T.buildPipelineJSON())===JSON.stringify(T.buildPipelineJSON()));
 
 /* ---- drill-down untouched ---- */

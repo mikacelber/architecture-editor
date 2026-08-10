@@ -68,11 +68,14 @@ const wirePts=()=>[...doc.querySelectorAll('#edgesG .edge')].map(g=>({
     if (Math.abs(a[1]-b[1])>=0.5) horizEntry=false;
     const e=S.edges.find(x=>x.id===w.eid);
     const na=T.nodeById(e.source), nb=T.nodeById(e.target);
-    if (Math.abs(pts[0][0]-(na.x+na.w))>=0.5 || Math.abs(b[0]-nb.x)>=0.5) anchored=false;
+    // port aiming may put a port on either vertical edge (it faces its
+    // neighbour) — each end must sit exactly ON one edge of its own block
+    const onEdge=(x,n)=>Math.abs(x-n.x)<0.5 || Math.abs(x-(n.x+n.w))<0.5;
+    if (!onEdge(pts[0][0],na) || !onEdge(b[0],nb)) anchored=false;
   }
   check('every wire is orthogonal (H/V segments only)', ortho);
   check('the arrow enters the block horizontally (perpendicular to its edge)', horizEntry);
-  check('wires start on the source right edge and end on the target left edge', anchored);
+  check('wires start on a source edge and end on a target edge', anchored);
 }
 
 /* ---- rule 3: routing lanes assigned like the top level ---- */

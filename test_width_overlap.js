@@ -54,10 +54,10 @@ function allRoutes(){
   const obs=T.visibleGroups().map(g=>T.groupBlockRect(g.id));
   const out=new Map();
   for (const e of T.computeGroupEdges()){
-    const pa=T.groupPortAnchor(e.source,e.source,e.target,'out');
-    const pb=T.groupPortAnchor(e.target,e.source,e.target,'in');
-    const k=T.groupEdgeRouteKey(e.source,e.target);
-    out.set(k, T.groupEdgePts(pa,pb,T.groupEdgeRouteOf(e.source,e.target),obs,T.laneOf(e.source,e.target)).pts);
+    const pa=T.groupPortAnchor(e.source,e.source,e.target,'out',e.dom);
+    const pb=T.groupPortAnchor(e.target,e.source,e.target,'in',e.dom);
+    const k=T.groupEdgeRouteKey(e.source,e.target,e.dom);
+    out.set(k, T.groupEdgePts(pa,pb,T.groupEdgeRouteOf(e.source,e.target,e.dom),obs,T.laneOf(e.source,e.target,e.dom)).pts);
   }
   return out;
 }

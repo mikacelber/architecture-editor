@@ -19,6 +19,7 @@ const S = {
   groupPortOrder: {}, // {[gid]: ['srcId→tgtId', ...]} — port rows dragged into a manual vertical order
   portalOffsets: {}, // {[gid]: {in:{dx,dy}, out:{dx,dy}}} — each portal COLUMN dragged as a whole (any direction; the design minimum distance to the blocks clamps at render)
   portalOrder: {}, // {[gid]: {[portalKey]: [edgeId,...]}} — a portal's exit slots dragged into a manual vertical order
+  portalSeq: {}, // {[gid]: {in:[portalKey,...], out:[portalKey,...]}} — vertical order of the FROM/TO boxes, written by auto-layout (barycentric)
   portalAnchor: {}, // {[gid]: {minY,maxY}} — vertical anchor the FROM/TO columns are centred on, frozen so block drags never tow them
   ungroupedHvFlip: undefined, // LV|HV flip of the implicit UNGROUPED block (real groups keep g.hvFlip on themselves)
   openGroup: null, // null = top-level view; groupId = drilled into that group (phase c)
@@ -879,6 +880,20 @@ function autoLayoutGroupMembers(groupId){
   if (!g || !g.members.length) return;
   const memberSet = new Set(g.members);
   const members = S.nodes.filter(n=>memberSet.has(n.id));
+  // A layout is a FRESH deterministic arrangement of this group's sheet:
+  // manual wire routes, port overrides, portal column offsets/orders and the
+  // frozen column anchor are all recomputed below (undo restores them).
+  for (const id of g.members){
+    delete S.groupPortOrder[id];
+    Object.keys(S.groupPortSides).forEach(k=>{ if (k.startsWith(id+'|')) delete S.groupPortSides[k]; });
+  }
+  for (const e of S.edges)
+    if ((memberSet.has(e.source) || memberSet.has(e.target)) && e.route) delete e.route;
+  delete S.portalOffsets[groupId];
+  delete S.portalOrder[groupId];
+  delete S.portalSeq[groupId];
+  delete S.portalAnchor[groupId];
+  invalidateGroupPorts();
   // Blocks grow with their port zone — measure BEFORE spacing, and hand the
   // real widths to the layout so columns clear each other. Channel gaps are
   // sized like the top level: room for several parallel routing lanes.
@@ -888,10 +903,90 @@ function autoLayoutGroupMembers(groupId){
     id=>{ const n=nodeById(id); return n ? n.w : NODE_W_IC; });
   // Land every block on the grid so its port rows sit exactly on grid lines.
   for (const id of g.members){ const n=nodeById(id); if (n){ const p=pos.get(id); n.x=snapG(p.x); n.y=snapG(p.y); } }
+  optimizeMemberPorts(groupId);
 }
 
 function autoLayoutAllGroupMembers(){
   for (const g of groupsWithUngrouped()) autoLayoutGroupMembers(g.id);
+}
+
+/* ------------------------------------------------------------------
+   PORT AIMING (auto-layout only — it stores the SAME overrides a user
+   drag would, never new rules, so everything stays hand-editable):
+   · SIDES: a port faces the block it connects to when that block is
+     clearly beside it; otherwise the low-priority default applies
+     (inputs left, outputs right — also where the FROM/TO columns are).
+   · ORDER: each block's rows sort by where their counterparts sit, so
+     a wire to a block above leaves near the top and one to a block
+     below near the bottom — minimal length, minimal crossings. Two
+     rounds: block centres first, then the real port anchors.
+   · PORTALS: the FROM/TO boxes order by the barycenter of the member
+     ports they feed, and each box's exit slots sort the same way, so
+     boundary wires run as straight, parallel and uncrossed as the
+     sheet allows. Barrier-pinned ports never change sides.
+   ------------------------------------------------------------------ */
+function optimizeMemberPorts(gid){
+  const g = groupsWithUngrouped().find(x=>x.id===gid);
+  if (!g || !g.members.length) return;
+  const memberSet = new Set(g.members);
+  const all = diagramEdges(S.edges);
+  const center = id => { const n=nodeById(id); return n ? { x:n.x+n.w/2, y:n.y+n.h/2 } : null; };
+  // sides — only stored when the neighbour clearly pulls the port off its default
+  for (const e of all){
+    if (!memberSet.has(e.source) || !memberSet.has(e.target)) continue;
+    const a = nodeById(e.source), b = nodeById(e.target);
+    if (!a || !b) continue;
+    if (nodeSide(e.source)!=='barrier' && b.x + b.w/2 < a.x)
+      setGroupPortSide(e.source, e.source, e.target, 'left');       // output faces a block on its left
+    if (nodeSide(e.target)!=='barrier' && a.x + a.w/2 > b.x + b.w)
+      setGroupPortSide(e.target, e.source, e.target, 'right');      // input faces a block on its right
+  }
+  // row order, round 1: counterpart block centres (boundary rows stay neutral)
+  const orderRound = anchorY => {
+    for (const nid of g.members){
+      if (!nodeById(nid)) continue;
+      const rows = nodePortRowsFor(nid);
+      if (rows.length < 2) continue;
+      const ranked = rows.map((r,i)=>({ r, i, y:anchorY(r, nid) })).sort((p,q)=>p.y-q.y || p.i-q.i);
+      S.groupPortOrder[nid] = ranked.map(x=>portRowKey(x.r));
+      invalidateGroupPorts();
+    }
+  };
+  const counterpartOf = r => r.dir==='in' ? r.src : r.tgt;
+  orderRound((r,nid)=>{
+    const other = counterpartOf(r);
+    return memberSet.has(other) ? center(other).y : center(nid).y;
+  });
+  // portals: box order and slot order by the member ports they attach to
+  const prevOpen = S.openGroup;
+  S.openGroup = gid;   // drillSheet works on the open group — borrow it briefly
+  invalidateGroupPorts();
+  let sheet = drillSheet();
+  const memberEndY = s => (s.kind==='in' ? s.pb : s.pa).y;
+  const seq = { in:[], out:[] };
+  for (const dir of ['in','out']){
+    const scored = sheet.portals.filter(p=>p.dir===dir).map(p=>{
+      const specs = sheet.specs.filter(s=>s.portalKey===p.key);
+      (S.portalOrder[gid] || (S.portalOrder[gid]={}))[p.key] =
+        specs.slice().sort((a,b)=>memberEndY(a)-memberEndY(b)).map(s=>s.e.id);
+      const bary = specs.length ? specs.reduce((t,s)=>t+memberEndY(s),0)/specs.length : 0;
+      return { key:p.key, bary };
+    });
+    seq[dir] = scored.sort((a,b)=>a.bary-b.bary || a.key.localeCompare(b.key)).map(x=>x.key);
+  }
+  S.portalSeq[gid] = seq;
+  invalidateGroupPorts();
+  sheet = drillSheet();   // slots landed — read the real portal-end anchors
+  const portalEndY = new Map(sheet.specs.filter(s=>s.kind!=='internal')
+    .map(s=>[s.e.id, (s.kind==='in' ? s.pa : s.pb).y]));
+  S.openGroup = prevOpen;
+  // row order, round 2: the real anchors (counterpart ports, portal slots)
+  orderRound((r,nid)=>{
+    const other = counterpartOf(r);
+    if (memberSet.has(other))
+      return nodePortAnchor(other, r.src, r.tgt, r.dir==='in' ? 'out' : 'in').y;
+    return portalEndY.has(r.eid) ? portalEndY.get(r.eid) : center(nid).y;
+  });
 }
 
 // onlyMissing=true fills in positions only for groups that don't have one yet
@@ -899,6 +994,13 @@ function autoLayoutAllGroupMembers(){
 function autoLayoutGroups(onlyMissing){
   invalidateGroupPorts(); // heightFn below reads the port index
   const groups = visibleGroups();
+  // A full layout (the button / an import) starts the sheet fresh: manual
+  // group-edge routes and port overrides are recomputed. Session restores
+  // (onlyMissing) keep everything as saved.
+  if (!onlyMissing){
+    S.groupEdgeRoutes = {};
+    for (const g of groups) resetGroupPortLayout(g.id);
+  }
   // Generous channels: the gaps between columns and rows are where every wire has
   // to fit, so they're sized for several parallel routing lanes (see LANE_PITCH).
   const pos = layeredLayout(groups.map(g=>g.id), computeGroupEdges(), GROUP_COL_GAP, GROUP_ROW_GAP,
@@ -909,6 +1011,75 @@ function autoLayoutGroups(onlyMissing){
     // Barycenter Ys are fractional — land every block on the grid so its ports
     // (block.y + aligned row offsets) sit exactly on grid lines.
     S.groupPos[id] = { x:snapG(p.x), y:snapG(p.y) };
+  }
+  if (!onlyMissing) optimizeGroupPortsTop();
+}
+
+// The top-level twin of optimizeMemberPorts: group-block ports face their
+// neighbour when it is clearly beside them and sort by where it sits — same
+// aims, dom-aware keys (each insulation domain is its own connection).
+function optimizeGroupPortsTop(){
+  const rectOf = id => groupBlockRect(id);
+  for (const e of computeGroupEdges()){
+    const a = rectOf(e.source), b = rectOf(e.target);
+    if (groupSide(e.source)!=='barrier' && b.x + b.w/2 < a.x)
+      setGroupPortSide(e.source, e.source, e.target, 'left', e.dom);
+    if (groupSide(e.target)!=='barrier' && a.x + a.w/2 > b.x + b.w)
+      setGroupPortSide(e.target, e.source, e.target, 'right', e.dom);
+  }
+  const round = anchorY => {
+    for (const g of visibleGroups()){
+      const rows = groupPortRowsFor(g.id);
+      if (rows.length < 2) continue;
+      const ranked = rows.map((r,i)=>({ r, i, y:anchorY(r) })).sort((p,q)=>p.y-q.y || p.i-q.i);
+      S.groupPortOrder[g.id] = ranked.map(x=>portRowKey(x.r));
+      invalidateGroupPorts();
+    }
+  };
+  round(r=>{ const rc=rectOf(r.other); return rc.y + rc.h/2; });
+  round(r=>groupPortAnchor(r.other, r.src, r.tgt, r.dir==='in' ? 'out' : 'in', r.dom).y);
+  deconflictGroupRails();
+}
+
+// Port aiming can land two wires' long horizontal runs on the SAME grid line
+// (rows are quantized, blocks share the lattice) — collinear overlaps that
+// routing lanes cannot separate, because a rail's y comes from its port row.
+// This pass finds them and nudges one port a row up/down until every rail is
+// its own line. Bounded and deterministic.
+function deconflictGroupRails(){
+  const railsOf = () => {
+    const obs = visibleGroups().map(g=>groupBlockRect(g.id));
+    const segs = [];
+    for (const e of computeGroupEdges()){
+      const pa = groupPortAnchor(e.source, e.source, e.target, 'out', e.dom);
+      const pb = groupPortAnchor(e.target, e.source, e.target, 'in', e.dom);
+      const { pts } = groupEdgePts(pa, pb, undefined, obs, 0);
+      for (let i=0;i<pts.length-1;i++){
+        const [x1,y1]=pts[i],[x2,y2]=pts[i+1];
+        if (Math.abs(y1-y2)<0.5 && Math.abs(x1-x2)>=0.5)
+          segs.push({ e, at:y1, a:Math.min(x1,x2), b:Math.max(x1,x2) });
+      }
+    }
+    return segs;
+  };
+  for (let round=0; round<6; round++){
+    const segs = railsOf();
+    let clash = null;
+    for (let i=0;i<segs.length && !clash;i++) for (let j=i+1;j<segs.length;j++){
+      const A=segs[i], B=segs[j];
+      if (A.e.id===B.e.id || Math.abs(A.at-B.at)>0.5) continue;
+      if (Math.min(A.b,B.b)-Math.max(A.a,B.a) > 8){ clash = B.e; break; }
+    }
+    if (!clash) return;
+    // shift one end of the clashing wire a row within its own block — try the
+    // target first, then the source, one step down then up
+    const tryShift = (gid, dom) => {
+      const r = groupPortOf(gid, clash.source, clash.target, gid===clash.target?'in':'out', dom);
+      if (!r) return false;
+      const key = groupEdgeRouteKey(clash.source, clash.target, dom);
+      return moveGroupPortToRow(gid, key, r.row+1) || moveGroupPortToRow(gid, key, r.row-1);
+    };
+    if (!tryShift(clash.target, clash.dom) && !tryShift(clash.source, clash.dom)) return;
   }
 }
 
@@ -1497,13 +1668,16 @@ function routeBBox(pts){
   const m = ROUTE_CLEARANCE+1;
   return { x1:x1-m, y1:y1-m, x2:x2+m, y2:y2+m };
 }
+// Freshness signature of a cached route: EVERY obstacle, not just the ones
+// near the chosen path. The router picks its shape looking at the whole
+// sheet — an obstacle that forced a detour sits between the ports but outside
+// the detour's own bbox, and it must still invalidate the entry when it
+// moves away, or a cold render (undo, session reload) would legitimately
+// pick the short way and disagree with the screen. The cache is a pure memo:
+// same inputs, same route — never a source of truth.
 function corridorObstacleSig(bbox, obstacles){
   const parts=[];
-  for (const r of obstacles){
-    const p = padForRoute(r);
-    if (p.x2>bbox.x1 && p.x1<bbox.x2 && p.y2>bbox.y1 && p.y1<bbox.y2)
-      parts.push(r.id+':'+r.x+','+r.y+','+r.w+','+r.h);
-  }
+  for (const r of obstacles) parts.push(r.id+':'+r.x+','+r.y+','+r.w+','+r.h);
   return parts.sort().join('|');
 }
 function groupEdgePtsCached(key, pa, pb, route, obstacles, lane){
@@ -1636,6 +1810,7 @@ function restoreState(json){
   S.groupEdgeLanes = s.groupEdgeLanes || {};
   S.portalOffsets = s.portalOffsets || {};
   S.portalOrder = s.portalOrder || {};
+  S.portalSeq = s.portalSeq || {};
   S.portalAnchor = s.portalAnchor || {};
   S.ungroupedHvFlip = s.ungroupedHvFlip || undefined;
   S.openGroup = s.openGroup ?? null;
@@ -1916,7 +2091,19 @@ function drillSheet(){
     : Math.max(anchor.maxX + margin + off.dx, liveB.maxX + PORTAL_MIN_CLEAR);
   const all = diagramEdges(S.edges);
   const internal = all.filter(e=>memberSet.has(e.source) && memberSet.has(e.target));
-  const { incoming, outgoing } = openGroupPortals();
+  // Auto-layout stores a per-column box order (barycentric, top to bottom);
+  // boxes it doesn't know keep the alphabetical derivation order after it.
+  const seq = S.portalSeq[S.openGroup] || {};
+  const applySeq = (list, dir) => {
+    const o = seq[dir];
+    if (!o || !o.length) return list;
+    const rank = new Map(o.map((k,i)=>[k,i]));
+    return list.slice().sort((a,b)=>
+      (rank.has(portalKeyOf(dir,a))?rank.get(portalKeyOf(dir,a)):1e9) -
+      (rank.has(portalKeyOf(dir,b))?rank.get(portalKeyOf(dir,b)):1e9));
+  };
+  const raw = openGroupPortals();
+  const incoming = applySeq(raw.incoming, 'in'), outgoing = applySeq(raw.outgoing, 'out');
   const idx = nodeGroupIndex();
   // Corridor width per side scales with the number of boundary wires that have
   // to route through it, then grows further if the column was dragged outward.
@@ -2540,6 +2727,7 @@ function renderInspector(){
         delete S.groupPortOrder[g.id];
         delete S.portalOffsets[g.id];
         delete S.portalOrder[g.id];
+        delete S.portalSeq[g.id];
         delete S.portalAnchor[g.id];
         Object.keys(S.groupEdgeLanes).forEach(k=>{ if (k.startsWith(g.id+'→')||k.split('#')[0].endsWith('→'+g.id)) delete S.groupEdgeLanes[k]; });
         S.sel=null; render(); fitView();
@@ -3758,6 +3946,7 @@ function buildSessionJSON(){
     groupPortOrder:Object.fromEntries(Object.entries(S.groupPortOrder).map(([k,v])=>[k,[...v]])),
     portalOffsets:JSON.parse(JSON.stringify(S.portalOffsets)),
     portalOrder:JSON.parse(JSON.stringify(S.portalOrder)),
+    portalSeq:JSON.parse(JSON.stringify(S.portalSeq)),
     portalAnchor:JSON.parse(JSON.stringify(S.portalAnchor)),
     ungroupedHvFlip:S.ungroupedHvFlip,
     openGroup:S.openGroup,
@@ -3783,6 +3972,7 @@ function loadSession(s){
   S.groupPortSides = s.groupPortSides || {}; S.groupPortOrder = s.groupPortOrder || {};
   S.groupEdgeLanes = s.groupEdgeLanes || {};
   S.portalOffsets = s.portalOffsets || {}; S.portalOrder = s.portalOrder || {};
+  S.portalSeq = s.portalSeq || {};
   S.portalAnchor = s.portalAnchor || {};
   S.ungroupedHvFlip = s.ungroupedHvFlip || undefined;
   S.openGroup = s.openGroup || null;
@@ -3805,7 +3995,7 @@ function loadFromContract(input, contract, groups){
   S.edgeSeq=0;
   const g = buildGraph(input, contract||{}, groups||[]);
   S.nodes=g.nodes; S.edges=g.edges; S.groups=g.groups;
-  S.groupPos={}; S.groupEdgeRoutes={}; S.groupPortSides={}; S.groupPortOrder={}; S.groupEdgeLanes={}; S.portalOffsets={}; S.portalOrder={}; S.portalAnchor={}; S.ungroupedHvFlip=undefined; S.openGroup=null; S.sel=null;
+  S.groupPos={}; S.groupEdgeRoutes={}; S.groupPortSides={}; S.groupPortOrder={}; S.groupEdgeLanes={}; S.portalOffsets={}; S.portalOrder={}; S.portalSeq={}; S.portalAnchor={}; S.ungroupedHvFlip=undefined; S.openGroup=null; S.sel=null;
   autoLayoutAllGroupMembers();
   autoLayoutGroups();
   assignRouteLanes();   // spread the wires apart before the first paint
@@ -3818,7 +4008,10 @@ function toast(msg){
   clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove('show'),2200);
 }
 
-$('btnLayout').onclick=()=>{ commit(); if (isTopLevel()){ autoLayoutGroups(); assignRouteLanes(); } else { autoLayoutGroupMembers(S.openGroup); resetPortalBase(); assignNodeEdgeLanes(); } render(); fitView(); };
+// Auto-layout acts on the view the user is IN: the system sheet at the top
+// level, only the open group's sheet inside a group (autoLayoutGroupMembers
+// re-anchors that group's portals and aims its ports itself).
+$('btnLayout').onclick=()=>{ commit(); if (isTopLevel()){ autoLayoutGroups(); assignRouteLanes(); } else { autoLayoutGroupMembers(S.openGroup); assignNodeEdgeLanes(); } render(); fitView(); };
 $('btnFit').onclick=fitView;
 $('btnUndo').onclick=undo;
 $('btnRedo').onclick=redo;
