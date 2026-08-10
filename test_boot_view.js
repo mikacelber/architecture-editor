@@ -58,6 +58,26 @@ check('emptying the sheet brings the card back', !empty.hidden);
 S.nodes.push(...savedNodes); S.edges.push(...savedEdges); T.render();
 check('restoring the blocks hides it again', empty.hidden);
 
+/* ---------- the header keeps its shape whatever the title is ---------- */
+{
+  const css=fs.readFileSync('styles.css','utf8');
+  const rule=n=>(css.match(new RegExp(n.replace(/[.#]/g,'\\$&')+'\\{[^}]*\\}'))||[''])[0];
+  const t=doc.getElementById('projTitle');
+  check('the loaded system\'s long title is on the header', /Regulated Isolated Flyback/.test(t.textContent));
+  check('the full title stays readable in the hover tooltip', t.title===t.textContent);
+  check('a long title is clipped with an ellipsis, never wrapped',
+    /white-space:nowrap/.test(rule('.brand h1')) && /text-overflow:ellipsis/.test(rule('.brand h1')) &&
+    /overflow:hidden/.test(rule('.brand h1')));
+  check('the title font is smaller than the old 15px, so more of it shows',
+    +(rule('.brand h1').match(/font-size:([\d.]+)px/)||[0,99])[1] < 15);
+  check('the title claims leftover room instead of a fixed slice of the viewport',
+    /flex:1 1 auto/.test(rule('.brand')) && /min-width:0/.test(rule('.brand')) &&
+    !/max-width:\s*\d+vw/.test(rule('.brand h1')));
+  check('header buttons never shrink or wrap onto a second line',
+    /flex-shrink:0/.test(rule('header button')) && /white-space:nowrap/.test(rule('header button')));
+  check('the header bar has a pinned height', /min-height:\s*\d+px/.test(rule('header')));
+}
+
 /* ---------- view controls: bottom-right, icons only, self-naming ---------- */
 check('the canvas carries a view-control cluster', !!tools);
 const btns=[...tools.querySelectorAll('button')];

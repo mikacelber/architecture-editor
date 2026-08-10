@@ -31,11 +31,19 @@ html,body{height:100%}
 body{font-family:var(--sans);color:var(--ink);background:var(--paper);display:flex;flex-direction:column;overflow:hidden;transition:background .15s,color .15s}
 
 /* ---------- top bar ---------- */
-header{display:flex;align-items:center;gap:14px;padding:10px 16px;border-bottom:2px solid var(--ink);background:var(--paper);flex-shrink:0}
+/* The header keeps ONE fixed height and ONE fixed button row, whatever the
+   system title turns out to be: min-height pins the bar, the buttons never
+   shrink or wrap, and the title alone absorbs the difference by ellipsizing
+   (the full text stays available in its hover tooltip). */
+header{display:flex;align-items:center;gap:14px;padding:10px 16px;border-bottom:2px solid var(--ink);background:var(--paper);flex-shrink:0;min-height:62px}
+header button{flex-shrink:0;white-space:nowrap}
 .brand-logo{height:40px;width:auto;border-radius:4px;flex-shrink:0;display:block}
-.brand{display:flex;flex-direction:column;line-height:1.15;min-width:0}
-.brand .eyebrow{font-family:var(--mono);font-size:10px;letter-spacing:.14em;color:var(--ink-soft);text-transform:uppercase}
-.brand h1{font-family:var(--mono);font-size:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:46vw}
+/* flex:1 1 auto + min-width:0 — the title claims the leftover room when it is
+   long and gives it back to the spacer when it is short, so the buttons stay
+   right-aligned and full-size either way. */
+.brand{display:flex;flex-direction:column;line-height:1.15;min-width:0;flex:1 1 auto}
+.brand .eyebrow{font-family:var(--mono);font-size:10px;letter-spacing:.14em;color:var(--ink-soft);text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.brand h1{font-family:var(--mono);font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
 .spacer{flex:1}
 button{font-family:var(--mono);font-size:12px;font-weight:500;border:1.5px solid var(--ink);background:var(--paper);color:var(--ink);padding:7px 12px;cursor:pointer;border-radius:3px;transition:background .12s,transform .06s}
 button:hover{background:var(--btn-hover)}

@@ -2014,7 +2014,11 @@ function render(){
   renderEmptyState();
   updateHistoryButtons();
   updateViewTools();
-  $('projTitle').textContent = S.meta.title || 'Untitled system';
+  // A long title is clipped with an ellipsis so the header never grows or
+  // squeezes the buttons — the whole thing stays readable on hover.
+  const title = S.meta.title || 'Untitled system';
+  $('projTitle').textContent = title;
+  $('projTitle').title = title;
 }
 // The blank sheet's "+" card: visible exactly while there is nothing to draw
 // (fresh page, or every block deleted). It sits over the canvas, so it also
