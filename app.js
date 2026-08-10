@@ -3043,45 +3043,31 @@ function renderInspector(){
       </div>`:''}`;
     const customPorts = !!S.groupPortOrder[n.id] || Object.keys(S.groupPortSides).some(k=>k.startsWith(n.id+'|'));
     const portHint = `<p class="hint">${nodePortRowsFor(n.id).length} port${nodePortRowsFor(n.id).length===1?'':'s'} in this block's port zone. Drag a port's net-count badge sideways to switch which edge it attaches to, or up/down to reorder it.</p>`;
-    // "Add net" — the block joins a net as input or output. Offered nets are the
-    // ones this block's GROUP already sees (internal wires + boundary
-    // crossings); nets internal to other groups are irrelevant noise here.
+    // "Add net" — two steps, so a block can join a net of ANY group, not only
+    // its own. Step 1 picks the group whose nets are offered (this block's
+    // group by default, every other group listed by its block title); step 2
+    // picks one of that group's nets, or creates a new one against a chosen
+    // member of it. Everything downstream stays automatic: a counterpart in
+    // another group simply produces a boundary edge, and the FROM/TO portals
+    // on both sheets plus the top-level group wire follow by derivation.
     const gid = nodeGroupIndex().get(n.id);
-    const gNetNames = gid ? [...groupNetIndex(gid).keys()].sort((a,b)=>a.localeCompare(b)) : [];
     const memberLabel = id => { const x=nodeById(id); return x?x.label:id; };
-    // A NEW net's counterpart may be ANY block in the system, not just a
-    // neighbour in this group: this group's members lead the list, every
-    // other group follows under its own heading. A cross-group choice needs
-    // nothing special downstream — the boundary edge it creates materializes
-    // the FROM/TO portals on both sheets and the group-to-group wire at the
-    // top level by derivation, exactly like the portal "+" buttons.
-    const counterpartOpts = (()=>{
-      const gs = groupsWithUngrouped().filter(g=>g.members.some(id=>id!==n.id));
-      gs.sort((a,b)=>(b.id===gid)-(a.id===gid));   // this group first, others in order
-      return gs.map(g=>`<optgroup label="${esc(g.id===gid ? g.title+' — this group' : g.title)}">`+
-        g.members.filter(id=>id!==n.id)
-          .map(id=>`<option value="${esc(id)}">${esc(memberLabel(id))}</option>`).join('')+
-        `</optgroup>`).join('');
-    })();
     const addNetSection = `
       <div class="addnet">
-        <div class="kv"><label>Add net to this block — nets in this group</label>
-          <select id="anNet">
-            ${gNetNames.map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join('')}
-            <option value="__new__">➕ New net…</option>
-          </select></div>
+        <div class="kv"><label>Nets from</label>
+          <select id="anGroup">${addNetGroupOptions(gid, n.id)}</select></div>
+        <div class="kv"><label>Net</label>
+          <select id="anNet">${addNetNetOptions(gid)}</select></div>
         <div class="kv"><label>Direction at this block</label>
           <select id="anDir"><option value="in">Input (arrives here)</option><option value="out">Output (driven here)</option></select></div>
         <div id="anNewPane" style="display:none">
           <div class="kv"><label>Net name</label><input type="text" id="anName" placeholder="MY_NEW_NET"></div>
           <div class="kv"><label>Type</label><select id="anType">${NET_TYPES.map(t=>`<option>${t}</option>`).join('')}</select></div>
           <div class="kv"><label>Description</label><textarea id="anDesc" placeholder="One line: purpose, polarity if applicable"></textarea></div>
-          <div class="kv"><label>Counterpart block (any group)</label>
-            <select id="anOther">${counterpartOpts}</select></div>
-          <p class="hint">Picking a block from another group creates the boundary connection
-            automatically: FROM/TO portals on both groups' sheets (created if missing) and
-            the group-to-group wire on the system level.</p>
+          <div class="kv"><label>Counterpart block</label>
+            <select id="anOther">${addNetMemberOptions(gid, n.id)}</select></div>
         </div>
+        <p class="hint" id="anHint"></p>
         <button id="btnAddNetNode">Add net</button>
       </div>`;
     if (n.kind==='ic'){
@@ -3112,13 +3098,29 @@ function renderInspector(){
     const rep=$('btnReplaceIC'); if (rep) rep.onclick=()=>openReplaceICModal(n);
     const rp=$('btnResetNodePorts'); if (rp) rp.onclick=()=>{ commit(); resetGroupPortLayout(n.id); render(); };
     const del=$('btnDelNode'); if (del) del.onclick=()=>deleteNode(n.id);
-    const anNet=$('anNet');
-    if (anNet){
-      const syncPane=()=>{ $('anNewPane').style.display = anNet.value==='__new__' ? 'block' : 'none'; };
+    const anNet=$('anNet'), anGroup=$('anGroup');
+    if (anNet && anGroup){
+      const chosenGid = () => anGroup.value;
+      const syncPane=()=>{
+        const isNew = anNet.value==='__new__';
+        $('anNewPane').style.display = isNew ? 'block' : 'none';
+        const g = groupsWithUngrouped().find(x=>x.id===chosenGid());
+        const where = !g ? '' : (g.id===gid ? 'this group' : esc(g.title));
+        $('anHint').innerHTML = isNew
+          ? `The new net connects this block to the chosen block of <b>${where}</b>.`
+          : `Offered nets are the ones <b>${where}</b> sees. Picking a net in another group creates the boundary connection, and its FROM/TO portals and the group-to-group wire follow automatically.`;
+      };
+      // Changing the group re-stocks BOTH lists — the nets it sees and the
+      // members a new net can be drawn against.
+      anGroup.onchange=()=>{
+        anNet.innerHTML = addNetNetOptions(chosenGid());
+        $('anOther').innerHTML = addNetMemberOptions(chosenGid(), n.id);
+        syncPane();
+      };
       anNet.onchange=syncPane; syncPane();
       const hasNet=(s,t,name)=>{ const e=S.edges.find(x=>x.source===s&&x.target===t); return !!(e&&e.nets.some(x=>x.name===name)); };
       $('btnAddNetNode').onclick=()=>{
-        const dir=$('anDir').value;
+        const dir=$('anDir').value, tgtGid=chosenGid();
         if (anNet.value==='__new__'){
           const name=$('anName').value.trim().toUpperCase().replace(/[^A-Z0-9]+/g,'_').replace(/^_|_$/g,'');
           if (!name){ toast('Net name required'); return; }
@@ -3131,20 +3133,23 @@ function renderInspector(){
           render();
           return;
         }
-        const info=groupNetIndex(gid).get(anNet.value);
-        if (!info) return;
+        const ends=groupNetEndpoints(tgtGid).get(anNet.value);
+        if (!ends) return;
         if (dir==='in'){
-          // the net arrives here from its existing driver (which may sit in
-          // another group — the wire then shows through a FROM portal)
-          if (info.driver===n.id){ toast('This block already drives '+info.net.name+' — pick Output or another net'); return; }
-          if (hasNet(info.driver, n.id, info.net.name)){ toast('Already connected as input'); return; }
-          commit(); addNetToEdge(info.driver, n.id, info.net); render();
+          // The net must arrive FROM the chosen group: its driver there is the
+          // source. Only this block's OWN group falls back to a driver sitting
+          // elsewhere — that is the existing boundary wire the group already
+          // sees; for a foreign group the wire has to start inside it.
+          const inGroup=[...ends.drivers].filter(id=>id!==n.id).sort();
+          const src = inGroup[0] || (tgtGid===gid && ends.driver!==n.id ? ends.driver : null);
+          if (!src){ toast('No block in that group drives '+ends.net.name+' — create a new net instead'); return; }
+          if (hasNet(src, n.id, ends.net.name)){ toast('Already connected as input'); return; }
+          commit(); addNetToEdge(src, n.id, ends.net); render();
         } else {
-          // this block becomes a driver feeding the net's in-group consumers
-          const gset=new Set((groupsWithUngrouped().find(x=>x.id===gid)||{members:[]}).members);
-          const targets=[...info.consumers].filter(id=>id!==n.id && gset.has(id) && !hasNet(n.id, id, info.net.name));
-          if (!targets.length){ toast('No in-group consumer to feed — add it as Input or create a new net'); return; }
-          commit(); targets.forEach(t=>addNetToEdge(n.id, t, info.net)); render();
+          // this block becomes a driver feeding that group's consumers
+          const targets=[...ends.consumers].filter(id=>id!==n.id && !hasNet(n.id, id, ends.net.name)).sort();
+          if (!targets.length){ toast('No block in that group consumes '+ends.net.name+' — add it as Input or create a new net'); return; }
+          commit(); targets.forEach(t=>addNetToEdge(n.id, t, ends.net)); render();
         }
       };
     }
@@ -3960,6 +3965,46 @@ $('btnAddExt').onclick=()=>{
    system: a cross-group pick creates a boundary edge, and the FROM/TO
    portals and the top-level group wire follow by derivation.
    ------------------------------------------------------------------ */
+/* ---- the two-step "Add net" pickers ----
+   Step 1 chooses WHOSE nets are offered: this block's group first (the
+   default), then every other group by its block title. Step 2 offers that
+   group's nets, or a new net drawn against one of its members. Nothing else
+   changes: a counterpart in another group makes an ordinary boundary edge,
+   and the FROM/TO portals and the top-level group wire derive from it. */
+function addNetGroupOptions(curGid, selfId){
+  const gs = groupsWithUngrouped().filter(g=>g.members.length && (g.id===curGid || g.members.some(id=>id!==selfId)));
+  gs.sort((a,b)=>(b.id===curGid)-(a.id===curGid));   // this group leads, the rest follow in order
+  return gs.map(g=>`<option value="${esc(g.id)}"${g.id===curGid?' selected':''}>${esc(g.title)}${g.id===curGid?' — this group':''}</option>`).join('');
+}
+function addNetNetOptions(gid){
+  const names = gid ? [...groupNetIndex(gid).keys()].sort((a,b)=>a.localeCompare(b)) : [];
+  return names.map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join('')
+    + `<option value="__new__">➕ New net…</option>`;
+}
+function addNetMemberOptions(gid, selfId){
+  const g = groupsWithUngrouped().find(x=>x.id===gid);
+  return (g?g.members:[]).filter(id=>id!==selfId)
+    .map(id=>{ const x=nodeById(id); return `<option value="${esc(id)}">${esc(x?x.label:id)}</option>`; }).join('');
+}
+// Per-group endpoints of each net: which MEMBERS of the group drive it and
+// which consume it. groupNetIndex answers "what nets does this group see";
+// this answers "who inside it would be at the other end of the wire", which
+// is what joining a net from another group needs.
+function groupNetEndpoints(gid){
+  const g = groupsWithUngrouped().find(x=>x.id===gid);
+  const m = new Set(g ? g.members : []);
+  const map = new Map();
+  for (const e of S.edges){
+    if (!m.has(e.source) && !m.has(e.target)) continue;
+    for (const n of e.nets){
+      if (!map.has(n.name)) map.set(n.name, { net:n, driver:e.source, drivers:new Set(), consumers:new Set() });
+      const rec = map.get(n.name);
+      if (m.has(e.source)) rec.drivers.add(e.source);
+      if (m.has(e.target)) rec.consumers.add(e.target);
+    }
+  }
+  return map;
+}
 // name → {net, driver, consumers:Set} over every edge touching the group.
 function groupNetIndex(gid){
   const g = groupsWithUngrouped().find(x=>x.id===gid);
