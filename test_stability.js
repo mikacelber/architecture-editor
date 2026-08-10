@@ -21,7 +21,7 @@ function paths(){
   for (const m of html.matchAll(/<g class="edge" data-eid="[^"]*">\s*<path d="(M [^"]+)"/g)) out.set(out.size,m[1]);
   // key by src/tgt via the seg handles' data attributes when present; fall back to index order
   const byKey=new Map(); let i=0;
-  for (const e of T.computeGroupEdges()) byKey.set(T.groupEdgeRouteKey(e.source,e.target), out.get(i++));
+  for (const e of T.computeGroupEdges()) byKey.set(T.groupEdgeRouteKey(e.source,e.target,e.dom), out.get(i++));
   return byKey;
 }
 const before=paths();
@@ -34,7 +34,7 @@ const after=paths();
 
 const touching=new Set(), distant=new Set();
 for (const e of T.computeGroupEdges()){
-  const k=T.groupEdgeRouteKey(e.source,e.target);
+  const k=T.groupEdgeRouteKey(e.source,e.target,e.dom);
   (e.source===MOVED||e.target===MOVED?touching:distant).add(k);
 }
 const movedDistant=[...distant].filter(k=>before.get(k)!==after.get(k));
@@ -52,11 +52,13 @@ check('dragging back restores every path exactly (no drift)', same);
 
 /* ---------- a block moved INTO a corridor must disturb that wire ---------- */
 // park a block right on top of an existing wire's corridor
-const victimKey=[...distant][0];
-const target=T.computeGroupEdges().find(e=>T.groupEdgeRouteKey(e.source,e.target)===victimKey);
-const vRect=T.groupBlockRect(target.source);
+// pick a distant wire with an interior vertex and drop the block right ON it
+const ptsOfD=d=>{ const n=d.replace(/[ML]/g,' ').trim().split(/\s+/).map(Number);
+  const o=[]; for(let i=0;i<n.length;i+=2) o.push([n[i],n[i+1]]); return o; };
+const victimKey=[...distant].find(k=>ptsOfD(before.get(k)).length>=4);
+const midV=(pts=>pts[Math.floor(pts.length/2)])(ptsOfD(before.get(victimKey)));
 const q=T.groupPosOf(MOVED);
-q.x=vRect.x+vRect.w+40; q.y=vRect.y;   // drop it in the gap the wire runs through
+q.x=midV[0]-60; q.y=midV[1]-40;   // parked square on the wire's own corridor
 const invaded=paths();
 check('a block dropped into a wire corridor forces that wire to re-route',
   invaded.get(victimKey)!==before.get(victimKey));
@@ -66,10 +68,10 @@ q.x=ox; q.y=oy;
 T.render();
 const b2=paths();
 const someEdge=T.computeGroupEdges()[5];
-const ek=T.groupEdgeRouteKey(someEdge.source,someEdge.target);
+const ek=T.groupEdgeRouteKey(someEdge.source,someEdge.target,someEdge.dom);
 // waypoint model: drop the wire at a point above the source block
 const sr=T.groupBlockRect(someEdge.source);
-T.setGroupEdgeRoute(someEdge.source,someEdge.target,{ wx: sr.x+sr.w+120, wy: sr.y-200 });
+T.setGroupEdgeRoute(someEdge.source,someEdge.target,{ wx: sr.x+sr.w+120, wy: sr.y-200 }, someEdge.dom);
 const a2=paths();
 const others=[...b2.keys()].filter(k=>k!==ek && b2.get(k)!==a2.get(k));
 check('rerouting one connection changes only that connection'+(others.length?' ['+others[0]+']':''), others.length===0);
@@ -80,9 +82,9 @@ delete S.groupEdgeRoutes[ek];
 T.render(); const b3=paths();
 const RG='CONTROL_AND_SUPERVISION';
 const rows=T.groupPortRowsFor(RG);
-T.moveGroupPortToRow(RG, rows[rows.length-1].src+'\u2192'+rows[rows.length-1].tgt, 0);
+T.moveGroupPortToRow(RG, T.groupEdgeRouteKey(rows[rows.length-1].src, rows[rows.length-1].tgt, rows[rows.length-1].dom), 0);
 const a3=paths();
-const ownKeys=new Set(T.computeGroupEdges().filter(e=>e.source===RG||e.target===RG).map(e=>T.groupEdgeRouteKey(e.source,e.target)));
+const ownKeys=new Set(T.computeGroupEdges().filter(e=>e.source===RG||e.target===RG).map(e=>T.groupEdgeRouteKey(e.source,e.target,e.dom)));
 const strangers=[...b3.keys()].filter(k=>!ownKeys.has(k) && b3.get(k)!==a3.get(k));
 check('reordering ports leaves unrelated wires untouched'+(strangers.length?' ['+strangers[0]+']':''), strangers.length===0);
 delete S.groupPortOrder[RG];
