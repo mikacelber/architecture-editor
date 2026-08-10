@@ -100,6 +100,16 @@ const FIX={Products:[
       check('a redirector is unwrapped to the document it points at',
         cl('https://redirect.digikey.com/go?url=https%3A%2F%2Fwww.analog.com%2Fmedia%2Fen%2Fdata-sheets%2FADS1220.pdf&ref=dk')===
         'https://www.analog.com/media/en/data-sheets/ADS1220.pdf');
+      // every vendor names its redirect parameter differently — TI uses
+      // gotoUrl on suppproductinfo.tsp; the rule is "any param holding a URL"
+      check('TI\'s suppproductinfo redirector is unwrapped too',
+        cl('https://www.ti.com/general/docs/suppproductinfo.tsp?distId=10&gotoUrl=https%3A%2F%2Fwww.ti.com%2Flit%2Fgpn%2Fbq29712')===
+        'https://www.ti.com/lit/gpn/bq29712' &&
+        lbl('https://www.ti.com/general/docs/suppproductinfo.tsp?distId=10&gotoUrl=https%3A%2F%2Fwww.ti.com%2Flit%2Fgpn%2Fbq29712')===
+        'ti.com/…/bq29712');
+      check('a chained redirector is followed to the real document',
+        cl('https://a.example/go?url=https%3A%2F%2Fb.example%2Fgo%3Furl%3Dhttps%253A%252F%252Fc.example%252Fds.pdf')===
+        'https://c.example/ds.pdf');
       check('a meaningful query survives — only tracking goes',
         cl('https://vendor.example/ds.pdf?rev=B&utm_source=x')==='https://vendor.example/ds.pdf?rev=B');
       check('a deep link into a page is preserved',

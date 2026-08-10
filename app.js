@@ -1108,10 +1108,16 @@ function cleanDatasheetUrl(raw){
   if (!/^https?:\/\//i.test(s)) return trimmed;           // not a URL we understand — leave it exactly as typed
   let u;
   try { u = new URL(s); } catch { return trimmed; }
-  // a redirector carrying the real document in a query parameter
-  for (const k of ['url','u','target','redirect','link','href']){
-    const v = u.searchParams.get(k);
-    if (v && /^https?:\/\//i.test(v)){ try { u = new URL(v); } catch {} break; }
+  // Unwrap redirectors — every distributor and manufacturer has its own
+  // ("?url=" at DigiKey and Mouser, "?gotoUrl=" on TI's suppproductinfo.tsp,
+  // "?goto=", "?docUrl="…). Rather than chase parameter names, take ANY
+  // parameter whose value is itself an absolute http(s) URL: in a datasheet
+  // field that is always the document being pointed at. Redirectors do chain,
+  // so repeat a few times.
+  for (let hop=0; hop<4; hop++){
+    const inner = [...u.searchParams.values()].find(v=>/^https?:\/\/\S+$/i.test(v));
+    if (!inner) break;
+    try { const next = new URL(inner); if (next.href===u.href) break; u = next; } catch { break; }
   }
   for (const k of [...u.searchParams.keys()]) if (URL_TRACKING_PARAMS.test(k)) u.searchParams.delete(k);
   // the fragment stays: "#page=12" is a deliberate deep link into a datasheet
