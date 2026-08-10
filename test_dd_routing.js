@@ -15,9 +15,9 @@ window.__T={get S(){return S;},loadFromContract,render,openGroupView,closeGroupV
  drillSheet,portalOffsetOf,setPortalOffset,PORTAL_MARGIN:PORTAL_MARGIN,LANE_PITCH:LANE_PITCH,PORTAL_H:PORTAL_H,
  translateWireSegment,nodeBlockWidth,textWidth,isHvNet,netCategory,nodeSide,
  openAddPortalModal,candidateNetsForPortal,groupNetIndex,nodeGroupIndex,computeGroupEdges,traceSets,
- movePortalSlotToRow,pinPortalWires,nodeEdgeRouteOf,groupPortRowsFor,laneEnd,fanAssignLanes,nodeEdgeLaneKey,fanStub,
+ movePortalSlotToRow,pinPortalWires,pinSheetWires,nodeEdgeRouteOf,groupPortRowsFor,laneEnd,fanAssignLanes,nodeEdgeLaneKey,fanStub,
  GROUP_PORT_STUB:GROUP_PORT_STUB,FAN_PITCH:FAN_PITCH,commit,undo,
- cleanPts,adoptSheetRoute,groupEdgePtsCached,NODE_ROUTE_PREFIX:NODE_ROUTE_PREFIX};`);
+ cleanPts,adoptSheetRoute,groupEdgePtsCached,buildSessionJSON,NODE_ROUTE_PREFIX:NODE_ROUTE_PREFIX};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -1090,6 +1090,66 @@ check('every in-group connection carries a routing lane',
     /if \(e\) e\.route = \{ \.\.\.route, sheet: S\.openGroup \};/.test(src));
   check('pinned portal wires tag their stored route with the authoring sheet',
     /e\.route = \{ pts: r\.pts\.map\(p=>p\.slice\(\)\), sheet: S\.openGroup \};/.test(src));
+}
+
+/* ============= rule 23 — a block drag never disturbs wires it didn't touch =============
+   Moving a member block pins EVERY wire of the sheet to its current shape
+   first (persisted manual routes, same rule as the FROM/TO column drag): the
+   moved block's wires stretch after their ports, all other wires keep their
+   exact geometry, the pins ride the export, and one undo removes them. */
+{
+  const sheet0=T.drillSheet();
+  const wireOf=s=>{
+    const e=S.edges.find(x=>x.id===s.e.id);
+    return T.groupEdgePtsCached(T.NODE_ROUTE_PREFIX+s.e.id, s.pa, s.pb,
+      e?T.nodeEdgeRouteOf(e):undefined, T.drillSheet().obstacles,
+      S.groupEdgeLanes[T.nodeEdgeLaneKey(s.e)]||0).pts;
+  };
+  const shapes0=new Map(sheet0.specs.map(s=>[s.e.id, JSON.stringify(wireOf(s))]));
+  const routed0=S.edges.filter(e=>e.route).length;
+  // a foreign-sheet route must survive the pinning untouched
+  const foreignSpec=sheet0.specs.find(s=>{ const e=S.edges.find(x=>x.id===s.e.id); return e && !e.route; });
+  const foreignEdge=S.edges.find(x=>x.id===foreignSpec.e.id);
+  foreignEdge.route={ pts:[[1,2],[3,2]], sheet:'ELSEWHERE' };
+
+  // the drag, exactly as the handler does it: snapshot -> pin -> move
+  const victim=sheet0.members.find(n=>sheet0.specs.some(s=>s.kind==='internal'&&(s.e.source===n.id||s.e.target===n.id)))||sheet0.members[0];
+  T.commit(); T.pinSheetWires();
+  check('pinning stores a persisted route for every previously-auto wire',
+    sheet0.specs.every(s=>S.edges.find(x=>x.id===s.e.id)?.route));
+  check('…tagged for this sheet', sheet0.specs.every(s=>{
+    const r=S.edges.find(x=>x.id===s.e.id).route; return r.sheet===best.id || r.sheet==='ELSEWHERE'; }));
+  check('a route authored on another sheet is never clobbered by the pin',
+    JSON.stringify(foreignEdge.route)===JSON.stringify({ pts:[[1,2],[3,2]], sheet:'ELSEWHERE' }));
+  victim.y+=48; T.render();
+
+  const touched=id=>{ const s=sheet0.specs.find(x=>x.e.id===id); return s.e.source===victim.id||s.e.target===victim.id; };
+  // a wire only re-routes if the block LANDED ON its old shape — that dodge
+  // is the one legitimate change (same rule as drop-on-wire at the top level)
+  const victimRect=T.drillSheet().obstacles.find(r=>r.id===victim.id);
+  const untouchedChanged=[...shapes0.keys()].filter(id=>!touched(id) &&
+    S.edges.find(x=>x.id===id).route?.sheet===best.id &&
+    !crossesAny(JSON.parse(shapes0.get(id)),[victimRect]) &&
+    JSON.stringify(wireOf(sheet0.specs.find(x=>x.e.id===id)))!==shapes0.get(id));
+  check('after the move, every wire NOT on the moved block keeps its exact shape',
+    untouchedChanged.length===0);
+  check('the moved block\'s wires still land on its ports (they stretched)',
+    sheet0.specs.filter(s=>touched(s.e.id)).every(s=>{
+      const sh=T.drillSheet(); const sp=sh.specs.find(x=>x.e.id===s.e.id);
+      const pts=wireOf(sp);
+      const near=(p,a)=>Math.abs(p[0]-a.x)<0.75&&Math.abs(p[1]-a.y)<0.75;
+      return near(pts[0],sp.pa)&&near(pts[pts.length-1],sp.pb);
+    }));
+  check('the pinned shapes ride the export (Save session carries them)',
+    T.buildSessionJSON().edges.filter(e=>e.route&&e.route.sheet===best.id).length>=sheet0.specs.length-1);
+  check('the drag handler pins on first movement, after the snapshot',
+    /if \(!drag\.pinned\)\{ drag\.pinned = true; pinSheetWires\(\); \}/.test(fs.readFileSync('app.js','utf8')));
+  T.undo(); T.render();
+  // the snapshot was taken AFTER planting the foreign route, so undo keeps
+  // that one and removes exactly the pins (and the move) added afterwards
+  check('one undo removes the pins and the move together',
+    S.edges.filter(e=>e.route).length===routed0+1);
+  delete foreignEdge.route; T._routeCache.clear(); T.render();
 }
 
 T.closeGroupView();
