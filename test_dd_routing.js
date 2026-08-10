@@ -15,7 +15,8 @@ window.__T={get S(){return S;},loadFromContract,render,openGroupView,closeGroupV
  drillSheet,portalOffsetOf,setPortalOffset,PORTAL_MARGIN:PORTAL_MARGIN,LANE_PITCH:LANE_PITCH,PORTAL_H:PORTAL_H,
  translateWireSegment,nodeBlockWidth,textWidth,isHvNet,netCategory,nodeSide,
  openAddPortalModal,candidateNetsForPortal,groupNetIndex,nodeGroupIndex,computeGroupEdges,traceSets,
- movePortalSlotToRow,pinPortalWires,nodeEdgeRouteOf,groupPortRowsFor,commit,undo};`);
+ movePortalSlotToRow,pinPortalWires,nodeEdgeRouteOf,groupPortRowsFor,laneEnd,fanAssignLanes,nodeEdgeLaneKey,
+ GROUP_PORT_STUB:GROUP_PORT_STUB,commit,undo};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -854,5 +855,101 @@ check('every in-group connection carries a routing lane',
     T.computeGroupEdges().filter(e=>e.source===gs&&e.target===gt).length===1);
 }
 
+/* ---- rule 21: portal Move up / Move down buttons, and exit-fan nesting —
+   wires sharing an exit that turn the same way never cross, they nest ---- */
+{
+  T.openGroupView(best.id); T.render();
+
+  // --- Move up / Move down on a FROM/TO box
+  const col0=T.drillSheet().portals.filter(p=>p.dir===T.drillSheet().portals[0].dir);
+  const dir0=col0[0].dir;
+  if (col0.length>=2){
+    S.sel={ type:'portal', id: col0[0].key }; T.render();
+    const up=doc.getElementById('btnPortalUp'), down=doc.getElementById('btnPortalDown');
+    check('the portal inspector offers Move up / Move down buttons', !!up && !!down);
+    check('Move up is disabled for the topmost box, Move down enabled', up.disabled && !down.disabled);
+    const yBefore=col0.map(p=>p.key+'@'+p.r.y).join('|');
+    down.onclick();
+    const colAfter=T.drillSheet().portals.filter(p=>p.dir===dir0);
+    check('Move down swaps the box with its neighbour',
+      colAfter[1].key===col0[0].key && colAfter[0].key===col0[1].key);
+    check('the manual box order lands in S.portalSeq', (S.portalSeq[best.id]||{})[dir0][1]===col0[0].key);
+    T.undo(); T.render();
+    check('undo restores the previous box order',
+      T.drillSheet().portals.filter(p=>p.dir===dir0).map(p=>p.key+'@'+p.r.y).join('|')===yBefore);
+  }
+  S.sel=null; T.render();
+
+  // --- exit-fan nesting: same exit, same turn direction → nested, never crossed
+  const pts=eid=>{ const c=T._routeCache.get('n|'+eid); return c?c.pts:null; };
+  // the algorithm's hard guarantee binds wires sitting at their FAN-ASSIGNED
+  // lanes (no fallback bump) whose pure Z turns at this fan's end — the
+  // interval colouring makes those mathematically crossing-free; a wire whose
+  // disciplined slot lay across a block took a fallback lane and may cross
+  const specs21=T.drillSheet().specs;
+  const baseLanes=T.fanAssignLanes(specs21.map(s=>({ key:T.nodeEdgeLaneKey(s.e), pa:s.pa, pb:s.pb })));
+  const ends=[];
+  for (const s of specs21){
+    const p=pts(s.e.id); if (!p) continue;
+    const key=T.nodeEdgeLaneKey(s.e);
+    const lane=S.groupEdgeLanes[key], base=baseLanes.get(key);
+    const atBase= base && T.laneEnd(lane,'a')===base.a && T.laneEnd(lane,'b')===base.b;
+    const bxA=s.pa.x + s.pa.sign*(T.GROUP_PORT_STUB + T.laneEnd(lane,'a')*T.LANE_PITCH);
+    const bxB=s.pb.x - s.pb.sign*(T.GROUP_PORT_STUB + T.laneEnd(lane,'b')*T.LANE_PITCH);
+    let firstBend=null;
+    for(let k=0;k<p.length-1;k++) if (Math.abs(p[k][1]-p[k+1][1])>=0.5){ firstBend=p[k][0]; break; }
+    for (const [end,anchor,other] of [['a',s.pa,s.pb],['b',s.pb,s.pa]]){
+      if (Math.abs(other.y-anchor.y)<0.5) continue;
+      const turnsHere = atBase && p.length===4 && firstBend!=null &&
+        Math.abs(firstBend-(end==='a'?bxA:bxB))<0.5;
+      ends.push({ eid:s.e.id, x:Math.round(anchor.x), sign:anchor.sign, y:anchor.y, turnsHere,
+        vd: other.y<anchor.y?-1:1, lo:Math.min(anchor.y,other.y), hi:Math.max(anchor.y,other.y), pts:p });
+    }
+  }
+  // crossings inside a WINDOW of x — the fan region between the block edge and
+  // the outermost first-turn vertical (the rule governs the exit; a crossing
+  // far downstream may be topologically forced by interleaved destinations)
+  const crossingsIn=(A,B,x1,x2)=>{
+    const segs=q=>{ const o=[]; for(let i=0;i<q.length-1;i++) o.push([q[i],q[i+1]]); return o; };
+    let n=0;
+    for (const [a1,a2] of segs(A)) for (const [b1,b2] of segs(B)){
+      const aH=Math.abs(a1[1]-a2[1])<0.5, bH=Math.abs(b1[1]-b2[1])<0.5;
+      if (aH===bH) continue;
+      const h=aH?[a1,a2]:[b1,b2], v=aH?[b1,b2]:[a1,a2];
+      const y=h[0][1], x=v[0][0];
+      if (x>Math.min(h[0][0],h[1][0])+0.5 && x<Math.max(h[0][0],h[1][0])-0.5 &&
+          y>Math.min(v[0][1],v[1][1])+0.5 && y<Math.max(v[0][1],v[1][1])-0.5 &&
+          x>=x1-0.5 && x<=x2+0.5) n++;
+    }
+    return n;
+  };
+  const bendXOf=e=>{ const q=e.pts; for(let k=0;k<q.length-1;k++) if (Math.abs(q[k][1]-q[k+1][1])>=0.5) return q[k][0]; return null; };
+  let fanPairs=0, zPairs=0, zCrossings=0, laxPairsCrossed=0, spacedOk=true;
+  for (let i=0;i<ends.length;i++) for (let j=i+1;j<ends.length;j++){
+    const A=ends[i], B=ends[j];
+    if (A.eid===B.eid || A.x!==B.x || A.sign!==B.sign || A.vd!==B.vd) continue;
+    if (!(A.lo<B.hi && A.hi>B.lo)) continue;   // spans must overlap to matter
+    const bxA=bendXOf(A), bxB=bendXOf(B);
+    if (bxA==null || bxB==null) continue;
+    fanPairs++;
+    const w1=Math.min(A.x,bxA,bxB), w2=Math.max(A.x,bxA,bxB);
+    const n=crossingsIn(A.pts, B.pts, w1, w2);
+    // both wires kept the DISCIPLINED Z (4 points): the hard guarantee —
+    // wires that turn where their lane says can never cross each other.
+    // A wire that had to fall back to the free router (its Z lay across a
+    // block) may still cross: those pairs are bounded, not forbidden.
+    if (A.turnsHere && B.turnsHere){ zPairs++; zCrossings+=n; }
+    else if (n>0) laxPairsCrossed++;
+    // the first-turn verticals keep at least one LANE_PITCH between them
+    if (Math.abs(bxA-bxB)<T.LANE_PITCH-0.5) spacedOk=false;
+  }
+  console.log('   '+fanPairs+' overlapping same-direction fan pairs ('+zPairs+' fully disciplined, '+laxPairsCrossed+' router-fallback pairs cross)');
+  check('a disciplined fan exists to verify (test is meaningful)', zPairs>0);
+  check('disciplined fan wires NEVER cross inside the fan region', zCrossings===0);
+  check('router-fallback fan crossings never regress past the fixture baseline (≤16 pairs; was 23 before nesting)', laxPairsCrossed<=16);
+  check('fan wires keep at least one LANE_PITCH of horizontal offset', spacedOk);
+}
+
+T.closeGroupView();
 console.log('\n'+pass+' passed, '+fail+' failed');
 process.exit(fail?1:0);
