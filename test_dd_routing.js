@@ -16,7 +16,8 @@ window.__T={get S(){return S;},loadFromContract,render,openGroupView,closeGroupV
  translateWireSegment,nodeBlockWidth,textWidth,isHvNet,netCategory,nodeSide,
  openAddPortalModal,candidateNetsForPortal,groupNetIndex,nodeGroupIndex,computeGroupEdges,traceSets,
  movePortalSlotToRow,pinPortalWires,nodeEdgeRouteOf,groupPortRowsFor,laneEnd,fanAssignLanes,nodeEdgeLaneKey,fanStub,
- GROUP_PORT_STUB:GROUP_PORT_STUB,FAN_PITCH:FAN_PITCH,commit,undo};`);
+ GROUP_PORT_STUB:GROUP_PORT_STUB,FAN_PITCH:FAN_PITCH,commit,undo,
+ cleanPts,adoptSheetRoute,groupEdgePtsCached,NODE_ROUTE_PREFIX:NODE_ROUTE_PREFIX};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -957,6 +958,91 @@ check('every in-group connection carries a routing lane',
   check('disciplined fan wires NEVER cross inside the fan region', zCrossings===0);
   check('router-fallback fan crossings never regress past the fixture baseline (≤16 pairs; was 23 before nesting)', laxPairsCrossed<=16);
   check('fan wires keep at least one GRID (block-port pitch) of offset', spacedOk);
+}
+
+/* ================= rule 22 — no "antenna" spurs from foreign-sheet routes =================
+   A boundary connection is drawn on BOTH ends' drill sheets; a polyline
+   authored in one is meaningless in the other. Routes carry the sheet that
+   authored them (route.sheet) and are honoured only there; an untagged legacy
+   route is adopted only by the sheet whose anchors it matches exactly.
+   Whatever happens, a drawn wire never retraces its own segment. */
+{
+  const backtrackAt = pts => {
+    for (let i=0;i<pts.length-2;i++){
+      const d1=[pts[i+1][0]-pts[i][0],pts[i+1][1]-pts[i][1]];
+      const d2=[pts[i+2][0]-pts[i+1][0],pts[i+2][1]-pts[i+1][1]];
+      const ax1=Math.abs(d1[0])>0.01?'h':'v', ax2=Math.abs(d2[0])>0.01?'h':'v';
+      if (ax1!==ax2) continue;
+      const s1=ax1==='h'?Math.sign(d1[0]):Math.sign(d1[1]);
+      const s2=ax2==='h'?Math.sign(d2[0]):Math.sign(d2[1]);
+      if (s1&&s2&&s1!==s2) return i;
+    }
+    return -1;
+  };
+  check('cleanPts flattens an out-and-back spur into a straight run',
+    JSON.stringify(T.cleanPts([[0,0],[100,0],[40,0],[40,50]]))===JSON.stringify([[0,0],[40,0],[40,50]]));
+  check('cleanPts collapses a junction spike (duplicate-shielded backtrack)',
+    JSON.stringify(T.cleanPts([[0,0],[50,0],[50,20],[50,0],[80,0]]))===JSON.stringify([[0,0],[80,0]]));
+
+  const sheet0 = T.drillSheet();
+  const bSpec = sheet0.specs.find(s=>s.kind!=='internal');
+  check('fixture drill has a boundary wire to verify (test is meaningful)', !!bSpec);
+  if (bSpec){
+    const e = S.edges.find(x=>x.id===bSpec.e.id);
+    const wireOf = s => T.groupEdgePtsCached(T.NODE_ROUTE_PREFIX+s.e.id, s.pa, s.pb,
+      T.nodeEdgeRouteOf(e), T.drillSheet().obstacles, S.groupEdgeLanes[T.nodeEdgeLaneKey(s.e)]||0);
+    const saved = e.route;
+
+    // a route tagged for ANOTHER sheet is invisible here
+    e.route = { pts:[[9000,9000],[9400,9000],[9400,9200],[9800,9200]], sheet:'SOME_OTHER_GROUP' };
+    check('a route authored on another sheet is quarantined (nodeEdgeRouteOf → auto)', !T.nodeEdgeRouteOf(e));
+    T._routeCache.clear();
+    let r = wireOf(bSpec);
+    check('the quarantined wire draws anchor-to-anchor with no spur',
+      backtrackAt(r.pts)<0 &&
+      Math.abs(r.pts[0][0]-bSpec.pa.x)<0.75 && Math.abs(r.pts[0][1]-bSpec.pa.y)<0.75 &&
+      Math.abs(r.pts[r.pts.length-1][0]-bSpec.pb.x)<0.75 && Math.abs(r.pts[r.pts.length-1][1]-bSpec.pb.y)<0.75);
+
+    // an UNTAGGED legacy route that does NOT meet this sheet's anchors (the
+    // user-reported antenna scenario) is never adopted, never waypoint-degraded
+    e.route = { pts:[[9000,9000],[9400,9000],[9400,9200],[9800,9200]] };
+    T.drillSheet();   // adoption pass runs here
+    check('an untagged foreign polyline is NOT adopted by this sheet', e.route.sheet==null);
+    check('…and stays invisible to the drill router', !T.nodeEdgeRouteOf(e));
+    T._routeCache.clear();
+    r = wireOf(bSpec);
+    check('…so the wire re-routes cleanly instead of growing an antenna', backtrackAt(r.pts)<0);
+
+    // an untagged legacy route whose ends DO match is adopted for this sheet
+    T._routeCache.clear();
+    const auto = wireOf(bSpec);
+    e.route = { pts: auto.pts.map(p=>p.slice()) };
+    T.drillSheet();
+    check('an untagged polyline matching this sheet\'s anchors is adopted (route.sheet set)',
+      e.route.sheet===S.openGroup);
+    check('…and is honoured by the drill router again', !!T.nodeEdgeRouteOf(e));
+
+    if (saved) e.route = saved; else delete e.route;
+    T._routeCache.clear(); T.render();
+  }
+
+  // the whole open sheet, as drawn, contains no retraced segment anywhere
+  const sheet1 = T.drillSheet();
+  let spur = null;
+  for (const s of sheet1.specs){
+    const e2 = S.edges.find(x=>x.id===s.e.id);
+    const rr = T.groupEdgePtsCached(T.NODE_ROUTE_PREFIX+s.e.id, s.pa, s.pb,
+      e2?T.nodeEdgeRouteOf(e2):undefined, sheet1.obstacles, S.groupEdgeLanes[T.nodeEdgeLaneKey(s.e)]||0);
+    if (backtrackAt(rr.pts)>=0) spur = s.e.id;
+  }
+  check('no drawn wire on the open sheet retraces its own segment'+(spur?' ['+spur+']':''), !spur);
+
+  // new manual routes are born sheet-tagged at both write sites
+  const src = fs.readFileSync('app.js','utf8');
+  check('segment drags tag their stored route with the authoring sheet',
+    /if \(e\) e\.route = \{ \.\.\.route, sheet: S\.openGroup \};/.test(src));
+  check('pinned portal wires tag their stored route with the authoring sheet',
+    /e\.route = \{ pts: r\.pts\.map\(p=>p\.slice\(\)\), sheet: S\.openGroup \};/.test(src));
 }
 
 T.closeGroupView();

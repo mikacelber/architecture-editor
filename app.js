@@ -888,7 +888,8 @@ function autoLayoutGroupMembers(groupId){
     Object.keys(S.groupPortSides).forEach(k=>{ if (k.startsWith(id+'|')) delete S.groupPortSides[k]; });
   }
   for (const e of S.edges)
-    if ((memberSet.has(e.source) || memberSet.has(e.target)) && e.route) delete e.route;
+    if ((memberSet.has(e.source) || memberSet.has(e.target)) && e.route &&
+        (e.route.sheet == null || e.route.sheet === groupId)) delete e.route;
   delete S.portalOffsets[groupId];
   delete S.portalOrder[groupId];
   delete S.portalSeq[groupId];
@@ -1467,6 +1468,20 @@ function simplifyPts(pts){
   if (pts.length>1) out.push(pts[pts.length-1]);
   return out;
 }
+// Stitching two lattice halves at a shared point can leave an out-and-back
+// spur at the junction (…A→B→A…): simplifyPts alone misses it because the
+// collapse creates duplicate points that shield the next collinear triple.
+// Iterating dedupe+simplify to a fixed point removes every such spur — a wire
+// must never draw a segment and immediately retrace it (the "antenna").
+function cleanPts(pts){
+  let p = pts, n;
+  do {
+    n = p.length;
+    p = p.filter((q,i)=> i===0 || Math.abs(q[0]-p[i-1][0])>0.01 || Math.abs(q[1]-p[i-1][1])>0.01);
+    if (p.length>1) p = simplifyPts(p);
+  } while (p.length < n);
+  return p;
+}
 function ptsPathD(pts){ return 'M '+pts.map(p=>p[0]+' '+p[1]).join(' L '); }
 function ptsBadgePos(pts){
   let best=-1,bx=0,by=0;
@@ -1634,7 +1649,7 @@ function groupEdgePts(pa, pb, route, obstacles, lane){
       const inPart  = latticeRoute(start, wp, obstacles, ln);
       const outPart = latticeRoute(wp, goal, obstacles, ln);
       return (inPart && outPart)
-        ? { pts: simplifyPts([[pa.x,pa.y], ...inPart, ...outPart.slice(1), [pb.x,pb.y]]), geo, manual:true }
+        ? { pts: cleanPts([[pa.x,pa.y], ...inPart, ...outPart.slice(1), [pb.x,pb.y]]), geo, manual:true }
         : null;
     });
     if (manual) return manual;
@@ -1644,7 +1659,7 @@ function groupEdgePts(pa, pb, route, obstacles, lane){
   if (ptsClearOf(plain, obstacles)) return { pts: plain, geo, manual:false };
   const auto = tryLanes((l,{start,goal})=>{
     const mid = latticeRoute(start, goal, obstacles, Math.max(laneEnd(l,'a'), laneEnd(l,'b')));
-    return mid ? { pts: simplifyPts([[pa.x,pa.y], ...mid, [pb.x,pb.y]]), geo, manual:false } : null;
+    return mid ? { pts: cleanPts([[pa.x,pa.y], ...mid, [pb.x,pb.y]]), geo, manual:false } : null;
   });
   return auto || { pts: plain, geo, manual:false };
 }
@@ -2072,7 +2087,7 @@ function pinPortalWires(dir){
     if (!e || nodeEdgeRouteOf(e)) continue;   // hand-routed wires are already pinned
     const r = groupEdgePtsCached(NODE_ROUTE_PREFIX+s.e.id, s.pa, s.pb,
       undefined, obstacles, S.groupEdgeLanes[nodeEdgeLaneKey(s.e)] || 0);
-    e.route = { pts: r.pts.map(p=>p.slice()) };
+    e.route = { pts: r.pts.map(p=>p.slice()), sheet: S.openGroup };
   }
 }
 // Move a whole FROM/TO box one step up or down within its column (the
@@ -2142,11 +2157,33 @@ function nodeEdgeLaneKey(e){ return 'n:'+e.source+'→'+e.target; }
 // a single waypoint {wx,wy}, the same forms the top level stores (kept on the
 // edge itself so history/serialisation carry it for free); legacy {x,y,x2}
 // elbow patches from older sessions simply mean "auto".
+// A drill route is SHEET geometry: a boundary connection is drawn in BOTH
+// ends' drill sheets, but a shape authored in one is meaningless in the other
+// (the portal end sits somewhere else entirely). Routes carry the sheet they
+// were authored in (route.sheet) and are honoured only there; an untagged
+// route from an older session is adopted by the one sheet whose anchors it
+// still matches exactly (adoptSheetRoute, from drillSheet) and treated as
+// "auto" everywhere else — re-routing cleanly beats gluing a foreign shape
+// into dangling spurs.
 function nodeEdgeRouteOf(e){
   const r = e.route;
-  if (!r) return undefined;
+  if (!r || r.sheet !== S.openGroup) return undefined;
   if (r.pts && r.pts.length>=2) return r;
   return (r.wx!=null && r.wy!=null) ? r : undefined;
+}
+// Legacy migration: tag an untagged stored route with the open sheet iff its
+// endpoints coincide with the wire's CURRENT anchors here — proof it was
+// authored on this sheet and nothing moved since. An INTERNAL wire only ever
+// exists on its own group's sheet, so its route is adopted unconditionally
+// (waypoints included — reglue/degrade handle any drift as before).
+function adoptSheetRoute(e, pa, pb, internal){
+  const r = e.route;
+  if (!r || r.sheet != null) return;
+  if (internal){ r.sheet = S.openGroup; return; }
+  if (!r.pts || r.pts.length<2) return;
+  const m = r.pts, q = m[m.length-1];
+  if (Math.abs(m[0][0]-pa.x)<0.75 && Math.abs(m[0][1]-pa.y)<0.75 &&
+      Math.abs(q[0]-pb.x)<0.75 && Math.abs(q[1]-pb.y)<0.75) r.sheet = S.openGroup;
 }
 // Fallback lane cap for boundary wires when a spec carries no computed
 // per-side cap (drillSheet derives the real one from its corridor width).
@@ -2272,26 +2309,31 @@ function drillSheet(){
   // top-level norm. Only the portal ends use the portal's fanned exit slots.
   for (const e of internal){
     if (!nodeById(e.source) || !nodeById(e.target)) continue;
-    specs.push({ e, kind:'internal',
+    const spec = { e, kind:'internal',
       pa: nodePortAnchor(e.source, e.source, e.target, 'out'),
-      pb: nodePortAnchor(e.target, e.source, e.target, 'in') });
+      pb: nodePortAnchor(e.target, e.source, e.target, 'in') };
+    adoptSheetRoute(e, spec.pa, spec.pb, true);
+    specs.push(spec);
   }
   for (const p of portals) p.unders.forEach((e,j)=>{
     // Each wire gets its own exit slot on the portal edge — half-GRID pitch,
     // dead on the fine lattice, so two wires never leave the portal on the
     // same line and none needs a jog to reach an off-grid slot.
     const slotY = portalSlotY(p, j);
+    let spec;
     if (p.dir==='in'){
       if (!nodeById(e.target)) return;
-      specs.push({ e, kind:'in', portalKey:p.key, maxLane:p.maxLane,
+      spec = { e, kind:'in', portalKey:p.key, maxLane:p.maxLane,
         pa:{ x:p.r.x+p.r.w, y:slotY, sign:1 },
-        pb: nodePortAnchor(e.target, e.source, e.target, 'in') });
+        pb: nodePortAnchor(e.target, e.source, e.target, 'in') };
     } else {
       if (!nodeById(e.source)) return;
-      specs.push({ e, kind:'out', portalKey:p.key, maxLane:p.maxLane,
+      spec = { e, kind:'out', portalKey:p.key, maxLane:p.maxLane,
         pa: nodePortAnchor(e.source, e.source, e.target, 'out'),
-        pb:{ x:p.r.x, y:slotY, sign:1 } });
+        pb:{ x:p.r.x, y:slotY, sign:1 } };
     }
+    adoptSheetRoute(e, spec.pa, spec.pb, false);
+    specs.push(spec);
   });
   // "+" slot under each portal column (or at the column's natural spot when
   // it is empty) — clicking it creates a new FROM/TO boundary connection.
@@ -3425,7 +3467,7 @@ svg.addEventListener('pointermove', ev=>{
     }
     commitGesture(drag);
     if (drag.topLevel) setGroupEdgeRoute(drag.src, drag.tgt, route, drag.dom);
-    else { const e=S.edges.find(x=>x.id===drag.eid); if (e) e.route = route; }
+    else { const e=S.edges.find(x=>x.id===drag.eid); if (e) e.route = { ...route, sheet: S.openGroup }; }
     render();
     return;
   }
