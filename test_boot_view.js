@@ -73,6 +73,8 @@ check('zoom out carries one bar, zoom in carries two (the +)',
   btns[0].querySelectorAll('svg line').length===2 && btns[1].querySelectorAll('svg line').length===3);
 check('the fit icon is four corner brackets around an inner rectangle',
   btns[2].querySelectorAll('svg polyline').length===4 && btns[2].querySelectorAll('svg rect').length===1);
+check('fit lives on the canvas only — the header no longer duplicates it',
+  !doc.getElementById('btnFit') && !/id="btnFit"/.test(fs.readFileSync('index.html','utf8')));
 {
   const css=fs.readFileSync('styles.css','utf8');
   const rule=(css.match(/#viewTools\{[^}]*\}/)||[''])[0];
