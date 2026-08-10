@@ -3023,8 +3023,21 @@ function renderInspector(){
     // crossings); nets internal to other groups are irrelevant noise here.
     const gid = nodeGroupIndex().get(n.id);
     const gNetNames = gid ? [...groupNetIndex(gid).keys()].sort((a,b)=>a.localeCompare(b)) : [];
-    const gMembers = (groupsWithUngrouped().find(x=>x.id===gid)||{members:[]}).members.filter(id=>id!==n.id);
     const memberLabel = id => { const x=nodeById(id); return x?x.label:id; };
+    // A NEW net's counterpart may be ANY block in the system, not just a
+    // neighbour in this group: this group's members lead the list, every
+    // other group follows under its own heading. A cross-group choice needs
+    // nothing special downstream — the boundary edge it creates materializes
+    // the FROM/TO portals on both sheets and the group-to-group wire at the
+    // top level by derivation, exactly like the portal "+" buttons.
+    const counterpartOpts = (()=>{
+      const gs = groupsWithUngrouped().filter(g=>g.members.some(id=>id!==n.id));
+      gs.sort((a,b)=>(b.id===gid)-(a.id===gid));   // this group first, others in order
+      return gs.map(g=>`<optgroup label="${esc(g.id===gid ? g.title+' — this group' : g.title)}">`+
+        g.members.filter(id=>id!==n.id)
+          .map(id=>`<option value="${esc(id)}">${esc(memberLabel(id))}</option>`).join('')+
+        `</optgroup>`).join('');
+    })();
     const addNetSection = `
       <div class="addnet">
         <div class="kv"><label>Add net to this block — nets in this group</label>
@@ -3038,8 +3051,11 @@ function renderInspector(){
           <div class="kv"><label>Net name</label><input type="text" id="anName" placeholder="MY_NEW_NET"></div>
           <div class="kv"><label>Type</label><select id="anType">${NET_TYPES.map(t=>`<option>${t}</option>`).join('')}</select></div>
           <div class="kv"><label>Description</label><textarea id="anDesc" placeholder="One line: purpose, polarity if applicable"></textarea></div>
-          <div class="kv"><label>Counterpart block (same group)</label>
-            <select id="anOther">${gMembers.map(id=>`<option value="${esc(id)}">${esc(memberLabel(id))}</option>`).join('')}</select></div>
+          <div class="kv"><label>Counterpart block (any group)</label>
+            <select id="anOther">${counterpartOpts}</select></div>
+          <p class="hint">Picking a block from another group creates the boundary connection
+            automatically: FROM/TO portals on both groups' sheets (created if missing) and
+            the group-to-group wire on the system level.</p>
         </div>
         <button id="btnAddNetNode">Add net</button>
       </div>`;
@@ -3904,7 +3920,9 @@ $('btnAddExt').onclick=()=>{
    net as an input or output. Offered nets are the ones the block's own
    GROUP already sees (its internal wires plus its boundary crossings) —
    nets internal to other groups are irrelevant noise here — plus a
-   "new net" escape hatch that also picks the counterpart block.
+   "new net" escape hatch whose counterpart may be ANY block in the
+   system: a cross-group pick creates a boundary edge, and the FROM/TO
+   portals and the top-level group wire follow by derivation.
    ------------------------------------------------------------------ */
 // name → {net, driver, consumers:Set} over every edge touching the group.
 function groupNetIndex(gid){
