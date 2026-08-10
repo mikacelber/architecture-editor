@@ -13,7 +13,7 @@ window.Element.prototype.setPointerCapture=()=>{};
 window.eval(fs.readFileSync('app.js','utf8')+`
 window.__T={get S(){return S;},loadFromContract,render,dkNormalizeProducts,dkSearch,dkRenderResults,
  dkConfig,dkSaveConfig,buildSessionJSON,nodeById,findFreeSpot,openReplaceICModal,renameNodeId,
- nodePortRowsFor,isHvNet,cleanDatasheetUrl,shortDatasheetLabel,GRID:GRID};`);
+ nodePortRowsFor,isHvNet,shortDatasheetLabel,GRID:GRID};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -88,57 +88,36 @@ const FIX={Products:[
       doc.getElementById('fDesc').value==='' && doc.getElementById('fRat').value==='');
     check('the picked row is highlighted', rows[0].classList.contains('on'));
 
-    /* ---- datasheet links arrive clean, and read short ---- */
+    /* ---- datasheet links are printed short, never rewritten ---- */
     {
-      const cl=T.cleanDatasheetUrl, lbl=T.shortDatasheetLabel;
-      check('a protocol-relative DigiKey link becomes a real https URL',
-        cl('//mm.digikey.com/Volume0/opasdata/d220001/medias/docus/5099/TPS7A20.pdf')===
-        'https://mm.digikey.com/Volume0/opasdata/d220001/medias/docus/5099/TPS7A20.pdf');
-      check('campaign tracking is stripped',
-        cl('https://www.ti.com/lit/ds/symlink/tps7a20.pdf?utm_source=digikey&utm_medium=referral')===
-        'https://www.ti.com/lit/ds/symlink/tps7a20.pdf');
-      check('a redirector is unwrapped to the document it points at',
-        cl('https://redirect.digikey.com/go?url=https%3A%2F%2Fwww.analog.com%2Fmedia%2Fen%2Fdata-sheets%2FADS1220.pdf&ref=dk')===
-        'https://www.analog.com/media/en/data-sheets/ADS1220.pdf');
-      // every vendor names its redirect parameter differently — TI uses
-      // gotoUrl on suppproductinfo.tsp; the rule is "any param holding a URL"
-      check('TI\'s suppproductinfo redirector is unwrapped too',
-        cl('https://www.ti.com/general/docs/suppproductinfo.tsp?distId=10&gotoUrl=https%3A%2F%2Fwww.ti.com%2Flit%2Fgpn%2Fbq29712')===
-        'https://www.ti.com/lit/gpn/bq29712' &&
-        lbl('https://www.ti.com/general/docs/suppproductinfo.tsp?distId=10&gotoUrl=https%3A%2F%2Fwww.ti.com%2Flit%2Fgpn%2Fbq29712')===
-        'ti.com/…/bq29712');
-      check('a chained redirector is followed to the real document',
-        cl('https://a.example/go?url=https%3A%2F%2Fb.example%2Fgo%3Furl%3Dhttps%253A%252F%252Fc.example%252Fds.pdf')===
-        'https://c.example/ds.pdf');
-      check('a meaningful query survives — only tracking goes',
-        cl('https://vendor.example/ds.pdf?rev=B&utm_source=x')==='https://vendor.example/ds.pdf?rev=B');
-      check('a deep link into a page is preserved',
-        cl(' https://www.ti.com/lit/ds/symlink/tps63070.pdf#page=3 ')===
-        'https://www.ti.com/lit/ds/symlink/tps63070.pdf#page=3');
-      check('the scheme is never rewritten — an http-only host stays reachable',
-        cl('http://legacy.example/ds.pdf')==='http://legacy.example/ds.pdf');
-      check('text that is not a URL is left exactly as typed',
-        cl('  see the printed binder  ')==='see the printed binder' && cl('')==='');
-      check('the printed label is host + document, middle elided',
-        lbl('//mm.digikey.com/Volume0/opasdata/d220001/medias/docus/5099/TPS7A20.pdf')===
-        'mm.digikey.com/…/TPS7A20.pdf' &&
-        lbl('https://www.ti.com/lit/ds/symlink/tps7a20.pdf?utm_source=x')==='ti.com/…/tps7a20.pdf');
+      const lbl=T.shortDatasheetLabel;
+      const TI='https://www.ti.com/general/docs/suppproductinfo.tsp?distId=10&gotoUrl=https%3A%2F%2Fwww.ti.com%2Flit%2Fgpn%2Fbq29712';
+      const DK='//mm.digikey.com/Volume0/opasdata/d220001/medias/docus/5099/TPS7A20.pdf';
+      check('the printed label is host + document, middle shown as /.../',
+        lbl(DK)==='mm.digikey.com/.../TPS7A20.pdf' &&
+        lbl('https://www.ti.com/lit/ds/symlink/tps7a20.pdf')==='ti.com/.../tps7a20.pdf');
+      check('a redirector is abbreviated, NOT resolved — its own path is what shows',
+        lbl(TI)==='ti.com/.../suppproductinfo.tsp');
+      check('a single-segment path needs no elision',
+        lbl('https://vendor.example/ds.pdf')==='vendor.example/ds.pdf');
       check('even an absurd link stays short enough for the panel',
         lbl('https://www.example.com/a/b/c/d/'+'x'.repeat(120)+'.pdf').length<=46);
+      check('text that is not a URL is printed exactly as typed',
+        lbl('  see the printed binder  ')==='see the printed binder' && lbl('')==='');
 
-      // the DigiKey pick and both save paths store the CLEAN url
-      const dirty={Products:[{ManufacturerProductNumber:'CLEAN-ME', Manufacturer:{Name:'TI'},
-        Description:{ProductDescription:'LDO'}, QuantityAvailable:5, UnitPrice:1,
-        DatasheetUrl:'//mm.digikey.com/x/CLEAN.pdf?utm_source=dk'}]};
-      check('dkNormalizeProducts cleans the datasheet it hands to the form',
-        T.dkNormalizeProducts(dirty)[0].datasheet==='https://mm.digikey.com/x/CLEAN.pdf');
+      // NOTHING rewrites the URL itself — not the DigiKey pick, not the form
+      const raw={Products:[{ManufacturerProductNumber:'KEEP-ME', Manufacturer:{Name:'TI'},
+        Description:{ProductDescription:'LDO'}, QuantityAvailable:5, UnitPrice:1, DatasheetUrl:TI}]};
+      check('dkNormalizeProducts hands the form the vendor URL untouched',
+        T.dkNormalizeProducts(raw)[0].datasheet===TI);
       const src=fs.readFileSync('app.js','utf8');
-      check('both IC save paths store the cleaned URL, not the raw field',
-        (src.match(/DatasheetUrl:cleanDatasheetUrl\(\$\('fUrl'\)\.value\)/g)||[]).length===2 &&
-        !/DatasheetUrl:\$\('fUrl'\)\.value\.trim\(\)/.test(src));
-      check('the inspector prints the short label and keeps the full URL in the tooltip',
-        /shortDatasheetLabel\(n\.data\.DatasheetUrl\)/.test(src) &&
-        /title="\$\{esc\(cleanDatasheetUrl\(n\.data\.DatasheetUrl\)\)\}"/.test(src));
+      check('no URL-rewriting helper survives in app.js', !/cleanDatasheetUrl/.test(src));
+      check('both IC save paths store the field verbatim',
+        (src.match(/DatasheetUrl:\$\('fUrl'\)\.value\.trim\(\)/g)||[]).length===2);
+      check('the inspector links to the original URL and only shortens the TEXT',
+        /href="\$\{esc\(n\.data\.DatasheetUrl\)\}"/.test(src) &&
+        /title="\$\{esc\(n\.data\.DatasheetUrl\)\}"/.test(src) &&
+        /shortDatasheetLabel\(n\.data\.DatasheetUrl\)/.test(src));
     }
 
     /* ---- repo-side credential file, selectable from the settings pane ---- */
