@@ -1340,7 +1340,17 @@ class MinHeap{
 // residues mod 24. Lane verticals therefore run off-grid — deliberately: only
 // PORTS and WAYPOINTS need to be on the grid for straight runs to meet them,
 // and both are (start/goal rows are part of every lattice).
+// One routing lane per GRID cell: parallel nets keep exactly the same
+// distance as two ports of a block, horizontally and vertically alike. The
+// corridors (portalMargin, lanesFrom) scale with this, so the sheet simply
+// grows where the wider spacing needs the room.
 const LANE_PITCH = 14, LANE_MAX = 6;
+// STRUCTURED nets — fan ladders, portal slots, port rows — keep one full
+// GRID between parallel wires (the block-port pitch), horizontally and
+// vertically; the free router's internal detour machinery stays on the fine
+// LANE_PITCH, where a coarser pitch would funnel every detour onto the same
+// few grid lines.
+const FAN_PITCH = GRID;
 function laneOf(src, tgt, dom){ return S.groupEdgeLanes[groupEdgeRouteKey(src,tgt,dom)] || 0; }
 
 /* ------------------------------------------------------------------
@@ -1542,15 +1552,25 @@ function laneEnd(lane, end){
   return lane || 0;
 }
 function laneSig(lane){ return laneEnd(lane,'a')+':'+laneEnd(lane,'b'); }
+// Ladder PHASE of one exit: wires of the SAME fan sit exactly one GRID apart
+// (the block-port pitch), but every exit's whole ladder is shifted by a small
+// deterministic offset (0/6/12/18px, hashed from the exit position). On a
+// grid-quantized sheet, unphased GRID ladders from different blocks land on
+// the same few columns and pile up collinear; the phases keep each exit's
+// bus on its own lines while preserving the constant in-bus spacing.
+function fanPhase(p){
+  const h = Math.abs((Math.round(p.x)*31 + (p.sign>0 ? 17 : 5)) % 4);
+  return h * (GRID/4);
+}
+// Distance from the port to the wire's k-th turn line at that end.
+function fanStub(p, k){ return GROUP_PORT_STUB + fanPhase(p) + k*FAN_PITCH; }
 function groupEdgePts(pa, pb, route, obstacles, lane){
   const geo = sidedGeometry(pa, pb, null);
   const ptsOf = g => simplifyPts([[g.x1,g.y1],[g.bendX,g.y1],[g.bendX,g.bendY],
     [g.entryX,g.bendY],[g.entryX,g.y2],[g.x2,g.y2]]);
   const anchorsAt = l => {
-    const stubA = GROUP_PORT_STUB + laneEnd(l,'a')*LANE_PITCH;
-    const stubB = GROUP_PORT_STUB + laneEnd(l,'b')*LANE_PITCH;
-    return { start: { x: pa.x + pa.sign*stubA, y: pa.y },
-             goal:  { x: pb.x - pb.sign*stubB, y: pb.y } };
+    return { start: { x: pa.x + pa.sign*fanStub(pa, laneEnd(l,'a')), y: pa.y },
+             goal:  { x: pb.x - pb.sign*fanStub(pb, laneEnd(l,'b')), y: pb.y } };
   };
   // A lane offset can push the stub endpoints inside a NEIGHBOURING block
   // (backward edges in tight sheets), which makes the lattice unreachable.
@@ -1566,6 +1586,7 @@ function groupEdgePts(pa, pb, route, obstacles, lane){
       a = Math.max(0, a-1); b = Math.max(0, b-1);
     }
   };
+
   // A segment-translated wire stores its FULL polyline (route.pts): it is
   // honoured verbatim while its endpoints still meet the ports and no block has
   // landed on it. When either stops being true (a port dragged elsewhere, a
@@ -1594,8 +1615,8 @@ function groupEdgePts(pa, pb, route, obstacles, lane){
   // vertical anywhere between the blocks and mix the disciplines. Only a
   // shape that would cross a block falls through to the lattice.
   if (!route && Math.abs(pa.y-pb.y)>=0.5){
-    const bxA = pa.x + pa.sign*(GROUP_PORT_STUB + laneEnd(lane,'a')*LANE_PITCH);
-    const bxB = pb.x - pb.sign*(GROUP_PORT_STUB + laneEnd(lane,'b')*LANE_PITCH);
+    const bxA = pa.x + pa.sign*fanStub(pa, laneEnd(lane,'a'));
+    const bxB = pb.x - pb.sign*fanStub(pb, laneEnd(lane,'b'));
     for (const bx of [bxA, bxB]){
       if ((bx - pa.x)*pa.sign < GROUP_PORT_STUB-0.5) continue;   // must still LEAVE the port
       if ((pb.x - bx)*pb.sign < GROUP_PORT_STUB-0.5) continue;   // and ENTER the far one head-on
@@ -2009,7 +2030,10 @@ function portalItemOfKey(key){
 // last-minute jog to absorb a fractional offset. The half-GRID slot pitch
 // keeps the compact fan the boxes always had.
 const PORTAL_W = 156, PORTAL_H = 2*GRID, PORTAL_VGAP = GRID, PORTAL_MARGIN = 130;
-const PORTAL_SLOT = GRID/2;
+// Portal exit slots use the SAME pitch as a block's port rows (one GRID), so
+// the net-to-net distance stays constant from a portal all the way into a
+// block — the boxes grow one row per wire to hold it.
+const PORTAL_SLOT = GRID;
 // The REAL minimum block-to-column distance: a parked column only moves when
 // a block gets closer than this to its boxes (the corridor margin above is a
 // routing-room default, not a hard keep-out).
@@ -2022,7 +2046,7 @@ function portalSlotY(p, j){
   return s0 + j*PORTAL_SLOT;
 }
 // Every boundary wire on a side may need its own vertical line in the corridor.
-function portalMargin(wireCount){ return PORTAL_MARGIN + wireCount*LANE_PITCH; }
+function portalMargin(wireCount){ return PORTAL_MARGIN + wireCount*FAN_PITCH; }
 // Manual column displacement, both axes free. The stored offset is a WISH:
 // the render-time clamp in drillSheet (colXFor) floors the column at the
 // design minimum distance to the blocks (PORTAL_MIN_CLEAR), whichever side
@@ -2202,7 +2226,7 @@ function drillSheet(){
   // inside it) — measured from the column's REAL position, so dragging it
   // outward buys extra lanes and parking it near the blocks sheds them.
   const lanesFrom = gap =>
-    Math.max(0, Math.min(LANE_MAX, Math.floor((gap - GROUP_PORT_STUB - ROUTE_CLEARANCE)/LANE_PITCH)));
+    Math.max(0, Math.min(LANE_MAX, Math.floor((gap - GROUP_PORT_STUB - ROUTE_CLEARANCE - GRID*0.75)/FAN_PITCH)));
   const inMaxLane = lanesFrom(liveB.minX - (inX + portalW)), outMaxLane = lanesFrom(outX - liveB.maxX);
   // A portal's wires, in slot order: alphabetical by default, but a manual
   // order (slot-handle drag, S.portalOrder) wins; edges it doesn't know append.
@@ -2222,11 +2246,11 @@ function drillSheet(){
     const pos = new Map(ord.map((id,i)=>[id,i]));
     return base.slice().sort((a,b)=>(pos.has(a.id)?pos.get(a.id):1e9)-(pos.has(b.id)?pos.get(b.id):1e9));
   };
-  // Boxes stack cumulatively: the compact half-GRID slot fan plus a GRID of
-  // breathing room, rounded up to a GRID multiple (min PORTAL_H — up to 3
-  // wires fit in the base height), a GRID gap between boxes, the whole column
-  // centred on the (frozen) member midline and snapped onto the lattice.
-  const heightFor = k => Math.max(PORTAL_H, Math.ceil(((k-1)*PORTAL_SLOT + GRID)/GRID)*GRID);
+  // Boxes stack cumulatively: one GRID row per wire (min PORTAL_H), a GRID
+  // gap between boxes, the whole column centred on the (frozen) member
+  // midline and snapped onto the lattice — every slot on a grid line, at the
+  // block-port pitch.
+  const heightFor = k => Math.max(PORTAL_H, (k+1)*GRID);
   const buildColumn = (list, dir, x, off, maxLane) => {
     const col = list.map(item => ({ item, dir, maxLane,
       key: portalKeyOf(dir, item),
@@ -2296,14 +2320,25 @@ function assignNodeEdgeLanes(){
   assignLanesNested(items, obstacles);
 }
 
+// Proper H×V intersections between a candidate polyline and the segments
+// already placed — the lane search treats every crossing as far worse than
+// any amount of extra wire length (its cost only breaks ties beneath it).
+function countCrossings(pts, placed){
+  let n = 0;
+  for (const s of routeSegments(pts)) for (const p of placed){
+    if (s.v === p.v) continue;
+    const [v,h] = s.v ? [s,p] : [p,s];
+    if (v.at > h.a+0.5 && v.at < h.b-0.5 && h.at > v.a+0.5 && h.at < v.b-0.5) n++;
+  }
+  return n;
+}
 // The lane assigner both levels share. The exit-fan nesting lanes are the
 // FIRST candidate — the rule dominates net length, so fan wires keep their
 // constant offsets and never cross. A wire only leaves its fan lanes when
-// they are physically untenable: the route would lie across a block, or run
-// collinear over an already-placed wire. Fallbacks bump both ends together
-// first (preserving the fan's relative order), then sweep the legacy scalar
-// lanes, taking the first clean candidate — same 1e6 block penalty and
-// overlap scoring the old search used.
+// they are physically untenable: the route would lie across a block, would
+// CROSS more already-placed wires than another lane, or would run collinear
+// over one. Priorities, strictly ordered: clear of blocks ≫ fewest crossings
+// ≫ no collinear overlap ≫ (implicitly, via candidate order) shortest wire.
 function assignLanesNested(items, obstacles){
   const fan = fanAssignLanes(items);
   const placed = [];
@@ -2318,7 +2353,13 @@ function assignLanesNested(items, obstacles){
     let best = cands[0], bestScore = Infinity, bestPts = null;
     for (const c of cands){
       const r = groupEdgePts(it.pa, it.pb, it.manual, obstacles, c);
-      const score = (ptsInsideAnyBlock(r.pts, obstacles) ? 1e6 : 0) + overlapLength(r.pts, placed);
+      // Strict priorities: clear of blocks ≫ no collinear overlap (wires on
+      // top of each other are unreadable) ≫ fewest crossings ≫ shortest
+      // wire (implicit in the candidate order — the fan lanes come first).
+      const ov = overlapLength(r.pts, placed);
+      const score = (ptsInsideAnyBlock(r.pts, obstacles) ? 1e9 : 0)
+        + (ov > 0 ? 1e6 + ov : 0)
+        + countCrossings(r.pts, placed) * 100;
       if (score < bestScore){ best = c; bestScore = score; bestPts = r.pts; }
       if (score === 0) break;
     }
