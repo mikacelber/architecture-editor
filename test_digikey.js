@@ -13,7 +13,7 @@ window.Element.prototype.setPointerCapture=()=>{};
 window.eval(fs.readFileSync('app.js','utf8')+`
 window.__T={get S(){return S;},loadFromContract,render,dkNormalizeProducts,dkSearch,dkRenderResults,
  dkConfig,dkSaveConfig,buildSessionJSON,nodeById,findFreeSpot,openReplaceICModal,renameNodeId,
- nodePortRowsFor,isHvNet,GRID:GRID};`);
+ nodePortRowsFor,isHvNet,cleanDatasheetUrl,shortDatasheetLabel,GRID:GRID};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -87,6 +87,49 @@ const FIX={Products:[
     check('function and rationale stay for the user to write',
       doc.getElementById('fDesc').value==='' && doc.getElementById('fRat').value==='');
     check('the picked row is highlighted', rows[0].classList.contains('on'));
+
+    /* ---- datasheet links arrive clean, and read short ---- */
+    {
+      const cl=T.cleanDatasheetUrl, lbl=T.shortDatasheetLabel;
+      check('a protocol-relative DigiKey link becomes a real https URL',
+        cl('//mm.digikey.com/Volume0/opasdata/d220001/medias/docus/5099/TPS7A20.pdf')===
+        'https://mm.digikey.com/Volume0/opasdata/d220001/medias/docus/5099/TPS7A20.pdf');
+      check('campaign tracking is stripped',
+        cl('https://www.ti.com/lit/ds/symlink/tps7a20.pdf?utm_source=digikey&utm_medium=referral')===
+        'https://www.ti.com/lit/ds/symlink/tps7a20.pdf');
+      check('a redirector is unwrapped to the document it points at',
+        cl('https://redirect.digikey.com/go?url=https%3A%2F%2Fwww.analog.com%2Fmedia%2Fen%2Fdata-sheets%2FADS1220.pdf&ref=dk')===
+        'https://www.analog.com/media/en/data-sheets/ADS1220.pdf');
+      check('a meaningful query survives — only tracking goes',
+        cl('https://vendor.example/ds.pdf?rev=B&utm_source=x')==='https://vendor.example/ds.pdf?rev=B');
+      check('a deep link into a page is preserved',
+        cl(' https://www.ti.com/lit/ds/symlink/tps63070.pdf#page=3 ')===
+        'https://www.ti.com/lit/ds/symlink/tps63070.pdf#page=3');
+      check('the scheme is never rewritten — an http-only host stays reachable',
+        cl('http://legacy.example/ds.pdf')==='http://legacy.example/ds.pdf');
+      check('text that is not a URL is left exactly as typed',
+        cl('  see the printed binder  ')==='see the printed binder' && cl('')==='');
+      check('the printed label is host + document, middle elided',
+        lbl('//mm.digikey.com/Volume0/opasdata/d220001/medias/docus/5099/TPS7A20.pdf')===
+        'mm.digikey.com/…/TPS7A20.pdf' &&
+        lbl('https://www.ti.com/lit/ds/symlink/tps7a20.pdf?utm_source=x')==='ti.com/…/tps7a20.pdf');
+      check('even an absurd link stays short enough for the panel',
+        lbl('https://www.example.com/a/b/c/d/'+'x'.repeat(120)+'.pdf').length<=46);
+
+      // the DigiKey pick and both save paths store the CLEAN url
+      const dirty={Products:[{ManufacturerProductNumber:'CLEAN-ME', Manufacturer:{Name:'TI'},
+        Description:{ProductDescription:'LDO'}, QuantityAvailable:5, UnitPrice:1,
+        DatasheetUrl:'//mm.digikey.com/x/CLEAN.pdf?utm_source=dk'}]};
+      check('dkNormalizeProducts cleans the datasheet it hands to the form',
+        T.dkNormalizeProducts(dirty)[0].datasheet==='https://mm.digikey.com/x/CLEAN.pdf');
+      const src=fs.readFileSync('app.js','utf8');
+      check('both IC save paths store the cleaned URL, not the raw field',
+        (src.match(/DatasheetUrl:cleanDatasheetUrl\(\$\('fUrl'\)\.value\)/g)||[]).length===2 &&
+        !/DatasheetUrl:\$\('fUrl'\)\.value\.trim\(\)/.test(src));
+      check('the inspector prints the short label and keeps the full URL in the tooltip',
+        /shortDatasheetLabel\(n\.data\.DatasheetUrl\)/.test(src) &&
+        /title="\$\{esc\(cleanDatasheetUrl\(n\.data\.DatasheetUrl\)\)\}"/.test(src));
+    }
 
     /* ---- repo-side credential file, selectable from the settings pane ---- */
     check('settings pane offers "Load from credential/digikey_credentials.json"', !!doc.getElementById('dkLoadFile'));

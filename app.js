@@ -1092,6 +1092,44 @@ function deconflictGroupRails(){
    RENDER
    ============================================================ */
 function esc(s){ return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+/* ---------- datasheet links ----------
+   DigiKey hands back URLs that are protocol-relative ("//mm.digikey.com/…"),
+   sometimes wrapped in a redirector and usually carrying campaign tracking.
+   cleanDatasheetUrl stores the plain document URL; shortDatasheetLabel is what
+   the inspector prints, so a 180-character link doesn't become a paragraph.
+   The scheme is only ever ADDED, never rewritten — an http-only host stays
+   reachable. */
+const URL_TRACKING_PARAMS = /^(utm_[a-z_]*|gclid|fbclid|mkt_tok|_ga|ref|referrer|source|src|campaign)$/i;
+function cleanDatasheetUrl(raw){
+  const trimmed = String(raw??'').trim();
+  if (!trimmed) return '';
+  let s = trimmed.replace(/\s+/g,'');                     // wrapped URLs arrive with line breaks in them
+  if (s.startsWith('//')) s = 'https:'+s;                 // protocol-relative
+  if (!/^https?:\/\//i.test(s)) return trimmed;           // not a URL we understand — leave it exactly as typed
+  let u;
+  try { u = new URL(s); } catch { return trimmed; }
+  // a redirector carrying the real document in a query parameter
+  for (const k of ['url','u','target','redirect','link','href']){
+    const v = u.searchParams.get(k);
+    if (v && /^https?:\/\//i.test(v)){ try { u = new URL(v); } catch {} break; }
+  }
+  for (const k of [...u.searchParams.keys()]) if (URL_TRACKING_PARAMS.test(k)) u.searchParams.delete(k);
+  // the fragment stays: "#page=12" is a deliberate deep link into a datasheet
+  return u.toString().replace(/\?(?=#|$)/,'');
+}
+// Compact link text: host without "www.", then the document's own name, with
+// the middle of a deep path elided. Never longer than ~46 characters.
+function shortDatasheetLabel(raw){
+  const s = cleanDatasheetUrl(raw);
+  if (!/^https?:\/\//i.test(s)) return s;
+  let u; try { u = new URL(s); } catch { return s; }
+  const host = u.hostname.replace(/^www\./i,'');
+  const parts = u.pathname.split('/').filter(Boolean);
+  let last = parts.length ? decodeURIComponent(parts[parts.length-1]) : '';
+  if (last.length > 30) last = last.slice(0,27)+'…';
+  const label = !last ? host : host+(parts.length>1?'/…/':'/')+last;
+  return label.length > 46 ? label.slice(0,45)+'…' : label;
+}
 function nodeById(id){ return S.nodes.find(n=>n.id===id); }
 function isHvNetType(n){ return /HIGH_VOLTAGE/i.test(n.type||''); }
 // EFFECTIVE insulation domain of a net: an explicit per-net flag (set from the
@@ -3065,7 +3103,10 @@ function renderInspector(){
         <div class="kv"><label>Manufacturer</label><div class="val">${esc(n.data.manufacturer||'—')}</div></div>
         <div class="kv"><label>Function</label><div class="val">${esc(n.data.description||'')}</div></div>
         <div class="kv"><label>Selection rationale</label><div class="val">${esc(n.data.selection_rationale||'')}</div></div>
-        <div class="kv"><label>Datasheet</label><div class="val">${n.data.DatasheetUrl?`<a href="${esc(n.data.DatasheetUrl)}" target="_blank" rel="noopener">${esc(n.data.DatasheetUrl)}</a>`:'—'}</div></div>
+        <div class="kv"><label>Datasheet</label><div class="val">${n.data.DatasheetUrl
+          ? `<a href="${esc(cleanDatasheetUrl(n.data.DatasheetUrl))}" target="_blank" rel="noopener"
+               title="${esc(cleanDatasheetUrl(n.data.DatasheetUrl))}">${esc(shortDatasheetLabel(n.data.DatasheetUrl))}</a>`
+          : '—'}</div></div>
         ${sideRow}
         ${portHint}
         ${addNetSection}
@@ -3136,7 +3177,7 @@ function renderInspector(){
   const dsLinks = [{id:e.source, role:'source'}, {id:e.target, role:'target'}].map(x=>{
     const n = nodeById(x.id);
     return (n && n.kind==='ic' && n.data && n.data.DatasheetUrl)
-      ? { label:n.label, url:n.data.DatasheetUrl, role:x.role } : null;
+      ? { label:n.label, url:cleanDatasheetUrl(n.data.DatasheetUrl), role:x.role } : null;
   }).filter(Boolean);
   body.innerHTML = `
     ${e.nets.length?'':'<p style="color:var(--warn)">This connection has no nets yet — add at least one, or it will be dropped on export.</p>'}
@@ -3693,7 +3734,8 @@ function dkNormalizeProducts(json){
       const breaks = (p.ProductVariations||[]).flatMap(v=>v.StandardPricing||[]);
       if (breaks.length) price = breaks.slice().sort((a,b)=>a.BreakQuantity-b.BreakQuantity)[0].UnitPrice;
     }
-    return { pn, man, desc, stock, price: price!=null ? +price : null, datasheet: p.DatasheetUrl || '' };
+    return { pn, man, desc, stock, price: price!=null ? +price : null,
+             datasheet: cleanDatasheetUrl(p.DatasheetUrl) };
   }).filter(x=>x.pn)
     .sort((a,b)=> b.stock - a.stock || a.pn.localeCompare(b.pn));
 }
@@ -3847,7 +3889,7 @@ $('btnAddIC').onclick=()=>{
     const node = { id:pn, kind:'ic', label:pn, x:0, y:0, w:NODE_W_IC, h:NODE_H_IC,
       data:{ ic_part_number:pn, ic_type:$('fType').value.trim(), manufacturer:$('fMan').value.trim(),
              description:$('fDesc').value.trim(), selection_rationale:$('fRat').value.trim(),
-             DatasheetUrl:$('fUrl').value.trim() } };
+             DatasheetUrl:cleanDatasheetUrl($('fUrl').value) } };
     // Measure the block as it will ACTUALLY render (header texts + the empty
     // port zone make it larger than the nominal constants) — searching with
     // the nominal size used to let the grown block overlap its neighbours.
@@ -4068,7 +4110,7 @@ function openReplaceICModal(n){
     n.label = pn;
     n.data = { ...n.data, ic_part_number:pn, ic_type:$('fType').value.trim(), manufacturer:$('fMan').value.trim(),
                description:$('fDesc').value.trim(), selection_rationale:$('fRat').value.trim(),
-               DatasheetUrl:$('fUrl').value.trim() };
+               DatasheetUrl:cleanDatasheetUrl($('fUrl').value) };
     closeModal(); S.sel={type:'node',id:pn}; render();
     toast('Replaced — connections and routing kept');
   };
