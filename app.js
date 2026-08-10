@@ -4247,7 +4247,6 @@ function toast(msg){
 // level, only the open group's sheet inside a group (autoLayoutGroupMembers
 // re-anchors that group's portals and aims its ports itself).
 $('btnLayout').onclick=()=>{ commit(); if (isTopLevel()){ autoLayoutGroups(); assignRouteLanes(); } else { autoLayoutGroupMembers(S.openGroup); assignNodeEdgeLanes(); } render(); fitView(); };
-$('btnFit').onclick=fitView;
 $('btnUndo').onclick=undo;
 $('btnRedo').onclick=redo;
 window.addEventListener('resize', ()=>render());
