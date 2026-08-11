@@ -17,7 +17,7 @@ window.__T={get S(){return S;},loadFromContract,render,openGroupView,closeGroupV
  openAddPortalModal,candidateNetsForPortal,groupNetIndex,nodeGroupIndex,computeGroupEdges,traceSets,
  movePortalSlotToRow,pinPortalWires,pinSheetWires,nodeEdgeRouteOf,groupPortRowsFor,laneEnd,fanAssignLanes,nodeEdgeLaneKey,fanStub,
  GROUP_PORT_STUB:GROUP_PORT_STUB,FAN_PITCH:FAN_PITCH,commit,undo,
- cleanPts,adoptSheetRoute,groupEdgePtsCached,buildSessionJSON,groupNetEndpoints,groupNetIndex,
+ cleanPts,adoptSheetRoute,groupEdgePtsCached,buildSessionJSON,groupNetEndpoints,groupNetIndex,addNetToEdge,
  nodeGroupIndex,NODE_ROUTE_PREFIX:NODE_ROUTE_PREFIX};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
@@ -1174,6 +1174,44 @@ check('every in-group connection carries a routing lane',
   check('one undo removes the pins and the move together',
     S.edges.filter(e=>e.route).length===routed0+1);
   delete foreignEdge.route; T._routeCache.clear(); T.render();
+}
+
+/* ====== rule 24 — a new connection elsewhere never re-deals this sheet's lanes ======
+   Lane keys are global (a boundary edge is drawn on BOTH ends' sheets), and
+   the lazy assigner used to re-deal a whole sheet whenever ANY wire lacked a
+   lane — so adding a net in group B moved wires in group A. Now the lazy
+   pass fills ONLY the missing lanes; the full re-deal belongs to the
+   Auto-layout button alone. */
+{
+  const laneShot=()=>{ const sh=T.drillSheet();
+    return new Map(sh.specs.map(s=>[s.e.id, JSON.stringify(S.groupEdgeLanes[T.nodeEdgeLaneKey(s.e)]??null)])); };
+  const wireShot=()=>{ const sh=T.drillSheet();
+    return new Map(sh.specs.map(s=>{
+      const e=S.edges.find(x=>x.id===s.e.id);
+      return [s.e.id, JSON.stringify(T.groupEdgePtsCached(T.NODE_ROUTE_PREFIX+s.e.id,s.pa,s.pb,
+        e?T.nodeEdgeRouteOf(e):undefined, sh.obstacles, S.groupEdgeLanes[T.nodeEdgeLaneKey(s.e)]||0).pts)];
+    })); };
+  const lanes0=laneShot(), wires0=wireShot();
+  const farG=T.groupsWithUngrouped().find(g=>g.id!==best.id && g.members.length>=2);
+  check('another group with two members exists (test is meaningful)', !!farG);
+  const [m1,m2]=farG.members;
+  T.closeGroupView(); T.openGroupView(farG.id);
+  T.commit(); T.addNetToEdge(m1, m2, {name:'RULE24_NET', type:'CONTROL_SIGNAL', description:''});
+  T.render();
+  check('the new wire got a lane of its own on first paint',
+    S.groupEdgeLanes['n:'+m1+'→'+m2]!=null);
+  T.closeGroupView(); T.openGroupView(best.id);
+  const lanes1=laneShot(), wires1=wireShot();
+  const laneMoved=[...lanes0.keys()].filter(k=>lanes0.get(k)!=='null' && lanes1.get(k)!==lanes0.get(k));
+  const wireMoved=[...wires0.keys()].filter(k=>wires1.has(k) && wires1.get(k)!==wires0.get(k));
+  check('back on the first sheet, no existing lane was re-dealt', laneMoved.length===0);
+  check('…and no wire moved', wireMoved.length===0);
+  const src=fs.readFileSync('app.js','utf8');
+  check('the lazy pass fills only missing lanes; the button still re-deals all',
+    /assignNodeEdgeLanes\(true\);/.test(src) &&
+    /btnLayout[\s\S]{0,200}assignNodeEdgeLanes\(\);/.test(src));
+  T.undo(); T.render();
+  check('one undo removes the probe net again', !S.edges.some(e=>e.nets.some(n=>n.name==='RULE24_NET')));
 }
 
 T.closeGroupView();
