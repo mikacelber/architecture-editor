@@ -2393,13 +2393,13 @@ function drillSheet(){
 // open group — internal AND boundary. Lanes live in S.groupEdgeLanes under
 // 'n:'-prefixed keys, assigned lazily on first paint of the group (and
 // re-assigned by the in-group Auto-layout).
-function assignNodeEdgeLanes(){
+function assignNodeEdgeLanes(onlyMissing){
   const { specs, obstacles } = drillSheet();
   const ordered = specs.slice().sort((a,b)=>String(a.e.id).localeCompare(String(b.e.id)));
   const items = ordered.map(s=>({ key: nodeEdgeLaneKey(s.e), pa: s.pa, pb: s.pb,
     cap: s.kind==='internal' ? LANE_MAX : (s.maxLane ?? BOUNDARY_LANE_MAX),
     manual: nodeEdgeRouteOf(s.e) }));
-  assignLanesNested(items, obstacles);
+  assignLanesNested(items, obstacles, onlyMissing);
 }
 
 // Proper H×V intersections between a candidate polyline and the segments
@@ -2421,10 +2421,21 @@ function countCrossings(pts, placed){
 // CROSS more already-placed wires than another lane, or would run collinear
 // over one. Priorities, strictly ordered: clear of blocks ≫ fewest crossings
 // ≫ no collinear overlap ≫ (implicitly, via candidate order) shortest wire.
-function assignLanesNested(items, obstacles){
+function assignLanesNested(items, obstacles, onlyMissing){
   const fan = fanAssignLanes(items);
   const placed = [];
   for (const it of items){
+    // onlyMissing: a lane the sheet already carries is USER STATE — a new
+    // connection appearing elsewhere (Add net, a new boundary edge) must
+    // never re-deal the lanes under wires the user has been looking at.
+    // The kept wire still books its segments, so the new ones route around
+    // it; only wires with NO lane yet get one. The full re-deal remains the
+    // Auto-layout button's job.
+    if (onlyMissing && S.groupEdgeLanes[it.key] != null){
+      const r = groupEdgePts(it.pa, it.pb, it.manual, obstacles, S.groupEdgeLanes[it.key]);
+      placed.push(...routeSegments(r.pts));
+      continue;
+    }
     const base = fan.get(it.key);
     const cap = it.cap != null ? it.cap : LANE_MAX;
     const cands = [ { a:base.a, b:base.b } ];
@@ -2457,8 +2468,12 @@ function renderDrillDown(){
   const { members, portals, obstacles, specs } = sheet;
   renderGrid(true);   // same adaptive lattice as the top level — in-group drags snap to it too (snapView)
   lastPorts = null;   // no crosshair link port in the drill-down (removed by design)
-  // Undo (or an old session) can leave wires without a lane — reassign, once.
-  if (specs.some(s=>S.groupEdgeLanes[nodeEdgeLaneKey(s.e)]==null)) assignNodeEdgeLanes();
+  // A new connection (Add net, undo, an old session) can leave wires without
+  // a lane. Fill in ONLY those: existing lanes are user-visible state shared
+  // across sheets (boundary edges appear on both ends' drills), so a full
+  // re-deal here would move wires the user never touched. The Auto-layout
+  // button is the one place that re-deals everything.
+  if (specs.some(s=>S.groupEdgeLanes[nodeEdgeLaneKey(s.e)]==null)) assignNodeEdgeLanes(true);
   // Forget routes for connections that no longer exist (deletions, regrouping).
   const live = new Set(specs.map(s=>NODE_ROUTE_PREFIX+s.e.id));
   for (const k of _routeCache.keys()) if (k.startsWith(NODE_ROUTE_PREFIX) && !live.has(k)) _routeCache.delete(k);
