@@ -19,7 +19,8 @@ window.eval(appSrc+`
 window.__T={get S(){return S;},loadSession,loadFromContract,render,buildSessionJSON,projectOf,
  openProjectOptionsModal,pdfSheetList,sheetNetCounts,exportPdfDrawing,groupsWithUngrouped,
  openGroupView,closeGroupView,undo,commit,PDF_FRAME,PDF_TB,PDF_LEGEND,LEGEND_LABELS,
- NET_CATEGORY_STYLE,CATEGORY_PRIORITY,isGroundNet,netCategory,computeGroupEdges,drillSheet,_routeCache};`);
+ NET_CATEGORY_STYLE,CATEGORY_PRIORITY,isGroundNet,netCategory,computeGroupEdges,drillSheet,
+ netHarnessRows,pdfNetTablePages,PDF_NT,_routeCache};`);
 const T=window.__T,S=T.S,doc=window.document;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -117,9 +118,15 @@ check('the PDF engine is vendored and loaded before app.js',
   window.jspdf={ jsPDF:MockDoc };
   doc.documentElement.dataset.theme='dark';
   const sheets=T.pdfSheetList();
+  const meas={ setFontSize(){}, getTextWidth:t=>String(t).length*1.6 };
+  const tablePages=T.pdfNetTablePages(meas, T.netHarnessRows(), 420, 297);
+  const total=sheets.length+tablePages.length;
   (async()=>{
     await T.exportPdfDrawing();
-    check('one PDF page per sheet, system first', calls.pages===sheets.length);
+    check('one PDF page per sheet plus the net-table page(s)',
+      calls.pages===total && tablePages.length>=1);
+    check('diagram pages only carry the vector sheet (the table draws with primitives)',
+      calls.svgs.length===sheets.length);
     check('every page embeds its sheet as vector SVG, inside the frame',
       calls.svgs.length===sheets.length && calls.svgs.every(s=>s.x>=T.PDF_FRAME.inner && s.width>0));
     check('the diagram never invades the bottom band',
@@ -130,8 +137,9 @@ check('the PDF engine is vendored and loaded before app.js',
     check('the editor view/openGroup are restored after the export', S.openGroup===null);
     check('the title block prints every Project Options field',
       ['ACME Robotics','NX Design','10/08/2026','M.C.','A3'].every(v=>calls.texts.includes(v)));
-    check('every page numbers itself "n of N"',
-      sheets.every((x,i)=>calls.texts.includes(`${i+1} of ${sheets.length}`)));
+    check('every page numbers itself "n of N", table pages included',
+      sheets.every((x,i)=>calls.texts.includes(`${i+1} of ${total}`)) &&
+      calls.texts.includes(`${total} of ${total}`));
     check('sheet titles appear, System included',
       sheets.every(x=>calls.texts.some(t=>t.startsWith(x.title.slice(0,10)))));
     check('the net table draws its header and dashed swatches',
@@ -142,7 +150,8 @@ check('the PDF engine is vendored and loaded before app.js',
     check('the title block reserves a logo cell on its left', T.PDF_TB.logoW>0);
     check('the export loads the logo once and hands it to the title block',
       /const logo = await pdfLogo\(\);/.test(appSrc) &&
-      /pdfDrawTitleBlock\(doc, W, H, p, sheets\[i\]\.title, i\+1, sheets\.length, logo\)/.test(appSrc));
+      /pdfDrawTitleBlock\(doc, W, H, p, sheets\[i\]\.title, i\+1, total, logo\)/.test(appSrc) &&
+      /pdfDrawTitleBlock\(doc, W, H, p, 'Net Table', sheets\.length\+t\+1, total, logo\)/.test(appSrc));
     check('the logo image is drawn inside the logo cell, aspect kept',
       /doc\.addImage\(logo\.dataUrl, 'JPEG', x0\+\(lw-iw\)\/2, y0\+\(th-ih\)\/2, iw, ih\)/.test(appSrc));
     check('without the image (tests, missing file) the cell still draws, empty',
@@ -155,6 +164,23 @@ check('the PDF engine is vendored and loaded before app.js',
       calls.svgs.every(s=>s.heads>0));
     check('the wire is pulled back under the head so it cannot poke through',
       /pullback/.test(appSrc) && /ex-ux\*Math\.min\(pullback/.test(appSrc));
+
+    /* ---------- the harness net table closes the set ---------- */
+    const rows=T.netHarnessRows();
+    check('the net table aggregates every net once, categories in legend order',
+      rows.length>0 &&
+      new Set(rows.map(r=>r.name)).size===rows.length &&
+      rows.every((r,i)=>!i || T.CATEGORY_PRIORITY.indexOf(r.cat)>=T.CATEGORY_PRIORITY.indexOf(rows[i-1].cat)));
+    check('ground nets are listed too — a harness list without grounds lies',
+      !S.edges.some(e=>e.nets.some(n=>T.isGroundNet(n))) ||
+      rows.some(r=>/^GROUND$/i.test(r.type)));
+    check('every row knows origin and destinations',
+      rows.every(r=>r.from.length>=1 && r.to.length>=1));
+    check('the table page carries the loom columns and the sheet title',
+      ['#','NET','TYPE','DOM','FROM','TO','Net Table'].every(t=>calls.texts.includes(t)));
+    check('rows are printed (first and last net name appear)',
+      calls.texts.includes(rows[0].name) &&
+      calls.texts.some(t=>String(t).startsWith(rows[rows.length-1].name)));
 
     /* ---------- Export modal: the PDF tab ---------- */
     doc.getElementById('btnExport').onclick();

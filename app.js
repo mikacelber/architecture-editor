@@ -4505,6 +4505,120 @@ async function pdfAddDiagram(doc, area){
   try { await doc.svg(tmp, { x, y, width:w, height:h }); }
   finally { tmp.remove(); }
 }
+/* ---------- the NET TABLE, harness-loom style ----------
+   The drawing set's final page(s): every net of the system in one from-to
+   table — # | NET | TYPE (raw type, with the on-screen swatch) | DOM (LV/HV)
+   | FROM (the block that drives it) | TO (every block it reaches). Rows are
+   grouped under category bands in legend order (ground nets included: they
+   are never drawn on the sheets, but a harness list without grounds would
+   be a lie). Long block lists wrap; the table paginates when a page fills. */
+function netHarnessRows(){
+  const labelOf = id => { const x=nodeById(id); return x?x.label:id; };
+  const map = new Map();
+  for (const e of S.edges) for (const n of e.nets){
+    const rec = map.get(n.name) || { net:n, from:new Set(), to:new Set() };
+    rec.from.add(e.source); rec.to.add(e.target);
+    map.set(n.name, rec);
+  }
+  return [...map.entries()].map(([name,r])=>({
+    name, type:(r.net.type||'NA'), cat:netCategory(r.net), hv:isHvNet(r.net),
+    from:[...r.from].map(labelOf).sort((a,b)=>a.localeCompare(b)),
+    to:[...r.to].map(labelOf).sort((a,b)=>a.localeCompare(b)) }))
+    .sort((a,b)=> CATEGORY_PRIORITY.indexOf(a.cat)-CATEGORY_PRIORITY.indexOf(b.cat)
+      || a.name.localeCompare(b.name));
+}
+const PDF_NT = { headH:7, catH:5.4, lineH:3.4, padV:1.6, font:6.4,
+  cols:[8, 52, 60, 12, 0.38, 0.62] };   // #, NET, TYPE, DOM fixed mm; FROM/TO split the rest
+function pdfNetTableGeom(W, H){
+  const n=PDF_FRAME.inner, gap=3;
+  const x=n+gap, y=n+gap, w=W-2*n-2*gap, h=H-2*n-2*gap-PDF_TB.h;
+  const [c0,c1,c2,c3,fFrom,fTo]=PDF_NT.cols;
+  const rest=w-c0-c1-c2-c3;
+  return { x, y, w, h, widths:[c0,c1,c2,c3,rest*fFrom,rest*fTo] };
+}
+// Greedy word-wrap via getTextWidth (works against the test mock too).
+function pdfWrap(doc, text, width){
+  const words=String(text).split(/,\s*/), lines=[]; let cur='';
+  for (const wd of words){
+    const cand = cur ? cur+', '+wd : wd;
+    if (doc.getTextWidth(cand) <= width || !cur) cur=cand;
+    else { lines.push(cur+','); cur=wd; }
+  }
+  if (cur) lines.push(cur);
+  return lines;
+}
+// Split the row list into page-sized slices. Items: category bands + nets,
+// measured exactly like the renderer draws them.
+function pdfNetTablePages(doc, rows, W, H){
+  const geo=pdfNetTableGeom(W,H);
+  doc.setFontSize(PDF_NT.font);
+  const items=[]; let lastCat=null;
+  for (const r of rows){
+    if (r.cat!==lastCat){ items.push({kind:'cat', cat:r.cat}); lastCat=r.cat; }
+    const lines=Math.max(
+      pdfWrap(doc, r.from.join(', '), geo.widths[4]-3).length,
+      pdfWrap(doc, r.to.join(', '), geo.widths[5]-3).length, 1);
+    items.push({kind:'net', row:r, h:lines*PDF_NT.lineH+2*PDF_NT.padV});
+  }
+  const pages=[]; let page=[], used=PDF_NT.headH;
+  for (const it of items){
+    const ih = it.kind==='cat' ? PDF_NT.catH : it.h;
+    if (used+ih > geo.h && page.length){
+      pages.push(page); page=[]; used=PDF_NT.headH;
+      if (it.kind==='net'){ page.push({kind:'cat', cat:it.row.cat, cont:true}); used+=PDF_NT.catH; }
+    }
+    page.push(it); used+=ih;
+  }
+  if (page.length) pages.push(page);
+  return pages;
+}
+function pdfDrawNetTablePage(doc, W, H, items, startIdx){
+  const geo=pdfNetTableGeom(W,H), xs=[geo.x];
+  for (const w of geo.widths) xs.push(xs[xs.length-1]+w);
+  let y=geo.y, idx=startIdx;
+  // header band
+  doc.setFillColor(238,236,229); doc.setDrawColor(30); doc.setLineWidth(0.3);
+  doc.rect(geo.x, y, geo.w, PDF_NT.headH, 'FD');
+  doc.setFont('helvetica','bold'); doc.setFontSize(6.6); doc.setTextColor(30);
+  const heads=['#','NET','TYPE','DOM','FROM','TO'];
+  heads.forEach((hd,i)=>doc.text(hd, xs[i]+1.5, y+PDF_NT.headH-2.2));
+  y+=PDF_NT.headH;
+  for (const it of items){
+    if (it.kind==='cat'){
+      doc.setFillColor(247,245,240); doc.setDrawColor(120); doc.setLineWidth(0.2);
+      doc.rect(geo.x, y, geo.w, PDF_NT.catH, 'FD');
+      const col=cssVar('--sig-'+it.cat) || '#000';
+      const style=NET_CATEGORY_STYLE[it.cat];
+      doc.setDrawColor(col); doc.setLineWidth(0.8);
+      doc.setLineDashPattern(style&&style.dash ? style.dash.split(/\s+/).map(v=>+v*0.16) : [], 0);
+      doc.line(geo.x+2, y+PDF_NT.catH/2, geo.x+12, y+PDF_NT.catH/2);
+      doc.setLineDashPattern([],0);
+      doc.setFont('helvetica','bold'); doc.setFontSize(5.6); doc.setTextColor(60);
+      doc.text((LEGEND_LABELS[it.cat]||it.cat).toUpperCase()+(it.cont?'  (CONT.)':''), geo.x+15, y+PDF_NT.catH-1.7);
+      y+=PDF_NT.catH;
+      continue;
+    }
+    const r=it.row;
+    doc.setFontSize(PDF_NT.font);
+    const fromLines=pdfWrap(doc, r.from.join(', '), geo.widths[4]-3);
+    const toLines=pdfWrap(doc, r.to.join(', '), geo.widths[5]-3);
+    const rh=it.h, ty=y+PDF_NT.padV+PDF_NT.lineH-0.9;
+    doc.setDrawColor(150); doc.setLineWidth(0.2);
+    for (let i=0;i<xs.length-1;i++) doc.rect(xs[i], y, geo.widths[i], rh);
+    doc.setTextColor(15);
+    doc.setFont('helvetica','normal'); doc.text(String(++idx), xs[0]+1.5, ty);
+    doc.setFont('helvetica','bold'); doc.text(pdfFitText(doc, r.name, geo.widths[1]-3), xs[1]+1.5, ty);
+    doc.setFont('helvetica','normal'); doc.setTextColor(60);
+    doc.text(pdfFitText(doc, r.type, geo.widths[2]-3), xs[2]+1.5, ty);
+    if (r.hv){ doc.setTextColor(196,62,28); doc.setFont('helvetica','bold'); }
+    doc.text(r.hv?'HV':'LV', xs[3]+1.5, ty);
+    doc.setFont('helvetica','normal'); doc.setTextColor(15);
+    fromLines.forEach((ln,i)=>doc.text(ln, xs[4]+1.5, ty+i*PDF_NT.lineH));
+    toLines.forEach((ln,i)=>doc.text(ln, xs[5]+1.5, ty+i*PDF_NT.lineH));
+    y+=rh;
+  }
+  return idx;
+}
 async function exportPdfDrawing(){
   if (!(window.jspdf && window.jspdf.jsPDF && window.jspdf.jsPDF.API.svg)){
     toast('PDF engine not loaded (lib/jspdf + lib/svg2pdf)'); return;
@@ -4520,6 +4634,10 @@ async function exportPdfDrawing(){
   // WHITE pages: render against the light theme whatever the screen uses —
   // the printer's ink budget must not depend on the editor's dark mode.
   document.documentElement.dataset.theme='light';
+  // The harness net table closes the set; its page count is part of every
+  // page's "Sheet: n of N", so paginate it up front.
+  const tablePages = pdfNetTablePages(doc, netHarnessRows(), W, H);
+  const total = sheets.length + tablePages.length;
   try {
     for (let i=0;i<sheets.length;i++){
       if (i) doc.addPage(p.pageSize.toLowerCase(), p.orientation);
@@ -4527,13 +4645,20 @@ async function exportPdfDrawing(){
       _routeCache.clear(); render();
       pdfDrawFrame(doc, W, H);
       const legendRows = sheetNetCounts();
-      pdfDrawTitleBlock(doc, W, H, p, sheets[i].title, i+1, sheets.length, logo);
+      pdfDrawTitleBlock(doc, W, H, p, sheets[i].title, i+1, total, logo);
       pdfDrawNetLegend(doc, W, H, legendRows);
       const n=PDF_FRAME.inner, gap=3;
       const bottomBand=Math.max(PDF_TB.h,
         legendRows.length ? PDF_LEGEND.headH+legendRows.length*PDF_LEGEND.rowH : 0);
       await pdfAddDiagram(doc, { x:n+gap, y:n+gap,
         w:W-2*n-2*gap, h:H-2*n-2*gap-bottomBand });
+    }
+    let netIdx=0;
+    for (let t=0;t<tablePages.length;t++){
+      doc.addPage(p.pageSize.toLowerCase(), p.orientation);
+      pdfDrawFrame(doc, W, H);
+      pdfDrawTitleBlock(doc, W, H, p, 'Net Table', sheets.length+t+1, total, logo);
+      netIdx = pdfDrawNetTablePage(doc, W, H, tablePages[t], netIdx);
     }
     doc.save((S.meta.id||'architecture')+'_drawings.pdf');
   } finally {
