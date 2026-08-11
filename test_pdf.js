@@ -94,7 +94,7 @@ check('the PDF engine is vendored and loaded before app.js',
 
 /* ---------- exportPdfDrawing against a mock engine ---------- */
 {
-  const calls={ pages:1, svgs:[], texts:[], dashes:0, saved:null, rects:0, themes:[] };
+  const calls={ pages:1, svgs:[], texts:[], dashes:0, saved:null, rects:0, themes:[], images:[] };
   class MockDoc {
     constructor(opts){ this.opts=opts; this.internal={ pageSize:{
       getWidth:()=>opts.orientation==='landscape'?420:297,
@@ -102,6 +102,7 @@ check('the PDF engine is vendored and loaded before app.js',
     addPage(){ calls.pages++; } save(name){ calls.saved=name; }
     setDrawColor(){} setLineWidth(){} setFont(){} setFontSize(){} setTextColor(){} setFillColor(){}
     rect(){ calls.rects++; } line(){}
+    addImage(data,fmt,x,y,w,h){ calls.images.push({fmt,x,y,w,h}); }
     setLineDashPattern(d){ if (d&&d.length) calls.dashes++; }
     getTextWidth(t){ return String(t).length*1.6; }
     text(t){ calls.texts.push(String(t)); }
@@ -132,6 +133,16 @@ check('the PDF engine is vendored and loaded before app.js',
     check('the net table draws its header and dashed swatches',
       calls.texts.filter(t=>t==='NET TYPE').length===sheets.length && calls.dashes>0);
     check('the file is named after the system', /_drawings\.pdf$/.test(calls.saved));
+
+    /* ---------- the NX Design logo cell, top-left OF the title block ---------- */
+    check('the title block reserves a logo cell on its left', T.PDF_TB.logoW>0);
+    check('the export loads the logo once and hands it to the title block',
+      /const logo = await pdfLogo\(\);/.test(appSrc) &&
+      /pdfDrawTitleBlock\(doc, W, H, p, sheets\[i\]\.title, i\+1, sheets\.length, logo\)/.test(appSrc));
+    check('the logo image is drawn inside the logo cell, aspect kept',
+      /doc\.addImage\(logo\.dataUrl, 'JPEG', x0\+\(lw-iw\)\/2, y0\+\(th-ih\)\/2, iw, ih\)/.test(appSrc));
+    check('without the image (tests, missing file) the cell still draws, empty',
+      calls.images.length===0 && /catch \{ _pdfLogo = null; \}/.test(appSrc));
 
     /* ---------- Export modal: the PDF tab ---------- */
     doc.getElementById('btnExport').onclick();

@@ -4361,7 +4361,24 @@ function pdfDrawFrame(doc, W, H){
     doc.text(ch, W-(o+n)/2, cy, {align:'center'});
   }
 }
-const PDF_TB = { h:23, rows:[7,7,9] };
+// The NX Design logo, as a data URL plus its aspect ratio — fetched once and
+// cached. Returns null when unavailable (tests, missing file): the title
+// block then simply draws its logo cell empty.
+let _pdfLogo;
+async function pdfLogo(){
+  if (_pdfLogo !== undefined) return _pdfLogo;
+  try {
+    const blob = await (await fetch('nexodesign_logo.jpg')).blob();
+    const dataUrl = await new Promise((ok,err)=>{
+      const r = new FileReader(); r.onload=()=>ok(r.result); r.onerror=err; r.readAsDataURL(blob);
+    });
+    const img = new Image();
+    await new Promise((ok,err)=>{ img.onload=ok; img.onerror=err; img.src=dataUrl; });
+    _pdfLogo = { dataUrl, ratio: img.naturalWidth/img.naturalHeight };
+  } catch { _pdfLogo = null; }
+  return _pdfLogo;
+}
+const PDF_TB = { h:23, rows:[7,7,9], logoW:26 };
 function pdfFitText(doc, text, w){
   let t = String(text||'');
   if (!t) return '';
@@ -4376,17 +4393,27 @@ function pdfCell(doc, x, y, w, h, cap, val, opts){
   doc.setFontSize((opts&&opts.size)||8); doc.setTextColor(10);
   doc.text(pdfFitText(doc, val||'—', w-2.6), x+1.3, y+h-2);
 }
-function pdfDrawTitleBlock(doc, W, H, p, sheetTitle, num, total){
+function pdfDrawTitleBlock(doc, W, H, p, sheetTitle, num, total, logo){
   const n=PDF_FRAME.inner;
-  const tw=Math.min(118,(W-2*n)*0.48), th=PDF_TB.h;
+  const lw=PDF_TB.logoW;
+  const tw=Math.min(118+lw,(W-2*n)*0.52), th=PDF_TB.h;
   const x0=W-n-tw, y0=H-n-th;
   const [r1,r2,r3]=PDF_TB.rows;
   doc.setFillColor(255,255,255); doc.rect(x0,y0,tw,th,'F');
-  pdfCell(doc,x0,y0,tw*0.5,r1,'DESIGNED FOR',p.client);
-  pdfCell(doc,x0+tw*0.5,y0,tw*0.5,r1,'DESIGNED BY',p.designer);
-  pdfCell(doc,x0,y0+r1,tw,r2,'TITLE',S.meta.title||'Untitled system',{bold:true,size:8.5});
-  const w3=[tw*0.32,tw*0.20,tw*0.11,tw*0.10,tw*0.27];
-  let cx=x0; const y3=y0+r1+r2;
+  // Logo cell — the TOP-LEFT cell of the information block, company-mark
+  // style: full height, image fitted with a small pad, empty if unavailable.
+  doc.setDrawColor(30); doc.setLineWidth(0.25); doc.rect(x0,y0,lw,th);
+  if (logo && doc.addImage){
+    const pad=1.6, boxW=lw-2*pad, boxH=th-2*pad;
+    const iw=Math.min(boxW, boxH*logo.ratio), ih=iw/logo.ratio;
+    doc.addImage(logo.dataUrl, 'JPEG', x0+(lw-iw)/2, y0+(th-ih)/2, iw, ih);
+  }
+  const cx0=x0+lw, cw=tw-lw;
+  pdfCell(doc,cx0,y0,cw*0.5,r1,'DESIGNED FOR',p.client);
+  pdfCell(doc,cx0+cw*0.5,y0,cw*0.5,r1,'DESIGNED BY',p.designer);
+  pdfCell(doc,cx0,y0+r1,cw,r2,'TITLE',S.meta.title||'Untitled system',{bold:true,size:8.5});
+  const w3=[cw*0.32,cw*0.20,cw*0.11,cw*0.10,cw*0.27];
+  let cx=cx0; const y3=y0+r1+r2;
   pdfCell(doc,cx,y3,w3[0],r3,'SHEET TITLE',sheetTitle,{bold:true,size:7.5}); cx+=w3[0];
   pdfCell(doc,cx,y3,w3[1],r3,'DATE',p.date,{size:7}); cx+=w3[1];
   pdfCell(doc,cx,y3,w3[2],r3,'ENG',p.initials,{size:7}); cx+=w3[2];
@@ -4455,6 +4482,7 @@ async function exportPdfDrawing(){
     format:p.pageSize.toLowerCase(), compress:true });
   const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight();
   const sheets = pdfSheetList();
+  const logo = await pdfLogo();
   const prev = { theme:document.documentElement.dataset.theme, open:S.openGroup,
     sel:S.sel, trace:S.traceNet, view:{...S.view} };
   // WHITE pages: render against the light theme whatever the screen uses —
@@ -4467,7 +4495,7 @@ async function exportPdfDrawing(){
       _routeCache.clear(); render();
       pdfDrawFrame(doc, W, H);
       const legendRows = sheetNetCounts();
-      pdfDrawTitleBlock(doc, W, H, p, sheets[i].title, i+1, sheets.length);
+      pdfDrawTitleBlock(doc, W, H, p, sheets[i].title, i+1, sheets.length, logo);
       pdfDrawNetLegend(doc, W, H, legendRows);
       const n=PDF_FRAME.inner, gap=3;
       const bottomBand=Math.max(PDF_TB.h,

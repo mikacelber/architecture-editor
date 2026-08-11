@@ -81,16 +81,16 @@ check('restoring the blocks hides it again', empty.hidden);
 /* ---------- view controls: bottom-right, icons only, self-naming ---------- */
 check('the canvas carries a view-control cluster', !!tools);
 const btns=[...tools.querySelectorAll('button')];
-check('it holds exactly three buttons: zoom out, zoom in, fit',
-  btns.length===3 && btns.map(b=>b.id).join(',')==='btnZoomOut,btnZoomIn,btnZoomFit');
+check('it holds exactly three buttons: zoom in on top, then zoom out, then fit',
+  btns.length===3 && btns.map(b=>b.id).join(',')==='btnZoomIn,btnZoomOut,btnZoomFit');
 check('every button is icon-only (no words)', btns.every(b=>b.textContent.trim()==='' && !!b.querySelector('svg')));
 check('every button names its function on hover',
   btns.every(b=>/\S/.test(b.getAttribute('title')||'')) &&
-  /zoom out/i.test(btns[0].title) && /zoom in/i.test(btns[1].title) && /fit/i.test(btns[2].title));
+  /zoom in/i.test(btns[0].title) && /zoom out/i.test(btns[1].title) && /fit/i.test(btns[2].title));
 check('the zoom icons are magnifiers — a lens with a handle',
   btns.slice(0,2).every(b=>b.querySelectorAll('svg circle').length===1 && b.querySelectorAll('svg line').length>=2));
-check('zoom out carries one bar, zoom in carries two (the +)',
-  btns[0].querySelectorAll('svg line').length===2 && btns[1].querySelectorAll('svg line').length===3);
+check('zoom in (top) carries the + cross, zoom out (below) the single bar',
+  btns[0].querySelectorAll('svg line').length===3 && btns[1].querySelectorAll('svg line').length===2);
 check('the fit icon is four corner brackets around an inner rectangle',
   btns[2].querySelectorAll('svg polyline').length===4 && btns[2].querySelectorAll('svg rect').length===1);
 check('fit lives on the canvas only — the header no longer duplicates it',
@@ -106,26 +106,26 @@ check('fit lives on the canvas only — the header no longer duplicates it',
 S.view={tx:0,ty:0,k:1};
 T.updateViewTools();
 const k0=S.view.k;
-btns[1].onclick();
-check('zoom in scales the view up by one step', Math.abs(S.view.k-k0*T.ZOOM_STEP)<1e-9);
 btns[0].onclick();
+check('zoom in scales the view up by one step', Math.abs(S.view.k-k0*T.ZOOM_STEP)<1e-9);
+btns[1].onclick();
 check('zoom out returns to where it started', Math.abs(S.view.k-k0)<1e-9);
 {
   // the world point under the sheet's centre must not drift while zooming
   const cx=800, cy=500;                            // stubbed svg is 1600x1000
   const worldAt=()=>({x:(cx-S.view.tx)/S.view.k, y:(cy-S.view.ty)/S.view.k});
   const before=worldAt();
-  btns[1].onclick(); btns[1].onclick();
+  btns[0].onclick(); btns[0].onclick();
   const after=worldAt();
   check('button zoom keeps the centre of the sheet fixed',
     Math.abs(before.x-after.x)<1e-6 && Math.abs(before.y-after.y)<1e-6);
 }
-for (let i=0;i<40;i++) btns[1].onclick();
+for (let i=0;i<40;i++) btns[0].onclick();
 check('zoom in never passes the wheel\'s upper limit', S.view.k===T.ZOOM_MAX);
-check('…and the button greys out there', btns[1].disabled && !btns[0].disabled);
-for (let i=0;i<60;i++) btns[0].onclick();
+check('…and the button greys out there', btns[0].disabled && !btns[1].disabled);
+for (let i=0;i<60;i++) btns[1].onclick();
 check('zoom out never passes the lower limit', S.view.k===T.ZOOM_MIN);
-check('…and that button greys out instead', btns[0].disabled && !btns[1].disabled);
+check('…and that button greys out instead', btns[1].disabled && !btns[0].disabled);
 check('the wheel and the buttons share one zoom implementation',
   /svg\.addEventListener\('wheel'[\s\S]{0,240}zoomAbout\(/.test(appSrc));
 
@@ -139,7 +139,7 @@ btns[2].onclick();
   check('fit reframes the diagram (view no longer parked off-sheet)', S.view.tx>-9999 && S.view.k>T.ZOOM_MIN);
   check('fit centres the diagram horizontally in the sheet', Math.abs(screenX-800)<2);
 }
-check('fit re-enables the zoom buttons it can serve', !btns[1].disabled);
+check('fit re-enables the zoom buttons it can serve', !btns[0].disabled);
 
 console.log('\n'+pass+' passed, '+fail+' failed');
 process.exit(fail?1:0);
