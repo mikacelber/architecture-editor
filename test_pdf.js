@@ -107,7 +107,11 @@ check('the PDF engine is vendored and loaded before app.js',
     getTextWidth(t){ return String(t).length*1.6; }
     text(t){ calls.texts.push(String(t)); }
     svg(el,opts){ calls.themes.push(window.document.documentElement.dataset.theme);
-      calls.svgs.push({vb:el.getAttribute('viewBox'), ...opts}); return Promise.resolve(); }
+      calls.svgs.push({vb:el.getAttribute('viewBox'), ...opts,
+        markerRefs: el.querySelectorAll('[marker-end]').length,
+        markerDefs: el.querySelectorAll('marker').length,
+        heads: [...el.querySelectorAll('path[stroke="none"]')].filter(t=>/Z$/.test(t.getAttribute('d')||'')&&(t.getAttribute('fill')||'none')!=='none').length });
+      return Promise.resolve(); }
   }
   MockDoc.API={ svg:()=>{} };
   window.jspdf={ jsPDF:MockDoc };
@@ -143,6 +147,14 @@ check('the PDF engine is vendored and loaded before app.js',
       /doc\.addImage\(logo\.dataUrl, 'JPEG', x0\+\(lw-iw\)\/2, y0\+\(th-ih\)\/2, iw, ih\)/.test(appSrc));
     check('without the image (tests, missing file) the cell still draws, empty',
       calls.images.length===0 && /catch \{ _pdfLogo = null; \}/.test(appSrc));
+
+    /* ---------- arrowheads: baked triangles, never SVG markers ---------- */
+    check('no marker reference survives into the PDF clone',
+      calls.svgs.every(s=>s.markerRefs===0 && s.markerDefs===0));
+    check('every page carries baked arrowhead triangles instead',
+      calls.svgs.every(s=>s.heads>0));
+    check('the wire is pulled back under the head so it cannot poke through',
+      /pullback/.test(appSrc) && /ex-ux\*Math\.min\(pullback/.test(appSrc));
 
     /* ---------- Export modal: the PDF tab ---------- */
     doc.getElementById('btnExport').onclick();

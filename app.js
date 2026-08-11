@@ -4451,6 +4451,37 @@ function pdfDrawNetLegend(doc, W, H, rows){
   return { x:x0, y:y0, w, h };
 }
 // The current sheet's drawing, centred and maximized in `area` (mm).
+// svg2pdf's <marker> conversion is broken (split heads, the line drawn over
+// the tip), so the PDF clone carries NO markers at all: every wire's
+// arrowhead is baked in as a real filled triangle at the wire end, matching
+// the on-screen marker geometry (tip ON the endpoint, ~7.4 long, ~6.8 wide),
+// and the line is pulled back under the head so it can never poke through.
+const PDF_ARROW = { len:7.4, halfW:3.4, pullback:6 };
+function pdfBakeArrowheads(root){
+  const NS='http://www.w3.org/2000/svg';
+  for (const m of [...root.querySelectorAll('marker')]) m.remove();
+  for (const p of [...root.querySelectorAll('path[marker-end]')]){
+    p.removeAttribute('marker-end');
+    const nums=(p.getAttribute('d')||'').replace(/[ML]/g,' ').trim().split(/\s+/).map(Number);
+    if (nums.length<4 || nums.some(isNaN)) continue;
+    const pts=[]; for (let i=0;i<nums.length;i+=2) pts.push([nums[i],nums[i+1]]);
+    const [ex,ey]=pts[pts.length-1];
+    let j=pts.length-2;
+    while (j>=0 && Math.abs(pts[j][0]-ex)<0.01 && Math.abs(pts[j][1]-ey)<0.01) j--;
+    if (j<0) continue;
+    const len=Math.hypot(ex-pts[j][0], ey-pts[j][1]);
+    const ux=(ex-pts[j][0])/len, uy=(ey-pts[j][1])/len;
+    const {len:L, halfW:HW, pullback}=PDF_ARROW;
+    pts[pts.length-1]=[ex-ux*Math.min(pullback,len-0.5), ey-uy*Math.min(pullback,len-0.5)];
+    p.setAttribute('d','M '+pts.map(q=>q[0]+' '+q[1]).join(' L '));
+    const tri=document.createElementNS(NS,'path');
+    tri.setAttribute('d',
+      `M ${ex} ${ey} L ${ex-ux*L-uy*HW} ${ey-uy*L+ux*HW} L ${ex-ux*L+uy*HW} ${ey-uy*L-ux*HW} Z`);
+    tri.setAttribute('fill', p.getAttribute('stroke')||'#000');
+    tri.setAttribute('stroke','none');
+    p.parentNode.insertBefore(tri, p.nextSibling);
+  }
+}
 async function pdfAddDiagram(doc, area){
   const bb = viewport.getBBox();
   if (!(bb.width>0 && bb.height>0)) return;
@@ -4467,6 +4498,7 @@ async function pdfAddDiagram(doc, area){
   for (const gEl of [edgesG, nodesG]){
     const c=gEl.cloneNode(true); inlineComputedStyles(gEl, c); tmp.appendChild(c);
   }
+  pdfBakeArrowheads(tmp);
   tmp.style.position='fixed'; tmp.style.left='-10000px'; tmp.style.top='0';
   tmp.style.width='10px'; tmp.style.height='10px';
   document.body.appendChild(tmp);
