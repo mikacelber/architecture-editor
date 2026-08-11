@@ -892,9 +892,11 @@ function autoLayoutGroupMembers(groupId){
     delete S.groupPortOrder[id];
     Object.keys(S.groupPortSides).forEach(k=>{ if (k.startsWith(id+'|')) delete S.groupPortSides[k]; });
   }
-  for (const e of S.edges)
-    if ((memberSet.has(e.source) || memberSet.has(e.target)) && e.route &&
-        (e.route.sheet == null || e.route.sheet === groupId)) delete e.route;
+  for (const e of S.edges){
+    if (!memberSet.has(e.source) && !memberSet.has(e.target)) continue;
+    if (e.routes) delete e.routes[groupId];
+    if (e.route && (e.route.sheet == null || e.route.sheet === groupId)) delete e.route;
+  }
   delete S.portalOffsets[groupId];
   delete S.portalOrder[groupId];
   delete S.portalSeq[groupId];
@@ -1927,6 +1929,7 @@ function restoreState(json){
   S.meta = s.meta || S.meta;
   S.nodes = s.nodes || [];
   S.edges = s.edges || [];
+  migrateEdgeRoutes();
   S.groups = s.groups || [];
   S.groupPos = s.groupPos || {};
   S.groupEdgeRoutes = s.groupEdgeRoutes || {};
@@ -2120,13 +2123,14 @@ function pinSheetWires(filter){
   for (const s of specs){
     if (filter && !filter(s)) continue;
     const e = S.edges.find(x=>x.id===s.e.id);
-    // Hand-routed wires are already pinned — and a route authored on the
-    // OTHER end's sheet is that user's work too (one slot per edge): never
-    // clobber it, the wire simply stays auto-routed here.
-    if (!e || e.route) continue;
+    // Hand-routed wires are already pinned on THIS sheet; a pending legacy
+    // e.route may still belong to either end, so it blocks pinning until
+    // adoption resolves it. Another sheet's entry in e.routes is no obstacle —
+    // per-sheet storage means pinning here can't clobber anything there.
+    if (!e || e.route || (e.routes && e.routes[S.openGroup])) continue;
     const r = groupEdgePtsCached(NODE_ROUTE_PREFIX+s.e.id, s.pa, s.pb,
       undefined, obstacles, S.groupEdgeLanes[nodeEdgeLaneKey(s.e)] || 0);
-    e.route = { pts: r.pts.map(p=>p.slice()), sheet: S.openGroup };
+    setNodeEdgeRoute(e, { pts: r.pts.map(p=>p.slice()) });
   }
 }
 function pinPortalWires(dir){ pinSheetWires(s=>s.kind===dir); }
@@ -2205,11 +2209,26 @@ function nodeEdgeLaneKey(e){ return 'n:'+e.source+'→'+e.target; }
 // still matches exactly (adoptSheetRoute, from drillSheet) and treated as
 // "auto" everywhere else — re-routing cleanly beats gluing a foreign shape
 // into dangling spurs.
+// Per-sheet storage: e.routes = { [sheetGid]: {pts}|{wx,wy} }. The SAME
+// boundary connection can be hand-routed on BOTH ends' sheets and each sheet
+// keeps its own shape — editing it over there never clobbers it over here.
+// e.route (single slot, optionally sheet-tagged) is the legacy form: a tagged
+// one is migrated into e.routes on session load, an untagged one waits for
+// adoptSheetRoute to claim it for the sheet whose anchors it matches.
 function nodeEdgeRouteOf(e){
-  const r = e.route;
-  if (!r || r.sheet !== S.openGroup) return undefined;
+  // Specs hand around COPIES of the edge (diagramEdges spreads); the map may
+  // have been written on the real one after the copy was made — resolve by id.
+  const real = (e.routes || e.route) ? e : (S.edges.find(x=>x.id===e.id) || e);
+  const r = (real.routes && real.routes[S.openGroup]) ||
+            (real.route && real.route.sheet === S.openGroup ? real.route : undefined);
+  if (!r) return undefined;
   if (r.pts && r.pts.length>=2) return r;
   return (r.wx!=null && r.wy!=null) ? r : undefined;
+}
+function setNodeEdgeRoute(e, route){
+  const real = S.edges.find(x=>x.id===e.id) || e;
+  (real.routes || (real.routes = {}))[S.openGroup] = route;
+  if (real.route && real.route.sheet === S.openGroup) delete real.route;
 }
 // Legacy migration: tag an untagged stored route with the open sheet iff its
 // endpoints coincide with the wire's CURRENT anchors here — proof it was
@@ -2218,12 +2237,19 @@ function nodeEdgeRouteOf(e){
 // (waypoints included — reglue/degrade handle any drift as before).
 function adoptSheetRoute(e, pa, pb, internal){
   const r = e.route;
-  if (!r || r.sheet != null) return;
-  if (internal){ r.sheet = S.openGroup; return; }
+  if (!r || r.sheet != null || (e.routes && e.routes[S.openGroup])) return;
+  // Specs may carry COPIES of the edge (diagramEdges spreads) — the claim must
+  // land on the REAL stored edge, not the render-time copy.
+  const real = S.edges.find(x=>x.id===e.id) || e;
+  const claim = () => {
+    (real.routes || (real.routes = {}))[S.openGroup] = { ...r, sheet: undefined };
+    delete real.route; delete e.route;
+  };
+  if (internal){ claim(); return; }
   if (!r.pts || r.pts.length<2) return;
   const m = r.pts, q = m[m.length-1];
   if (Math.abs(m[0][0]-pa.x)<0.75 && Math.abs(m[0][1]-pa.y)<0.75 &&
-      Math.abs(q[0]-pb.x)<0.75 && Math.abs(q[1]-pb.y)<0.75) r.sheet = S.openGroup;
+      Math.abs(q[0]-pb.x)<0.75 && Math.abs(q[1]-pb.y)<0.75) claim();
 }
 // Fallback lane cap for boundary wires when a spec carries no computed
 // per-side cap (drillSheet derives the real one from its corridor width).
@@ -3212,7 +3238,7 @@ function renderInspector(){
     </div>
     <p class="hint">Drag the vertical segments sideways or the horizontal segments up/down to reroute — including the last segment where the wire enters the block. The arrow always enters the block perpendicular to its edge.</p>
     <div class="btnrow">
-      ${e.route?'<button id="btnResetRoute">Reset routing</button>':''}
+      ${nodeEdgeRouteOf(e)?'<button id="btnResetRoute">Reset routing</button>':''}
       <button class="danger" id="btnDelEdge">Delete connection</button>
     </div>`;
   body.querySelectorAll('[data-delnet]').forEach(b=>b.onclick=()=>{ commit(); e.nets.splice(+b.dataset.delnet,1); render(); });
@@ -3231,7 +3257,10 @@ function renderInspector(){
     e.nets.sort((a,b)=>a.name.localeCompare(b.name));
     render();
   };
-  const rb=$('btnResetRoute'); if (rb) rb.onclick=()=>{ delete e.route; render(); };
+  const rb=$('btnResetRoute'); if (rb) rb.onclick=()=>{ commit();
+    if (e.routes) delete e.routes[S.openGroup];
+    if (e.route && e.route.sheet===S.openGroup) delete e.route;
+    render(); };
   $('btnDelEdge').onclick=()=>{ commit(); S.edges=S.edges.filter(x=>x.id!==e.id); S.sel=null; render(); };
   wireTraceCards(body);
 }
@@ -3558,7 +3587,7 @@ svg.addEventListener('pointermove', ev=>{
     }
     commitGesture(drag);
     if (drag.topLevel) setGroupEdgeRoute(drag.src, drag.tgt, route, drag.dom);
-    else { const e=S.edges.find(x=>x.id===drag.eid); if (e) e.route = { ...route, sheet: S.openGroup }; }
+    else { const e=S.edges.find(x=>x.id===drag.eid); if (e) setNodeEdgeRoute(e, route); }
     render();
     return;
   }
@@ -4556,7 +4585,9 @@ function buildPipelineJSON(){
 function buildSessionJSON(){
   return { meta:S.meta,
     nodes:S.nodes.map(n=>({ ...n })),
-    edges:S.edges.map(e=>({ ...e, nets:e.nets.map(x=>({ ...x })), route:e.route?{...e.route}:undefined })),
+    edges:S.edges.map(e=>({ ...e, nets:e.nets.map(x=>({ ...x })),
+      route:e.route?{...e.route}:undefined,
+      routes:e.routes?JSON.parse(JSON.stringify(e.routes)):undefined })),
     groups:S.groups.map(g=>({ ...g, members:[...g.members] })),
     groupPos:{ ...S.groupPos },
     groupEdgeRoutes:{ ...S.groupEdgeRoutes },
@@ -4584,10 +4615,27 @@ function buildSessionJSON(){
 // portal columns, manual wire routes, port layouts and the framing all come
 // back exactly as they were left. Anything missing (older sessions) falls back
 // to the same defaults a fresh import would use.
+// Legacy sessions stored ONE route per edge (e.route, sheet-tagged since the
+// tag was introduced). Sheet-tagged slots migrate into the per-sheet map so
+// this session keeps a shape per sheet from here on; untagged slots stay put
+// until adoptSheetRoute claims them for the sheet whose anchors they match.
+function migrateEdgeRoutes(){
+  for (const e of S.edges){
+    if (e.route && e.route.sheet){
+      const gid = e.route.sheet;
+      if (!(e.routes && e.routes[gid])){
+        const r = { ...e.route }; delete r.sheet;
+        (e.routes || (e.routes = {}))[gid] = r;
+      }
+      delete e.route;
+    }
+  }
+}
 function loadSession(s){
   if (!s || !s.nodes || !s.edges) throw new Error('Not a session JSON (nodes/edges missing)');
   S.meta = s.meta || S.meta;
   S.nodes = s.nodes; S.edges = s.edges; S.groups = s.groups || [];
+  migrateEdgeRoutes();
   S.groupPos = s.groupPos || {}; S.groupEdgeRoutes = s.groupEdgeRoutes || {};
   S.groupPortSides = s.groupPortSides || {}; S.groupPortOrder = s.groupPortOrder || {};
   S.groupEdgeLanes = s.groupEdgeLanes || {};
