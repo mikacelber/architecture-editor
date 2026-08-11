@@ -17,9 +17,10 @@ window.__T={get S(){return S;},loadFromContract,render,openGroupView,closeGroupV
  openAddPortalModal,candidateNetsForPortal,groupNetIndex,nodeGroupIndex,computeGroupEdges,traceSets,
  movePortalSlotToRow,pinPortalWires,pinSheetWires,nodeEdgeRouteOf,groupPortRowsFor,laneEnd,fanAssignLanes,nodeEdgeLaneKey,fanStub,
  GROUP_PORT_STUB:GROUP_PORT_STUB,FAN_PITCH:FAN_PITCH,commit,undo,
- cleanPts,adoptSheetRoute,groupEdgePtsCached,buildSessionJSON,groupNetEndpoints,groupNetIndex,addNetToEdge,
+ cleanPts,adoptSheetRoute,groupEdgePtsCached,buildSessionJSON,loadSession,groupNetEndpoints,groupNetIndex,addNetToEdge,setNodeEdgeRoute,
  nodeGroupIndex,NODE_ROUTE_PREFIX:NODE_ROUTE_PREFIX};`);
 const T=window.__T, S=T.S;
+const sheetRouteOf=e=>(e.routes&&e.routes[S.openGroup])||(e.route&&e.route.sheet===S.openGroup?e.route:undefined);
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
 T.loadFromContract(fx.input,fx.contract,fx.groups); T.render();
@@ -101,7 +102,7 @@ check('every in-group connection carries a routing lane',
   const rects=T.openGroupObstacleRects();
   const wx=Math.min(...rects.map(r=>r.x))-150, wy=Math.min(...rects.map(r=>r.y))-150;
   T.commit();
-  e.route={ wx, wy };
+  T.setNodeEdgeRoute(e, { wx, wy });
   T.render();
   const after=wirePts().find(x=>x.eid===w0.eid);
   check('a manual waypoint visibly reroutes the wire', JSON.stringify(after.pts)!==before);
@@ -818,7 +819,7 @@ check('every in-group connection carries a routing lane',
   T.commit();
   T.pinPortalWires('in');
   check('pinning materializes every auto boundary wire as a manual route',
-    inSpecs.every(s=>{ const e=S.edges.find(x=>x.id===s.e.id); return e && e.route && e.route.pts; }));
+    inSpecs.every(s=>{ const e=S.edges.find(x=>x.id===s.e.id); const r=e&&sheetRouteOf(e); return r && r.pts; }));
   T.setPortalOffset(best.id,'in',-96,24); T.render();
 
   // every wire kept its whole shape — only the port-adjacent end stretched
@@ -854,8 +855,8 @@ check('every in-group connection carries a routing lane',
   // a hand-routed wire (manual pts) survives the move the same way — pick one
   // with an interior to preserve (a straight wire legitimately re-bends)
   const manualSpec=inSpecs.find(s=>{ const e=S.edges.find(x=>x.id===s.e.id);
-    return e && e.route && e.route.pts && e.route.pts.length>=4; }) || inSpecs[0];
-  const manualShape=S.edges.find(x=>x.id===manualSpec.e.id).route.pts.map(p=>p.slice());
+    const r=e&&sheetRouteOf(e); return r && r.pts && r.pts.length>=4; }) || inSpecs[0];
+  const manualShape=sheetRouteOf(S.edges.find(x=>x.id===manualSpec.e.id)).pts.map(p=>p.slice());
   T.setPortalOffset(best.id,'in',-192,48); T.render();
   const after2=ptsOfEdge(manualSpec.e.id);
   check('a further move keeps stretching from the stored shape (no drift)',
@@ -1062,6 +1063,7 @@ check('every in-group connection carries a routing lane',
     const e = S.edges.find(x=>x.id===bSpec.e.id);
     const wireOf = s => T.groupEdgePtsCached(T.NODE_ROUTE_PREFIX+s.e.id, s.pa, s.pb,
       T.nodeEdgeRouteOf(e), T.drillSheet().obstacles, S.groupEdgeLanes[T.nodeEdgeLaneKey(s.e)]||0);
+    const savedRoutes = e.routes ? JSON.parse(JSON.stringify(e.routes)) : undefined;
     const saved = e.route;
 
     // a route tagged for ANOTHER sheet is invisible here
@@ -1087,13 +1089,14 @@ check('every in-group connection carries a routing lane',
     // an untagged legacy route whose ends DO match is adopted for this sheet
     T._routeCache.clear();
     const auto = wireOf(bSpec);
-    e.route = { pts: auto.pts.map(p=>p.slice()) };
+    delete e.routes; e.route = { pts: auto.pts.map(p=>p.slice()) };
     T.drillSheet();
-    check('an untagged polyline matching this sheet\'s anchors is adopted (route.sheet set)',
-      e.route.sheet===S.openGroup);
+    check('an untagged polyline matching this sheet\'s anchors is adopted (moved into e.routes)',
+      !e.route && !!(e.routes && e.routes[S.openGroup]));
     check('…and is honoured by the drill router again', !!T.nodeEdgeRouteOf(e));
 
     if (saved) e.route = saved; else delete e.route;
+    if (savedRoutes) e.routes = savedRoutes; else delete e.routes;
     T._routeCache.clear(); T.render();
   }
 
@@ -1110,10 +1113,10 @@ check('every in-group connection carries a routing lane',
 
   // new manual routes are born sheet-tagged at both write sites
   const src = fs.readFileSync('app.js','utf8');
-  check('segment drags tag their stored route with the authoring sheet',
-    /if \(e\) e\.route = \{ \.\.\.route, sheet: S\.openGroup \};/.test(src));
-  check('pinned portal wires tag their stored route with the authoring sheet',
-    /e\.route = \{ pts: r\.pts\.map\(p=>p\.slice\(\)\), sheet: S\.openGroup \};/.test(src));
+  check('segment drags store into this sheet\'s own route slot',
+    /if \(e\) setNodeEdgeRoute\(e, route\);/.test(src));
+  check('pinned portal wires store into this sheet\'s own route slot',
+    /setNodeEdgeRoute\(e, \{ pts: r\.pts\.map\(p=>p\.slice\(\)\) \}\);/.test(src));
 }
 
 /* ============= rule 23 — a block drag never disturbs wires it didn't touch =============
@@ -1130,9 +1133,10 @@ check('every in-group connection carries a routing lane',
       S.groupEdgeLanes[T.nodeEdgeLaneKey(s.e)]||0).pts;
   };
   const shapes0=new Map(sheet0.specs.map(s=>[s.e.id, JSON.stringify(wireOf(s))]));
-  const routed0=S.edges.filter(e=>e.route).length;
+  const countRouted=()=>S.edges.filter(e=>e.route||(e.routes&&Object.keys(e.routes).length)).length;
+  const routed0=countRouted();
   // a foreign-sheet route must survive the pinning untouched
-  const foreignSpec=sheet0.specs.find(s=>{ const e=S.edges.find(x=>x.id===s.e.id); return e && !e.route; });
+  const foreignSpec=sheet0.specs.find(s=>{ const e=S.edges.find(x=>x.id===s.e.id); return e && !e.route && !(e.routes&&e.routes[best.id]); });
   const foreignEdge=S.edges.find(x=>x.id===foreignSpec.e.id);
   foreignEdge.route={ pts:[[1,2],[3,2]], sheet:'ELSEWHERE' };
 
@@ -1140,9 +1144,11 @@ check('every in-group connection carries a routing lane',
   const victim=sheet0.members.find(n=>sheet0.specs.some(s=>s.kind==='internal'&&(s.e.source===n.id||s.e.target===n.id)))||sheet0.members[0];
   T.commit(); T.pinSheetWires();
   check('pinning stores a persisted route for every previously-auto wire',
-    sheet0.specs.every(s=>S.edges.find(x=>x.id===s.e.id)?.route));
-  check('…tagged for this sheet', sheet0.specs.every(s=>{
-    const r=S.edges.find(x=>x.id===s.e.id).route; return r.sheet===best.id || r.sheet==='ELSEWHERE'; }));
+    sheet0.specs.every(s=>{ const e=S.edges.find(x=>x.id===s.e.id);
+      return e && (sheetRouteOf(e) || e.route); }));
+  check('…under this sheet\'s own slot (per-sheet map)', sheet0.specs.every(s=>{
+    const e=S.edges.find(x=>x.id===s.e.id);
+    return (e.routes&&e.routes[best.id]) || (e.route&&e.route.sheet==='ELSEWHERE'); }));
   check('a route authored on another sheet is never clobbered by the pin',
     JSON.stringify(foreignEdge.route)===JSON.stringify({ pts:[[1,2],[3,2]], sheet:'ELSEWHERE' }));
   victim.y+=48; T.render();
@@ -1152,7 +1158,7 @@ check('every in-group connection carries a routing lane',
   // is the one legitimate change (same rule as drop-on-wire at the top level)
   const victimRect=T.drillSheet().obstacles.find(r=>r.id===victim.id);
   const untouchedChanged=[...shapes0.keys()].filter(id=>!touched(id) &&
-    S.edges.find(x=>x.id===id).route?.sheet===best.id &&
+    !!(S.edges.find(x=>x.id===id).routes||{})[best.id] &&
     !crossesAny(JSON.parse(shapes0.get(id)),[victimRect]) &&
     JSON.stringify(wireOf(sheet0.specs.find(x=>x.e.id===id)))!==shapes0.get(id));
   check('after the move, every wire NOT on the moved block keeps its exact shape',
@@ -1165,14 +1171,13 @@ check('every in-group connection carries a routing lane',
       return near(pts[0],sp.pa)&&near(pts[pts.length-1],sp.pb);
     }));
   check('the pinned shapes ride the export (Save session carries them)',
-    T.buildSessionJSON().edges.filter(e=>e.route&&e.route.sheet===best.id).length>=sheet0.specs.length-1);
+    T.buildSessionJSON().edges.filter(e=>e.routes&&e.routes[best.id]).length>=sheet0.specs.length-1);
   check('the drag handler pins on first movement, after the snapshot',
     /if \(!drag\.pinned\)\{ drag\.pinned = true; pinSheetWires\(\); \}/.test(fs.readFileSync('app.js','utf8')));
   T.undo(); T.render();
   // the snapshot was taken AFTER planting the foreign route, so undo keeps
   // that one and removes exactly the pins (and the move) added afterwards
-  check('one undo removes the pins and the move together',
-    S.edges.filter(e=>e.route).length===routed0+1);
+  check('one undo removes the pins and the move together', countRouted()===routed0+1);
   delete foreignEdge.route; T._routeCache.clear(); T.render();
 }
 
@@ -1212,6 +1217,62 @@ check('every in-group connection carries a routing lane',
     /btnLayout[\s\S]{0,200}assignNodeEdgeLanes\(\);/.test(src));
   T.undo(); T.render();
   check('one undo removes the probe net again', !S.edges.some(e=>e.nets.some(n=>n.name==='RULE24_NET')));
+}
+
+/* ====== rule 25 — the same boundary wire, hand-routed on BOTH sheets ======
+   A boundary connection is drawn on its two groups' sheets. Routes are stored
+   PER SHEET (e.routes[gid]), so shaping the wire over there never clobbers
+   the shape given to it over here — the user's exact lost-work report. */
+{
+  T.openGroupView(best.id);   // rule 24's undo may have left another sheet open
+  const bSpec=T.drillSheet().specs.find(s=>s.kind!=='internal');
+  const eB=S.edges.find(x=>x.id===bSpec.e.id);
+  const farGid=eB.source===bSpec.e.source && T.nodeGroupIndex().get(eB.source)!==best.id
+    ? T.nodeGroupIndex().get(eB.source) : T.nodeGroupIndex().get(eB.target)!==best.id
+    ? T.nodeGroupIndex().get(eB.target) : T.nodeGroupIndex().get(eB.source);
+  check('a boundary wire with a far group exists (test is meaningful)', !!farGid && farGid!==best.id);
+  const savedRoutes=eB.routes?JSON.parse(JSON.stringify(eB.routes)):undefined, savedRoute=eB.route;
+  delete eB.routes; delete eB.route;
+
+  // hand-route it HERE
+  const shapeA={ pts:[[bSpec.pa.x,bSpec.pa.y],[bSpec.pa.x+48,bSpec.pa.y],[bSpec.pa.x+48,bSpec.pb.y],[bSpec.pb.x,bSpec.pb.y]] };
+  T.commit(); T.setNodeEdgeRoute(eB, shapeA);
+  check('the shape lands in THIS sheet\'s slot', JSON.stringify(eB.routes[best.id])===JSON.stringify(shapeA));
+
+  // hand-route the SAME connection on the far group's sheet
+  T.closeGroupView(); T.openGroupView(farGid);
+  const farSpec=T.drillSheet().specs.find(s=>s.e.id===eB.id);
+  check('the far sheet draws the same connection', !!farSpec);
+  const shapeB={ pts:[[farSpec.pa.x,farSpec.pa.y],[farSpec.pa.x+72,farSpec.pa.y],[farSpec.pa.x+72,farSpec.pb.y],[farSpec.pb.x,farSpec.pb.y]] };
+  T.commit(); T.setNodeEdgeRoute(eB, shapeB);
+  check('…into ITS OWN slot, without touching this sheet\'s',
+    JSON.stringify(eB.routes[farGid])===JSON.stringify(shapeB) &&
+    JSON.stringify(eB.routes[best.id])===JSON.stringify(shapeA));
+
+  // back here: the shape is exactly as the user left it
+  T.closeGroupView(); T.openGroupView(best.id);
+  check('back on the first sheet, the hand shape is untouched',
+    JSON.stringify(T.nodeEdgeRouteOf(eB))===JSON.stringify(shapeA));
+
+  // both shapes ride the session export and come back
+  const sess=JSON.parse(JSON.stringify(T.buildSessionJSON()));
+  const se=sess.edges.find(x=>x.id===eB.id);
+  check('Save session carries BOTH sheets\' shapes',
+    JSON.stringify(se.routes[best.id])===JSON.stringify(shapeA) &&
+    JSON.stringify(se.routes[farGid])===JSON.stringify(shapeB));
+  // a legacy single-slot session still loads: tagged -> that sheet's map entry
+  const legacy=JSON.parse(JSON.stringify(sess));
+  const le=legacy.edges.find(x=>x.id===eB.id);
+  delete le.routes; le.route={ pts:shapeA.pts, sheet:best.id };
+  T.loadSession(legacy);
+  const eL=S.edges.find(x=>x.id===eB.id);
+  check('a legacy sheet-tagged route migrates into the per-sheet map on load',
+    !eL.route && JSON.stringify(eL.routes[best.id])===JSON.stringify({pts:shapeA.pts}));
+  T.loadSession(sess); T.openGroupView(best.id);
+  const eR=S.edges.find(x=>x.id===eB.id);
+  if (savedRoutes) eR.routes=savedRoutes; else delete eR.routes;
+  if (savedRoute) eR.route=savedRoute;
+  T._routeCache.clear(); T.render();
 }
 
 T.closeGroupView();

@@ -85,8 +85,9 @@ check('the saved session carries the portal columns, their order and anchor',
   !!saved.portalOffsets && !!saved.portalOrder && !!saved.portalAnchor);
 check('the saved session carries the framing and the open group',
   !!saved.view && saved.view.k===0.734 && saved.openGroup===gA);
-check('the saved session carries manual wire routes',
-  Object.keys(saved.groupEdgeRoutes).length>0 && saved.edges.some(e=>e.route&&e.route.pts));
+check('the saved session carries manual wire routes (one per sheet)',
+  Object.keys(saved.groupEdgeRoutes).length>0 &&
+  saved.edges.some(e=>e.routes&&Object.values(e.routes).some(r=>r.pts)));
 
 T.loadFromContract(fx.input,fx.contract,fx.groups);
 T.openGroupView(gB);
