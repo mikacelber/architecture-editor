@@ -88,8 +88,9 @@ const EUROFIX={Errors:[],SearchResults:{NumberOfResult:1,Parts:[
     merged.map(r=>r.pn).join(',')==='MS-HI,HI-STOCK,MS-MID,MID-STOCK,LOW-STOCK');
   check('every merged row is tagged with its house',
     merged.map(r=>r.src).join(',')==='Mouser,DigiKey,Mouser,DigiKey,DigiKey');
-  check('the repo carries a Mouser key per currency, the EUR one being the account key',
-    MCRED.api_key_eur==='7b7a3d60-7a68-4328-9f8c-9a16b02e7f3c' && 'api_key_usd' in MCRED);
+  check('the repo carries a Mouser key per currency — USD and EUR accounts',
+    MCRED.api_key_eur==='7b7a3d60-7a68-4328-9f8c-9a16b02e7f3c' &&
+    MCRED.api_key_usd==='2ddd6605-e151-4132-9d5b-865bcde6c393');
 
   // The keys ship with the app — one per currency, nothing to paste.
   ['mouser_api_key','mouser_api_key_usd','mouser_api_key_eur'].forEach(k=>window.localStorage.removeItem(k));
@@ -254,17 +255,17 @@ const EUROFIX={Errors:[],SearchResults:{NumberOfResult:1,Parts:[
 
       T.saveSearchOptions({digikey:true,mouser:true,currency:'EUR'});
       await T.msSearch('ldo');
-      check('Mouser is asked for euros explicitly (currencyCode=EUR + countryCode=ES)',
-        reqs[reqs.length-1].url.includes('currencyCode=EUR') &&
-        reqs[reqs.length-1].url.includes('countryCode=ES'));
+      check('EUR selected → the EUR account key signs the Mouser search (the key IS the currency)',
+        reqs[reqs.length-1].url.includes('apiKey='+MCRED.api_key_eur) &&
+        !reqs[reqs.length-1].url.includes('currencyCode'));
       await T.dkSearch('ldo');
-      check('DigiKey is asked for euros too (locale currency header)',
+      check('DigiKey is asked for euros via its locale currency header',
         reqs[reqs.length-1].opts.headers['X-DIGIKEY-Locale-Currency']==='EUR');
       T.saveSearchOptions({digikey:true,mouser:true,currency:'USD'});
       await T.msSearch('ldo');
-      check('back to dollars by default (currencyCode=USD + countryCode=US)',
-        reqs[reqs.length-1].url.includes('currencyCode=USD') &&
-        reqs[reqs.length-1].url.includes('countryCode=US'));
+      check('USD selected → the www.mouser.com account key signs it, no leftover currency params',
+        reqs[reqs.length-1].url.includes('apiKey='+MCRED.api_key_usd) &&
+        !reqs[reqs.length-1].url.includes('countryCode'));
 
       // Mouser has NO search currency parameter — a euro-pegged key answers in
       // EUR whatever was asked. The mismatch is called out, never papered over.
