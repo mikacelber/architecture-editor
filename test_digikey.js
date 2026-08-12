@@ -90,7 +90,7 @@ const EUROFIX={Errors:[],SearchResults:{NumberOfResult:1,Parts:[
     merged.map(r=>r.src).join(',')==='Mouser,DigiKey,Mouser,DigiKey,DigiKey');
   check('the repo carries a Mouser key per currency — USD and EUR accounts',
     MCRED.api_key_eur==='7b7a3d60-7a68-4328-9f8c-9a16b02e7f3c' &&
-    MCRED.api_key_usd==='2ddd6605-e151-4132-9d5b-865bcde6c393');
+    MCRED.api_key_usd==='47fe710d-eff2-40d8-8ff7-8edeba348677');
 
   // The keys ship with the app — one per currency, nothing to paste.
   ['mouser_api_key','mouser_api_key_usd','mouser_api_key_eur'].forEach(k=>window.localStorage.removeItem(k));
@@ -283,8 +283,8 @@ const EUROFIX={Errors:[],SearchResults:{NumberOfResult:1,Parts:[
     {
       T.msSaveConfig('','');
       let threw=null; try{ await T.msSearch('ldo'); }catch(e){ threw=e; }
-      check('Mouser search without any key refuses and points at the settings pane',
-        /Mouser API key/.test(String(threw)) && /Part search API settings/.test(String(threw)));
+      check('Mouser search without the currency\'s key refuses, naming the currency',
+        /No Mouser USD API key/.test(String(threw)) && /Part search API settings/.test(String(threw)));
       T.msSaveConfig('test-key-123','');
       check('the Mouser keys round-trip through config storage',
         T.msConfig().usd==='test-key-123' && T.msConfig().eur==='');
@@ -306,22 +306,20 @@ const EUROFIX={Errors:[],SearchResults:{NumberOfResult:1,Parts:[
       await T.msSearch('x');
       check('EUR selected → the European key is used',
         reqs[reqs.length-1].url.includes('apiKey=eur-key'));
+      /* the currency's key or NOTHING — no silent switch to the other account */
       T.msSaveConfig('','eur-key');
       T.saveSearchOptions({digikey:true,mouser:true,currency:'USD'});
-      await T.msSearch('x');
-      check('USD selected but no USD key → the EUR key answers instead of nothing',
-        reqs[reqs.length-1].url.includes('apiKey=eur-key'));
-
-      /* a key Mouser REJECTS ("Invalid unique identifier") also falls through */
+      const beforeNoUsd=reqs.length;
+      let noUsd=null; try{ await T.msSearch('x'); }catch(e){ noUsd=e; }
+      check('USD selected but no USD key → an error, never the EUR account\'s answer',
+        /No Mouser USD API key/.test(String(noUsd)) && reqs.length===beforeNoUsd);
       T.msSaveConfig('bad-usd-key','eur-key');
-      const viaFallback=await T.msSearch('x');
-      check('a rejected USD key falls back to the EUR key and still answers',
-        viaFallback[0].pn==='MS-HI' && reqs[reqs.length-1].url.includes('apiKey=eur-key'));
-      T.msSaveConfig('bad-usd-key','');
       let rej=null; try{ await T.msSearch('x'); }catch(e){ rej=e; }
-      check('with every key rejected, the error says WHAT to check',
-        /Invalid unique identifier/.test(String(rej)) &&
+      check('a key Mouser rejects → the error names the currency and WHAT to check',
+        /Invalid unique identifier/.test(String(rej)) && /rejected the USD key/.test(String(rej)) &&
         /SEARCH API key/.test(String(rej)) && /Part search API settings/.test(String(rej)));
+      check('…and the EUR key was never tried behind the user\'s back',
+        reqs[reqs.length-1].url.includes('apiKey=bad-usd-key'));
       T.saveSearchOptions({digikey:true,mouser:true,currency:'USD'});
       T.msSaveConfig('test-key-123','test-key-123');
     }
