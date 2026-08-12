@@ -3854,9 +3854,17 @@ const dkFmtPrice = p => p==null ? '—' : '$'+(+p).toFixed(p<1?4:2);
    and rides the same optional CORS proxy prefix as DigiKey.
    ============================================================ */
 const MS_BASE = 'https://api.mouser.com';
+// The account's Search API key ships with the app — the same one that sits in
+// credential/mouser_credentials.json — so Mouser answers from the first search
+// and the settings field opens pre-filled instead of blank. A key typed (or
+// loaded from the credential file) into the settings pane overrides it, and
+// emptying the field on purpose is honoured: no key, no Mouser results.
+const MS_DEFAULT_KEY = '7b7a3d60-7a68-4328-9f8c-9a16b02e7f3c';
 function msConfig(){
-  try { return { key: localStorage.getItem('mouser_api_key')||'' }; }
-  catch(e){ return { key:'' }; }
+  try {
+    const v = localStorage.getItem('mouser_api_key');
+    return { key: v==null ? MS_DEFAULT_KEY : v };   // null = never set · '' = cleared on purpose
+  } catch(e){ return { key: MS_DEFAULT_KEY }; }
 }
 function msSaveConfig(key){
   try { localStorage.setItem('mouser_api_key', key); }
@@ -4000,9 +4008,10 @@ function icFormMarkup(v){
         <div class="kv"><label>Mouser API key</label><input type="text" id="msKey" value="${esc(ms.key)}" autocomplete="off"></div>
         <div class="kv"><label>CORS proxy prefix (optional)</label><input type="text" id="dkProxy" value="${esc(cfg.proxy)}" placeholder="https://corsproxy.io/?url="></div>
         <p class="hint">DigiKey: free credentials at developer.digikey.com (a "Product Information v4" app, client-credentials flow).
-          Mouser: a free Search API key from mouser.com/api-hub. Keys are stored only in this browser (localStorage),
-          never in the session or the export. If your browser blocks a request (CORS), route it through the proxy
-          prefix — the full provider URL is appended to it, for both distributors.</p>
+          Mouser: the app's own Search API key is filled in already — replace it only to search under another account.
+          Keys are stored only in this browser (localStorage), never in the session or the export. If your browser
+          blocks a request (CORS), route it through the proxy prefix — the full provider URL is appended to it,
+          for both distributors.</p>
         <div class="btnrow" style="margin-top:0">
           <button id="dkSave">Save settings</button>
           <button id="dkLoadFile" title="Read credential/digikey_credentials.json and credential/mouser_credentials.json from the app folder">Load from credential/ files</button>
