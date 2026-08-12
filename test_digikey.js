@@ -1,9 +1,11 @@
 'use strict';
-/* DigiKey part search in the Add IC modal: results sorted by stock (highest
-   first), prices shown, picking a part autofills the identity fields and
-   leaves the engineering judgement (function / rationale) to the user.
-   The network is mocked — this exercises normalization, the OAuth flow
-   plumbing, rendering and the autofill wiring. */
+/* Part search in the Add IC modal — DigiKey AND Mouser: one query fans out to
+   both houses, the results merge into a single stock-sorted list (each row
+   tagged with its house), picking a part autofills the identity fields and
+   leaves the engineering judgement (function / rationale) to the user. A
+   Mouser pick has no datasheet, so DigiKey is asked about that part number
+   and only its datasheet is borrowed. The network is mocked — this exercises
+   normalization, the OAuth/key plumbing, merging, rendering and the wiring. */
 const fs=require('fs'),{JSDOM}=require('jsdom');
 const dom=new JSDOM(fs.readFileSync('index.html','utf8').replace('<script src="app.js"></script>',''),
   {runScripts:'dangerously',pretendToBeVisual:true,url:'http://localhost/'});
@@ -13,7 +15,8 @@ window.Element.prototype.setPointerCapture=()=>{};
 window.eval(fs.readFileSync('app.js','utf8')+`
 window.__T={get S(){return S;},loadFromContract,render,dkNormalizeProducts,dkSearch,dkRenderResults,
  dkConfig,dkSaveConfig,buildSessionJSON,nodeById,findFreeSpot,openReplaceICModal,renameNodeId,
- nodePortRowsFor,isHvNet,shortDatasheetLabel,icSelected,undo,GRID:GRID};`);
+ nodePortRowsFor,isHvNet,shortDatasheetLabel,icSelected,undo,GRID:GRID,
+ msNormalizeParts,msSearch,msConfig,msSaveConfig,mergePartResults,resolveDatasheetFor};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -45,16 +48,77 @@ const FIX={Products:[
     list[1].pn==='MID-STOCK' && list[1].man==='Analog Devices' && list[1].desc==='Op-amp');
 }
 
+/* ---- Mouser fixture, shaped like a search/partnumber response ---- */
+const MFIX={Errors:[],SearchResults:{NumberOfResult:3,Parts:[
+  {MouserPartNumber:'579-MS-MID', ManufacturerPartNumber:'MS-MID', Manufacturer:'Microchip',
+   Description:'MCU 32-bit', Availability:'4,000 In Stock',
+   PriceBreaks:[{Quantity:100,Price:'$1.10',Currency:'USD'},{Quantity:1,Price:'$2.34',Currency:'USD'}]},
+  {ManufacturerPartNumber:'MS-HI', Manufacturer:'onsemi', Description:'Schottky diode',
+   AvailabilityInStock:'999999', Availability:'999999 In Stock',
+   PriceBreaks:[{Quantity:1,Price:'$0.0821',Currency:'USD'}], DataSheetUrl:'https://m/hi.pdf'},
+  {MouserPartNumber:'583-GHOST', Manufacturer:'Ghost Corp', Description:'no MPN',
+   Availability:'5 In Stock', PriceBreaks:[]}
+]}};
+const MCRED=JSON.parse(fs.readFileSync('credential/mouser_credentials.json','utf8'));
+
+/* ---- Mouser normalization + the two-house merge (pure) ---- */
+{
+  const list=T.msNormalizeParts(MFIX);
+  check('Mouser parts without a manufacturer part number are dropped', list.length===2);
+  check('Mouser results sorted by stock, highest first — same rule as DigiKey',
+    list.map(r=>r.pn).join(',')==='MS-HI,MS-MID');
+  check('prose stock ("4,000 In Stock") is parsed to a number', list[1].stock===4000 && list[0].stock===999999);
+  check('price comes from the qty-1 break, currency sign stripped',
+    list[1].price===2.34 && list[0].price===0.0821);
+  check('Mouser rows share the DigiKey row shape (pn/man/desc/stock/price/datasheet)',
+    list[0].man==='onsemi' && list[0].desc==='Schottky diode' && list[0].datasheet==='https://m/hi.pdf' &&
+    list[1].datasheet==='');
+  let threw=null; try{ T.msNormalizeParts({Errors:[{Message:'Invalid apiKey'}]}); }catch(e){ threw=e; }
+  check('a Mouser error payload surfaces as an error, named Mouser',
+    !!threw && /Mouser: Invalid apiKey/.test(String(threw)));
+
+  const merged=T.mergePartResults(T.dkNormalizeProducts(FIX), list);
+  check('merged list interleaves the two houses by stock, highest first',
+    merged.map(r=>r.pn).join(',')==='MS-HI,HI-STOCK,MS-MID,MID-STOCK,LOW-STOCK');
+  check('every merged row is tagged with its house',
+    merged.map(r=>r.src).join(',')==='Mouser,DigiKey,Mouser,DigiKey,DigiKey');
+  check('the repo carries the Mouser API key like the DigiKey credentials',
+    MCRED.api_key==='7b7a3d60-7a68-4328-9f8c-9a16b02e7f3c');
+}
+
+/* ---- a Mouser pick without a datasheet borrows DigiKey's ---- */
+(async()=>{
+  const ds=T.resolveDatasheetFor;
+  check('a row that already has a datasheet keeps it — no lookup fired',
+    await ds({pn:'A',datasheet:'https://own.pdf'}, async()=>{throw new Error('must not be called');})==='https://own.pdf');
+  check('a missing datasheet is borrowed from the exact part-number match',
+    await ds({pn:'X',datasheet:''}, async()=>[{pn:'OTHER',datasheet:'https://o.pdf'},{pn:'X',datasheet:'https://exact.pdf'}])==='https://exact.pdf');
+  check('no exact match — the closest hit\'s datasheet serves',
+    await ds({pn:'X',datasheet:''}, async()=>[{pn:'X-TR',datasheet:'https://xtr.pdf'},{pn:'Y',datasheet:'https://y.pdf'}])==='https://xtr.pdf');
+  check('a failed lookup degrades to no datasheet, never an error',
+    await ds({pn:'X',datasheet:''}, async()=>{throw new Error('offline');})==='');
+})().catch(e=>{ console.error(e); process.exit(1); });
+
 /* ---- OAuth + search plumbing over a mocked network ---- */
 {
-  let calls=[];
+  let calls=[]; const reqs=[];
   const CREDFILE=JSON.parse(fs.readFileSync('credential/digikey_credentials.json','utf8'));
   window.fetch=async (url,opts)=>{
-    calls.push(url);
+    calls.push(url); reqs.push({ url:String(url), opts });
     if (String(url).includes('digikey_credentials.json'))
       return { ok:true, json:async()=>CREDFILE };
+    if (String(url).includes('mouser_credentials.json'))
+      return { ok:true, json:async()=>MCRED };
     if (String(url).includes('/oauth2/token'))
       return { ok:true, json:async()=>({ access_token:'TOK', expires_in:600 }) };
+    if (String(url).includes('api.mouser.com'))
+      return { ok:true, json:async()=>MFIX };
+    // DigiKey keyword search asked about the Mouser-only part: answer with an
+    // exact match so the datasheet-borrowing path has something to borrow.
+    if (opts && opts.body && String(opts.body).includes('MS-MID'))
+      return { ok:true, json:async()=>({ Products:[{ ManufacturerProductNumber:'MS-MID',
+        Manufacturer:{Name:'Microchip'}, Description:{ProductDescription:'MCU 32-bit'},
+        QuantityAvailable:4000, UnitPrice:2.34, DatasheetUrl:'https://x/ms-mid-from-dk.pdf' }] }) };
     return { ok:true, json:async()=>FIX };
   };
   T.dkSaveConfig('my-id','my-secret','');
@@ -120,12 +184,53 @@ const FIX={Products:[
         /shortDatasheetLabel\(n\.data\.DatasheetUrl\)/.test(src));
     }
 
-    /* ---- repo-side credential file, selectable from the settings pane ---- */
-    check('settings pane offers "Load from credential/digikey_credentials.json"', !!doc.getElementById('dkLoadFile'));
+    /* ---- repo-side credential files, selectable from the settings pane ---- */
+    check('settings pane offers loading the credential/ files', !!doc.getElementById('dkLoadFile'));
     await doc.getElementById('dkLoadFile').onclick();
-    check('loading the file fills and saves the credentials',
+    check('loading the files fills and saves the DigiKey credentials',
       T.dkConfig().id===CREDFILE.client_id && T.dkConfig().secret===CREDFILE.client_secret);
+    check('…and the Mouser key in the same click', T.msConfig().key===MCRED.api_key);
     check('the credential file carries both keys', !!CREDFILE.client_id && !!CREDFILE.client_secret);
+
+    /* ---- Mouser search plumbing (mocked network) ---- */
+    {
+      T.msSaveConfig('');
+      let threw=null; try{ await T.msSearch('ldo'); }catch(e){ threw=e; }
+      check('Mouser search without a key refuses and points at the settings pane',
+        /Mouser API key/.test(String(threw)) && /Part search API settings/.test(String(threw)));
+      T.msSaveConfig('test-key-123');
+      check('the Mouser key round-trips through config storage', T.msConfig().key==='test-key-123');
+      const list=await T.msSearch('ldo');
+      const r=reqs[reqs.length-1];
+      check('the search hits api.mouser.com/api/v1/search/partnumber with the key in the query',
+        r.url.includes('api.mouser.com/api/v1/search/partnumber') && r.url.includes('apiKey=test-key-123'));
+      check('…as a SearchByPartRequest POST carrying the typed part number',
+        r.opts.method==='POST' && /SearchByPartRequest/.test(r.opts.body) && /"mouserPartNumber":"ldo"/.test(r.opts.body));
+      check('Mouser search returns the normalized, stock-sorted list', list[0].pn==='MS-HI');
+    }
+
+    /* ---- ONE search, BOTH houses: the modal's own Search button ---- */
+    {
+      doc.getElementById('dkQuery').value='ldo';
+      await doc.getElementById('dkGo').onclick();
+      const st=doc.getElementById('dkStatus').textContent;
+      check('one search reports the merged two-house count', /5 parts — highest stock first/.test(st));
+      const rows2=[...doc.querySelectorAll('.dkrow')];
+      check('merged rows render in global stock order, houses interleaved',
+        rows2.map(b=>b.querySelector('.dkpn').textContent).join(',')==='MS-HI,HI-STOCK,MS-MID,MID-STOCK,LOW-STOCK');
+      check('each card carries the small house field — DigiKey or Mouser',
+        rows2.map(b=>b.querySelector('.dksrc').textContent).join(',')==='Mouser,DigiKey,Mouser,DigiKey,DigiKey');
+      // pick the Mouser row that has NO datasheet: DigiKey is asked about that
+      // part number and ONLY its datasheet is borrowed
+      const msRow=rows2.find(b=>b.querySelector('.dkpn').textContent==='MS-MID');
+      msRow.onclick();
+      check('picking the Mouser part autofills its identity',
+        doc.getElementById('fPN').value==='MS-MID' && doc.getElementById('fMan').value==='MICROCHIP');
+      check('…with no datasheet yet (Mouser carries none)', doc.getElementById('fUrl').value==='');
+      await new Promise(res=>setTimeout(res,20));
+      check('the datasheet arrives from DigiKey for that exact part number',
+        doc.getElementById('fUrl').value==='https://x/ms-mid-from-dk.pdf');
+    }
 
     /* ---- a new IC never lands on top of an existing block ---- */
     {
@@ -158,7 +263,7 @@ const FIX={Products:[
       S.openGroup=null; T.render();
       const grpNode=[...doc.querySelectorAll(`#nodesG g[data-nid]`)].find(x=>x.dataset.nid===grp.id);
       check('its group block warns at the top level too',
-        grpNode.innerHTML.includes('var(--warn)') && /need[s]? the DigiKey part selected/.test(grpNode.innerHTML));
+        grpNode.innerHTML.includes('var(--warn)') && /need[s]? a part selected/.test(grpNode.innerHTML));
 
       // the inspector leads with Select IC (right under the name), Replace is gone
       S.sel={ type:'node', id:oldId }; T.render();
@@ -197,6 +302,8 @@ const FIX={Products:[
         !/Part not selected yet/.test(body2));
       check('once picked, the button drops the amber', !/id="btnSelectIC" class="warn"/.test(body2));
       check('the chosen card carries a "✕" to drop the part', body2.includes('btnClearIC'));
+      check('the chosen card names its house — a DigiKey pick (or a legacy one) says DigiKey',
+        body2.includes('class="dksrc">DigiKey<'));
       // the "✕" clears the pick and the warnings come straight back
       doc.getElementById('btnClearIC').onclick();
       check('clearing the part un-selects the IC again', !T.icSelected(T.nodeById('HI-STOCK')));
@@ -242,6 +349,41 @@ const FIX={Products:[
         !S.edges.some(e=>e.source===oldId||e.target===oldId));
       check('group membership follows the new part', grp.members.includes('NEWPART-123') && !grp.members.includes(oldId));
       check('the port index resolves the new id', T.nodePortRowsFor('NEWPART-123').length===rowsBefore && rowsBefore>0);
+    }
+
+    /* ---- a Mouser pick rides the block: house badge, datasheet, session ---- */
+    {
+      T.openReplaceICModal(T.nodeById('NEWPART-123'));
+      T.dkRenderResults(T.mergePartResults(T.dkNormalizeProducts(FIX), T.msNormalizeParts(MFIX)));
+      const row=[...doc.querySelectorAll('.dkrow')].find(b=>b.querySelector('.dkpn').textContent==='MS-HI');
+      row.onclick();
+      doc.getElementById('fDesc').value='output rectifier';
+      doc.getElementById('mOk').onclick();
+      const picked=T.nodeById('MS-HI');
+      check('picking a Mouser result selects the part, house recorded',
+        !!picked && T.icSelected(picked) && picked.data.dk.src==='Mouser' && picked.data.dk.price===0.0821);
+      check('a Mouser datasheet (when it has one) fills the block\'s field',
+        picked.data.DatasheetUrl==='https://m/hi.pdf' && picked.data.dk.datasheet==='https://m/hi.pdf');
+      S.sel={ type:'node', id:'MS-HI' }; T.render();
+      const b3=doc.getElementById('insBody').innerHTML;
+      check('the chosen card wears the Mouser badge', b3.includes('class="dksrc">Mouser<'));
+      check('the house rides the session export',
+        T.buildSessionJSON().nodes.find(x=>x.id==='MS-HI').data.dk.src==='Mouser');
+    }
+
+    /* ---- every message is provider-neutral now, the DK API untouched ---- */
+    {
+      const src=fs.readFileSync('app.js','utf8');
+      check('the search UI names both houses and the settings pane is provider-neutral',
+        /Search DigiKey \+ Mouser by part number/.test(src) && /Part search API settings/.test(src) &&
+        /Searching DigiKey and Mouser/.test(src));
+      check('no warning claims DigiKey is the only house any more',
+        !/Part not selected on DigiKey/.test(src) && !/the DigiKey part selected/.test(src) &&
+        !/needs its DigiKey selection/.test(src));
+      check('the pending note offers both houses', /on DigiKey or Mouser\./.test(src));
+      check('the DigiKey API plumbing is untouched — OAuth + v4 keyword search intact',
+        /const DK_BASE = 'https:\/\/api\.digikey\.com'/.test(src) &&
+        src.includes('/products/v4/search/keyword') && src.includes('grant_type=client_credentials'));
     }
 
     /* ---- importer tolerates LLM-style hv flags (strings / domain alias) ---- */
