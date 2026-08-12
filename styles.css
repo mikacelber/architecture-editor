@@ -219,24 +219,28 @@ label.switch input:checked + .knob{background:var(--probe)}
 label.switch input:checked + .knob::after{left:17px}
 label.switch .swlabel{font-family:var(--mono);font-size:11px;color:var(--ink-soft)}
 
-/* ---------- DigiKey part search (Add IC modal) ---------- */
+/* ---------- part search — DigiKey + Mouser (Add IC modal) ---------- */
 .dksearch{border:1.5px dashed var(--line);border-radius:3px;padding:10px;margin-bottom:14px}
 .dksearch .row{align-items:flex-end}
 .dksearch .row input{min-width:0}
 .dkresults{max-height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:4px}
-.dkrow{display:grid;grid-template-columns:1fr auto;grid-template-areas:"pn man" "desc desc" "stock price";
+.dkrow{display:grid;grid-template-columns:auto auto 1fr;grid-template-areas:"pn src man" "desc desc desc" "stock stock price";
   gap:1px 10px;text-align:left;width:100%;padding:6px 9px;border:1.5px solid var(--line);border-radius:3px;
   background:var(--field-bg);cursor:pointer;transition:border-color .12s,background .12s}
 .dkrow:hover{border-color:var(--copper)}
 .dkrow.on{border-color:var(--probe);background:var(--btn-hover)}
 .dkrow .dkpn,.dkchosen .dkpn{grid-area:pn;font-family:var(--mono);font-size:12px;font-weight:600;color:var(--ink)}
+/* Which house the row came from — the one field that tells the two apart. */
+.dkrow .dksrc,.dkchosen .dksrc{grid-area:src;justify-self:start;align-self:center;font-family:var(--mono);
+  font-size:8.5px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--ink-soft);
+  border:1px solid var(--line);border-radius:3px;padding:0 4px;line-height:1.6}
 .dkrow .dkman,.dkchosen .dkman{grid-area:man;font-family:var(--mono);font-size:10px;color:var(--ink-soft);text-align:right;align-self:center}
 .dkrow .dkdesc,.dkchosen .dkdesc{grid-area:desc;font-size:11px;color:var(--ink-soft);line-height:1.35}
 .dkrow .dkstock,.dkchosen .dkstock{grid-area:stock;font-family:var(--mono);font-size:10.5px;color:var(--ok)}
 .dkrow .dkprice,.dkchosen .dkprice{grid-area:price;font-family:var(--mono);font-size:10.5px;font-weight:600;color:var(--ink);text-align:right}
 /* The block's CHOSEN part, shown under "Select IC" exactly like a search
    result — green border says "done", where the amber hint said "pending". */
-.dkchosen{position:relative;display:grid;grid-template-columns:1fr auto;grid-template-areas:"pn man" "desc desc" "stock price";
+.dkchosen{position:relative;display:grid;grid-template-columns:auto auto 1fr;grid-template-areas:"pn src man" "desc desc desc" "stock stock price";
   gap:2px 10px;border:1.5px solid var(--ok);border-radius:3px;background:var(--field-bg);
   padding:7px 9px 7px 26px;margin:-2px 0 12px}
 /* "✕" top-left of the card: drop the part, the warnings come back. */

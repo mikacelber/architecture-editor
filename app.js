@@ -1113,9 +1113,9 @@ function shortDatasheetLabel(raw){
   return label.length > 46 ? label.slice(0,43)+'...' : label;
 }
 function nodeById(id){ return S.nodes.find(n=>n.id===id); }
-/* ---------- DigiKey part selection state ----------
+/* ---------- part selection state (DigiKey / Mouser) ----------
    Imported ICs are only PROPOSALS until the physical part (package, price,
-   stock) is picked on DigiKey. The pick lives in n.data.dk; until it exists
+   stock) is picked on a distributor. The pick lives in n.data.dk; until it exists
    the IC block, its group block and the status bar all warn, so nobody ships
    a drawing full of unselected parts by accident. */
 function icSelected(n){ return !!(n && n.data && n.data.dk && n.data.dk.pn); }
@@ -2640,7 +2640,7 @@ function renderDrillDown(){
       const warnTag = needsPick ? `<g style="pointer-events:none">
         <path d="M ${wtX} 15 l6.5 -11 l6.5 11 Z" fill="var(--warn)"/>
         <text x="${wtX+6.5}" y="13.6" text-anchor="middle" font-family="var(--mono)" font-size="8.5" font-weight="700" fill="var(--paper)">!</text>
-        <title>Part not selected on DigiKey yet — open this block and click "Select IC…"</title>
+        <title>Part not selected yet — open this block and click "Select IC…"</title>
       </g>` : '';
       return `<g class="node${dimN}" data-nid="${esc(n.id)}" transform="translate(${n.x},${n.y})" style="cursor:move">
         <rect x="-3" y="4" width="${n.w+6}" height="${n.h}" rx="5" fill="#00000018"/>
@@ -2841,14 +2841,14 @@ function renderTopLevel(){
     }).join('');
     const side = groupSide(g.id);
     const sepY = groupSeparatorY(g);
-    // ≥1 member IC without its DigiKey part picked → the whole group warns
+    // ≥1 member IC without its physical part picked → the whole group warns
     const needsPick = groupNeedsIcPick(g.id);
     const missing = needsPick ? g.members.filter(id=>{ const m=nodeById(id); return m&&m.kind==='ic'&&!icSelected(m); }).length : 0;
     const wtX = side==='lv' ? W-26 : W-50;
     const warnTag = needsPick ? `<g style="pointer-events:none">
       <path d="M ${wtX} 16 l7 -12 l7 12 Z" fill="var(--warn)"/>
       <text x="${wtX+7}" y="14.4" text-anchor="middle" font-family="var(--mono)" font-size="9" font-weight="700" fill="var(--paper)">!</text>
-      <title>${missing} IC${missing>1?'s':''} in this group still need${missing>1?'':'s'} the DigiKey part selected</title>
+      <title>${missing} IC${missing>1?'s':''} in this group still need${missing>1?'':'s'} a part selected</title>
     </g>` : '';
     // One row per connection: a lead-in tick from the block edge, the draggable
     // net-count badge (same number as the one on the wire's midpoint) and the
@@ -3139,8 +3139,8 @@ function renderInspector(){
       </div>`;
     if (n.kind==='ic'){
       // "Select IC" sits right under the block's name: picking the physical
-      // part on DigiKey is THE next action for an imported proposal. Once
-      // picked, the chosen part shows beneath it exactly like a search result.
+      // part on DigiKey or Mouser is THE next action for an imported proposal.
+      // Once picked, the chosen part shows beneath it like a search result.
       const dk = n.data.dk, picked = icSelected(n);
       // Pending selection is the block's loudest state, so the button and its
       // note wear the warning color too — the amber on the block, on its
@@ -3152,11 +3152,11 @@ function renderInspector(){
         ${picked ? `
         <div class="dkchosen">
           <button class="x" id="btnClearIC" title="Remove this part — the block goes back to needing a selection">✕</button>
-          <span class="dkpn">${esc(dk.pn)}</span><span class="dkman">${esc(dk.man||'')}</span>
+          <span class="dkpn">${esc(dk.pn)}</span><span class="dksrc">${esc(dk.src||'DigiKey')}</span><span class="dkman">${esc(dk.man||'')}</span>
           <span class="dkdesc">${esc(dk.desc||'')}</span>
           <span class="dkstock">${dkFmtStock(dk.stock)} in stock</span><span class="dkprice">${dkFmtPrice(dk.price)}</span>
         </div>` : `
-        <p class="icwarn">⚠ Part not selected yet — pick the physical part (package, price, stock) on DigiKey.</p>`}`;
+        <p class="icwarn">⚠ Part not selected yet — pick the physical part (package, price, stock) on DigiKey or Mouser.</p>`}`;
       body.innerHTML = `
         ${selectSection}
         <div class="kv"><label>Type</label><div class="val">${esc(n.data.ic_type||'')}</div></div>
@@ -3804,7 +3804,7 @@ function dkUrl(path){
 let _dkToken = null;   // { token, exp } — cached until shortly before expiry
 async function dkToken(){
   const { id, secret } = dkConfig();
-  if (!id || !secret) throw new Error('No DigiKey credentials — open "DigiKey API settings" below');
+  if (!id || !secret) throw new Error('No DigiKey credentials — open "Part search API settings" below');
   if (_dkToken && Date.now() < _dkToken.exp - 60000) return _dkToken.token;
   const res = await fetch(dkUrl('/v1/oauth2/token'), { method:'POST',
     headers:{ 'Content-Type':'application/x-www-form-urlencoded' },
@@ -3844,10 +3844,105 @@ async function dkSearch(keyword){
 }
 const dkFmtStock = s => s.toLocaleString('en-US');
 const dkFmtPrice = p => p==null ? '—' : '$'+(+p).toFixed(p<1?4:2);
+
+/* ============================================================
+   MOUSER PART SEARCH — the second provider. One API key (free at
+   mouser.com/api-hub), no OAuth. Searches run against BOTH
+   providers at once and pour into one stock-sorted list; each row
+   says which house it came from. The key lives in localStorage
+   only (or credential/mouser_credentials.json, one click away),
+   and rides the same optional CORS proxy prefix as DigiKey.
+   ============================================================ */
+const MS_BASE = 'https://api.mouser.com';
+function msConfig(){
+  try { return { key: localStorage.getItem('mouser_api_key')||'' }; }
+  catch(e){ return { key:'' }; }
+}
+function msSaveConfig(key){
+  try { localStorage.setItem('mouser_api_key', key); }
+  catch(e){ /* storage unavailable — config just won't persist */ }
+}
+// Optional repo-side credential file (credential/mouser_credentials.json),
+// same one-click pickup as the DigiKey file.
+async function msLoadCredentialFile(){
+  const res = await fetch('credential/mouser_credentials.json', { cache:'no-store' });
+  if (!res.ok) throw new Error('credential/mouser_credentials.json not found (HTTP '+res.status+')');
+  const j = await res.json();
+  if (!j.api_key) throw new Error('mouser_credentials.json is missing api_key');
+  return { key:String(j.api_key) };
+}
+function msUrl(path){
+  const { proxy } = dkConfig();   // the CORS proxy prefix is shared
+  return proxy ? proxy + encodeURIComponent(MS_BASE+path) : MS_BASE+path;
+}
+// Pure: Mouser search response → the very row shape dkNormalizeProducts
+// yields, so both providers pour into one picker. Mouser ships stock as prose
+// ("15,000 In Stock") and prices as currency strings ("$0.62") — parse both.
+// Same treatment as DigiKey: rows without a part number are dropped and the
+// list arrives HIGHEST STOCK FIRST.
+function msNormalizeParts(json){
+  const errs = (json && json.Errors) || [];
+  if (errs.length) throw new Error('Mouser: '+(errs[0].Message || errs[0].Code || 'search error'));
+  return (((json && json.SearchResults) || {}).Parts || []).map(p=>{
+    const pn = p.ManufacturerPartNumber || '';
+    const man = p.Manufacturer || '';
+    const desc = p.Description || '';
+    const stock = parseInt(String(p.AvailabilityInStock ?? p.Availability ?? '0').replace(/[^\d]/g,''),10) || 0;
+    let price = null;
+    const breaks = (p.PriceBreaks||[]).slice().sort((a,b)=>a.Quantity-b.Quantity);
+    if (breaks.length){
+      const v = parseFloat(String(breaks[0].Price).replace(/[^\d.]/g,''));
+      if (!Number.isNaN(v)) price = v;
+    }
+    return { pn, man, desc, stock, price, datasheet: p.DataSheetUrl || '' };
+  }).filter(x=>x.pn)
+    .sort((a,b)=> b.stock - a.stock || a.pn.localeCompare(b.pn));
+}
+async function msSearch(keyword){
+  const { key } = msConfig();
+  if (!key) throw new Error('No Mouser API key — open "Part search API settings" below');
+  const res = await fetch(msUrl('/api/v1/search/partnumber?apiKey='+encodeURIComponent(key)), { method:'POST',
+    headers:{ 'Content-Type':'application/json' },
+    body: JSON.stringify({ SearchByPartRequest: { mouserPartNumber: keyword, partSearchOptions: '' } }) });
+  if (!res.ok) throw new Error('Mouser search failed (HTTP '+res.status+')');
+  return msNormalizeParts(await res.json());
+}
+// Both providers into ONE list: each row tagged with its house, the whole
+// thing re-sorted by the same rule each provider already used — highest
+// stock first, part number as the tie-break.
+function mergePartResults(dkList, msList){
+  return [
+    ...(dkList||[]).map(r=>({ ...r, src:'DigiKey' })),
+    ...(msList||[]).map(r=>({ ...r, src:'Mouser' })),
+  ].sort((a,b)=> b.stock - a.stock || a.pn.localeCompare(b.pn));
+}
+// Mouser's search response carries no datasheet link; DigiKey's almost always
+// does. A picked row without one asks DigiKey about THAT part number and
+// borrows only its datasheet — so a datasheet is present whichever house the
+// part came from. `search` is injectable for tests; it defaults to dkSearch.
+async function resolveDatasheetFor(r, search){
+  if (r.datasheet) return r.datasheet;
+  try {
+    const hits = await (search||dkSearch)(r.pn);
+    const hit = hits.find(x=>x.pn===r.pn) || hits.find(x=>x.pn.startsWith(r.pn)) || hits[0];
+    return (hit && hit.datasheet) || '';
+  } catch(e){ return ''; }
+}
+// The DigiKey datasheet lookup for a Mouser pick may still be in flight when
+// OK lands the part on a block — finish the job on the block itself.
+function fillMissingDatasheet(n){
+  const dk = n.data.dk; if (!dk || dk.datasheet) return;
+  resolveDatasheetFor(dk).then(url=>{
+    if (!url || n.data.dk!==dk) return;   // pick changed while we looked
+    dk.datasheet = url;
+    if (!n.data.DatasheetUrl){ n.data.DatasheetUrl = url; render(); }
+  });
+}
+
 // Rows into #dkResults; clicking one autofills the identity fields (part
 // number, type, manufacturer, datasheet) and leaves "Function in this system"
 // and "Selection rationale" — the engineering judgement — to the user.
-// The row the user last clicked in the DigiKey results — THIS is what makes
+// The row the user last clicked in the results — THIS is what makes
 // an IC "selected". Cleared whenever an IC form opens; attached to the block
 // on OK only while the part number still matches the pick.
 let dkPicked = null;
@@ -3856,7 +3951,7 @@ function dkRenderResults(list){
   if (!list.length){ box.innerHTML = '<p class="hint">No parts found.</p>'; return; }
   box.innerHTML = list.map((r,i)=>`
     <button type="button" class="dkrow" data-i="${i}">
-      <span class="dkpn">${esc(r.pn)}</span><span class="dkman">${esc(r.man)}</span>
+      <span class="dkpn">${esc(r.pn)}</span><span class="dksrc">${esc(r.src||'DigiKey')}</span><span class="dkman">${esc(r.man)}</span>
       <span class="dkdesc">${esc(r.desc)}</span>
       <span class="dkstock">${dkFmtStock(r.stock)} in stock</span><span class="dkprice">${dkFmtPrice(r.price)}</span>
     </button>`).join('');
@@ -3869,37 +3964,48 @@ function dkRenderResults(list){
     $('fUrl').value = r.datasheet;
     box.querySelectorAll('.dkrow').forEach(b=>b.classList.toggle('on', b===btn));
     $('fDesc').focus();
+    // A Mouser row has no datasheet — ask DigiKey for this part number in the
+    // background and slot the link in when it lands (unless the user has
+    // meanwhile typed one, or moved on to another pick).
+    if (!r.datasheet) resolveDatasheetFor(r).then(url=>{
+      if (!url || dkPicked!==r) return;
+      r.datasheet = url;
+      if (!$('fUrl').value) $('fUrl').value = url;
+    });
   });
 }
 
-// The IC identity form (DigiKey search + fields) shared by "Add IC" and
-// "Replace IC" — one markup builder and one handler-wiring, so both modals
-// always look and behave the same.
+// The IC identity form (part search + fields) shared by "Add IC" and
+// "Select IC" — one markup builder and one handler-wiring, so both modals
+// always look and behave the same. The search fans out to DigiKey AND Mouser
+// and shows one merged, stock-sorted list.
 function icFormMarkup(v){
-  const cfg = dkConfig();
+  const cfg = dkConfig(), ms = msConfig();
   return `
     <div class="dksearch">
-      <div class="kv"><label>Search DigiKey by part number</label>
+      <div class="kv"><label>Search DigiKey + Mouser by part number</label>
         <div class="row"><input type="text" id="dkQuery" placeholder="TPS7A21" autocomplete="off" value="${esc(v.query||'')}">
         <button id="dkGo" style="flex:0 0 auto">Search</button></div>
       </div>
       <div id="dkStatus" class="hint" style="margin:4px 0"></div>
       <div id="dkResults" class="dkresults"></div>
-      <p class="hint" style="margin-bottom:4px">Results are sorted by stock quantity, highest first. Picking a part fills in its
-        identity below — the function in this system and the selection rationale stay yours to write.
-        <button class="linklike" id="dkCfgToggle">DigiKey API settings</button></p>
-      <div id="dkCfgPane" style="display:${cfg.id?'none':'block'}">
+      <p class="hint" style="margin-bottom:4px">Results from both distributors are merged and sorted by stock quantity, highest first.
+        Picking a part fills in its identity below — the function in this system and the selection rationale stay yours to write.
+        <button class="linklike" id="dkCfgToggle">Part search API settings</button></p>
+      <div id="dkCfgPane" style="display:${cfg.id&&ms.key?'none':'block'}">
         <div class="row">
-          <div class="kv"><label>Client ID</label><input type="text" id="dkId" value="${esc(cfg.id)}" autocomplete="off"></div>
-          <div class="kv"><label>Client Secret</label><input type="text" id="dkSecret" value="${esc(cfg.secret)}" autocomplete="off"></div>
+          <div class="kv"><label>DigiKey Client ID</label><input type="text" id="dkId" value="${esc(cfg.id)}" autocomplete="off"></div>
+          <div class="kv"><label>DigiKey Client Secret</label><input type="text" id="dkSecret" value="${esc(cfg.secret)}" autocomplete="off"></div>
         </div>
+        <div class="kv"><label>Mouser API key</label><input type="text" id="msKey" value="${esc(ms.key)}" autocomplete="off"></div>
         <div class="kv"><label>CORS proxy prefix (optional)</label><input type="text" id="dkProxy" value="${esc(cfg.proxy)}" placeholder="https://corsproxy.io/?url="></div>
-        <p class="hint">Free credentials at developer.digikey.com (a "Product Information v4" app, client-credentials flow).
-          They are stored only in this browser (localStorage), never in the session or the export.
-          If your browser blocks the request (CORS), route it through a proxy prefix — the full DigiKey URL is appended to it.</p>
+        <p class="hint">DigiKey: free credentials at developer.digikey.com (a "Product Information v4" app, client-credentials flow).
+          Mouser: a free Search API key from mouser.com/api-hub. Keys are stored only in this browser (localStorage),
+          never in the session or the export. If your browser blocks a request (CORS), route it through the proxy
+          prefix — the full provider URL is appended to it, for both distributors.</p>
         <div class="btnrow" style="margin-top:0">
           <button id="dkSave">Save settings</button>
-          <button id="dkLoadFile" title="Read credential/digikey_credentials.json from the app folder">Load from credential/digikey_credentials.json</button>
+          <button id="dkLoadFile" title="Read credential/digikey_credentials.json and credential/mouser_credentials.json from the app folder">Load from credential/ files</button>
         </div>
       </div>
     </div>
@@ -3916,30 +4022,52 @@ function wireIcFormHandlers(){
   $('dkCfgToggle').onclick=()=>{ const p=$('dkCfgPane'); p.style.display = p.style.display==='none' ? 'block' : 'none'; };
   $('dkSave').onclick=()=>{
     dkSaveConfig($('dkId').value.trim(), $('dkSecret').value.trim(), $('dkProxy').value.trim());
+    msSaveConfig($('msKey').value.trim());
     $('dkCfgPane').style.display='none';
-    toast('DigiKey settings saved to this browser');
+    toast('API settings saved to this browser');
   };
+  // One click loads BOTH repo-side credential files; a missing one is reported
+  // without blocking the other.
   $('dkLoadFile').onclick=async()=>{
+    const got=[], errs=[];
     try {
       const c = await dkLoadCredentialFile();
       $('dkId').value=c.id; $('dkSecret').value=c.secret;
       if (c.proxy) $('dkProxy').value=c.proxy;
-      dkSaveConfig(c.id, c.secret, $('dkProxy').value.trim());
-      toast('DigiKey credentials loaded from file');
-    } catch(err){ $('dkStatus').textContent=String(err.message||err); }
+      got.push('DigiKey');
+    } catch(err){ errs.push(String(err.message||err)); }
+    try {
+      const m = await msLoadCredentialFile();
+      $('msKey').value=m.key;
+      got.push('Mouser');
+    } catch(err){ errs.push(String(err.message||err)); }
+    if (got.length){
+      dkSaveConfig($('dkId').value.trim(), $('dkSecret').value.trim(), $('dkProxy').value.trim());
+      msSaveConfig($('msKey').value.trim());
+      toast(got.join(' + ')+' credentials loaded from file');
+    }
+    $('dkStatus').textContent = errs.join(' · ');
   };
+  // BOTH providers at once; one failing (no key, CORS, quota) still shows the
+  // other's results, with the failure noted next to the count.
   const runSearch = async ()=>{
     const q = $('dkQuery').value.trim();
     if (!q){ $('dkStatus').textContent='Type a part number to search.'; return; }
-    $('dkStatus').textContent='Searching DigiKey…';
+    $('dkStatus').textContent='Searching DigiKey and Mouser…';
     $('dkResults').innerHTML='';
-    try {
-      const list = await dkSearch(q);
-      $('dkStatus').textContent = list.length ? list.length+' part'+(list.length===1?'':'s')+' — highest stock first' : '';
-      dkRenderResults(list);
-    } catch(err){
-      $('dkStatus').textContent = String(err.message||err);
+    const [dk, ms] = await Promise.allSettled([dkSearch(q), msSearch(q)]);
+    const errs = [];
+    if (dk.status==='rejected') errs.push(String((dk.reason&&dk.reason.message)||dk.reason));
+    if (ms.status==='rejected') errs.push(String((ms.reason&&ms.reason.message)||ms.reason));
+    if (dk.status==='rejected' && ms.status==='rejected'){
+      $('dkStatus').textContent = errs.join(' · ');
+      return;
     }
+    const list = mergePartResults(dk.status==='fulfilled'?dk.value:null,
+                                  ms.status==='fulfilled'?ms.value:null);
+    const count = list.length ? list.length+' part'+(list.length===1?'':'s')+' — highest stock first' : '';
+    $('dkStatus').textContent = count + (errs.length ? (count?' · ':'')+errs.join(' · ') : '');
+    dkRenderResults(list);
   };
   $('dkGo').onclick=runSearch;
   $('dkQuery').addEventListener('keydown', ev=>{ if (ev.key==='Enter'){ ev.preventDefault(); runSearch(); } });
@@ -3989,9 +4117,9 @@ $('btnAddIC').onclick=()=>{
       data:{ ic_part_number:pn, ic_type:$('fType').value.trim(), manufacturer:$('fMan').value.trim(),
              description:$('fDesc').value.trim(), selection_rationale:$('fRat').value.trim(),
              DatasheetUrl:$('fUrl').value.trim() } };
-    // A part picked from the DigiKey results is born SELECTED (no warning);
+    // A part picked from the search results is born SELECTED (no warning);
     // a hand-typed part number still needs its Select IC pass.
-    if (dkPicked && dkPicked.pn===pn) node.data.dk = { ...dkPicked };
+    if (dkPicked && dkPicked.pn===pn){ node.data.dk = { ...dkPicked }; fillMissingDatasheet(node); }
     // Measure the block as it will ACTUALLY render (header texts + the empty
     // port zone make it larger than the nominal constants) — searching with
     // the nominal size used to let the grown block overlap its neighbours.
@@ -4225,7 +4353,7 @@ function renameNodeId(oldId, newId){
   _routeCache.clear();
 }
 
-// Replace an IC with a newer/different part: same form as Add IC (DigiKey
+// Replace an IC with a newer/different part: same form as Add IC (part
 // search included), but the function and selection rationale carry over from
 // the old part (still editable) — only the identity really changes. Every
 // connection, port layout and route survives the swap.
@@ -4252,15 +4380,15 @@ function openReplaceICModal(n){
     n.label = pn;
     // The pick from the results is the selection; keeping the same part
     // number keeps an earlier pick; typing a DIFFERENT number by hand drops
-    // it — that part has not been selected on DigiKey.
+    // it — that part has not been selected on a distributor.
     const dk = (dkPicked && dkPicked.pn===pn) ? { ...dkPicked }
              : (pn===(n.data.ic_part_number||n.id) ? n.data.dk : undefined);
     n.data = { ...n.data, ic_part_number:pn, ic_type:$('fType').value.trim(), manufacturer:$('fMan').value.trim(),
                description:$('fDesc').value.trim(), selection_rationale:$('fRat').value.trim(),
                DatasheetUrl:$('fUrl').value.trim() };
-    if (dk) n.data.dk = dk; else delete n.data.dk;
+    if (dk){ n.data.dk = dk; fillMissingDatasheet(n); } else delete n.data.dk;
     closeModal(); S.sel={type:'node',id:pn}; render();
-    toast(dk ? 'Part selected — connections and routing kept' : 'Updated — part still needs its DigiKey selection');
+    toast(dk ? 'Part selected — connections and routing kept' : 'Updated — part still needs to be selected');
   };
 }
 
