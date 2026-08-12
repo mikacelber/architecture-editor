@@ -3154,7 +3154,7 @@ function renderInspector(){
           <button class="x" id="btnClearIC" title="Remove this part — the block goes back to needing a selection">✕</button>
           <span class="dkpn">${esc(dk.pn)}</span><span class="dksrc">${esc(dk.src||'DigiKey')}</span><span class="dkman">${esc(dk.man||'')}</span>
           <span class="dkdesc">${esc(dk.desc||'')}</span>
-          <span class="dkstock">${dkFmtStock(dk.stock)} in stock</span><span class="dkprice">${dkFmtPrice(dk.price)}</span>
+          <span class="dkstock">${dkFmtStock(dk.stock)} in stock</span><span class="dkprice">${dkFmtPrice(dk.price, dk.currency)}</span>
         </div>` : `
         <p class="icwarn">⚠ Part not selected yet — pick the physical part (package, price, stock) on DigiKey or Mouser.</p>`}`;
       body.innerHTML = `
@@ -3837,13 +3837,14 @@ async function dkSearch(keyword){
   const res = await fetch(dkUrl('/products/v4/search/keyword'), { method:'POST',
     headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer '+token,
       'X-DIGIKEY-Client-Id': dkConfig().id,
-      'X-DIGIKEY-Locale-Site':'US', 'X-DIGIKEY-Locale-Currency':'USD' },
+      'X-DIGIKEY-Locale-Site':'US', 'X-DIGIKEY-Locale-Currency':searchOptions().currency },
     body: JSON.stringify({ Keywords: keyword, Limit: 25, Offset: 0 }) });
   if (!res.ok) throw new Error('DigiKey search failed (HTTP '+res.status+')');
   return dkNormalizeProducts(await res.json());
 }
 const dkFmtStock = s => s.toLocaleString('en-US');
-const dkFmtPrice = p => p==null ? '—' : '$'+(+p).toFixed(p<1?4:2);
+const CUR_SYMBOL = { USD:'$', EUR:'€' };
+const dkFmtPrice = (p, cur) => p==null ? '—' : (CUR_SYMBOL[cur]||'$')+(+p).toFixed(p<1?4:2);
 
 /* ============================================================
    MOUSER PART SEARCH — the second provider. One API key (free at
@@ -3883,12 +3884,50 @@ function msUrl(path){
   const { proxy } = dkConfig();   // the CORS proxy prefix is shared
   return proxy ? proxy + encodeURIComponent(MS_BASE+path) : MS_BASE+path;
 }
+/* ---------- PN search options ----------
+   Which houses a search asks and in which currency prices come back. Both
+   distributors are ON by default; the choices live in localStorage next to
+   the keys — a workstation preference, not project data, so they never ride
+   the session or the export. Edited in Project Options › PN search options. */
+function searchOptions(){
+  try {
+    return { digikey: localStorage.getItem('pn_use_digikey')!=='0',
+             mouser:  localStorage.getItem('pn_use_mouser')!=='0',
+             currency: localStorage.getItem('pn_currency')==='EUR' ? 'EUR' : 'USD' };
+  } catch(e){ return { digikey:true, mouser:true, currency:'USD' }; }
+}
+function saveSearchOptions(o){
+  try {
+    localStorage.setItem('pn_use_digikey', o.digikey?'1':'0');
+    localStorage.setItem('pn_use_mouser',  o.mouser?'1':'0');
+    localStorage.setItem('pn_currency',    o.currency==='EUR'?'EUR':'USD');
+  } catch(e){ /* storage unavailable — options just won't persist */ }
+}
+// Mouser prices arrive as prose in the response currency: "$0.62" but also
+// "0,62 €" or "1.234,56 €". Stripping the comma used to turn 0,62 into 62 —
+// euros times a hundred — so this parses the separators properly: with both
+// present the LAST one is the decimal mark; a lone comma is decimal unless
+// it fronts exactly three digits (a thousands group); a dot is decimal.
+function msParsePrice(raw){
+  const s = String(raw??'').replace(/[^\d.,]/g,'');
+  if (!s) return null;
+  const dot = s.lastIndexOf('.'), com = s.lastIndexOf(',');
+  let dec;
+  if (dot>=0 && com>=0) dec = Math.max(dot, com);
+  else if (dot>=0) dec = dot;
+  else if (com>=0) dec = (com>0 && s.length-com-1===3) ? -1 : com;
+  else dec = -1;
+  const intPart = (dec<0 ? s : s.slice(0,dec)).replace(/[.,]/g,'');
+  const frac = dec<0 ? '' : s.slice(dec+1).replace(/[.,]/g,'');
+  const v = parseFloat(intPart+(frac ? '.'+frac : ''));
+  return Number.isNaN(v) ? null : v;
+}
 // Pure: Mouser search response → the very row shape dkNormalizeProducts
 // yields, so both providers pour into one picker. Mouser ships stock as prose
-// ("15,000 In Stock") and prices as currency strings ("$0.62") — parse both.
-// Same treatment as DigiKey: rows without a part number are dropped and the
-// list arrives HIGHEST STOCK FIRST.
-function msNormalizeParts(json){
+// ("15,000 In Stock") and prices as currency strings ("$0.62" / "0,62 €") —
+// parse both, currency-aware. Same treatment as DigiKey: rows without a part
+// number are dropped and the list arrives HIGHEST STOCK FIRST.
+function msNormalizeParts(json, cur){
   const errs = (json && json.Errors) || [];
   if (errs.length) throw new Error('Mouser: '+(errs[0].Message || errs[0].Code || 'search error'));
   return (((json && json.SearchResults) || {}).Parts || []).map(p=>{
@@ -3896,33 +3935,38 @@ function msNormalizeParts(json){
     const man = p.Manufacturer || '';
     const desc = p.Description || '';
     const stock = parseInt(String(p.AvailabilityInStock ?? p.Availability ?? '0').replace(/[^\d]/g,''),10) || 0;
-    let price = null;
+    let price = null, currency = cur || 'USD';
     const breaks = (p.PriceBreaks||[]).slice().sort((a,b)=>a.Quantity-b.Quantity);
     if (breaks.length){
-      const v = parseFloat(String(breaks[0].Price).replace(/[^\d.]/g,''));
-      if (!Number.isNaN(v)) price = v;
+      price = msParsePrice(breaks[0].Price);
+      if (breaks[0].Currency) currency = breaks[0].Currency;
     }
-    return { pn, man, desc, stock, price, datasheet: p.DataSheetUrl || '' };
+    return { pn, man, desc, stock, price, currency, datasheet: p.DataSheetUrl || '' };
   }).filter(x=>x.pn)
     .sort((a,b)=> b.stock - a.stock || a.pn.localeCompare(b.pn));
 }
 async function msSearch(keyword){
   const { key } = msConfig();
+  const cur = searchOptions().currency;
   if (!key) throw new Error('No Mouser API key — open "Part search API settings" below');
-  const res = await fetch(msUrl('/api/v1/search/partnumber?apiKey='+encodeURIComponent(key)), { method:'POST',
+  // currencyCode makes Mouser answer in the configured currency instead of
+  // whatever the account's locale implies — the prices then parse AND read
+  // as what they claim to be.
+  const res = await fetch(msUrl('/api/v1/search/partnumber?apiKey='+encodeURIComponent(key)+'&currencyCode='+cur), { method:'POST',
     headers:{ 'Content-Type':'application/json' },
     body: JSON.stringify({ SearchByPartRequest: { mouserPartNumber: keyword, partSearchOptions: '' } }) });
   if (!res.ok) throw new Error('Mouser search failed (HTTP '+res.status+')');
-  return msNormalizeParts(await res.json());
+  return msNormalizeParts(await res.json(), cur);
 }
-// Both providers into ONE list: each row tagged with its house, the whole
-// thing re-sorted by the same rule each provider already used — highest
-// stock first, part number as the tie-break.
-function mergePartResults(dkList, msList){
+// Both providers into ONE list: each row tagged with its house and currency,
+// the whole thing re-sorted by the same rule each provider already used —
+// highest stock first, part number as the tie-break.
+function mergePartResults(dkList, msList, cur){
   return [
     ...(dkList||[]).map(r=>({ ...r, src:'DigiKey' })),
     ...(msList||[]).map(r=>({ ...r, src:'Mouser' })),
-  ].sort((a,b)=> b.stock - a.stock || a.pn.localeCompare(b.pn));
+  ].map(r=>({ ...r, currency: r.currency || cur || 'USD' }))
+   .sort((a,b)=> b.stock - a.stock || a.pn.localeCompare(b.pn));
 }
 // Mouser's search response carries no datasheet link; DigiKey's almost always
 // does. A picked row without one asks DigiKey about THAT part number and
@@ -3961,7 +4005,7 @@ function dkRenderResults(list){
     <button type="button" class="dkrow" data-i="${i}">
       <span class="dkpn">${esc(r.pn)}</span><span class="dksrc">${esc(r.src||'DigiKey')}</span><span class="dkman">${esc(r.man)}</span>
       <span class="dkdesc">${esc(r.desc)}</span>
-      <span class="dkstock">${dkFmtStock(r.stock)} in stock</span><span class="dkprice">${dkFmtPrice(r.price)}</span>
+      <span class="dkstock">${dkFmtStock(r.stock)} in stock</span><span class="dkprice">${dkFmtPrice(r.price, r.currency)}</span>
     </button>`).join('');
   box.querySelectorAll('.dkrow').forEach(btn=>btn.onclick=()=>{
     const r = list[+btn.dataset.i];
@@ -3988,7 +4032,6 @@ function dkRenderResults(list){
 // always look and behave the same. The search fans out to DigiKey AND Mouser
 // and shows one merged, stock-sorted list.
 function icFormMarkup(v){
-  const cfg = dkConfig(), ms = msConfig();
   return `
     <div class="dksearch">
       <div class="kv"><label>Search DigiKey + Mouser by part number</label>
@@ -3999,24 +4042,8 @@ function icFormMarkup(v){
       <div id="dkResults" class="dkresults"></div>
       <p class="hint" style="margin-bottom:4px">Results from both distributors are merged and sorted by stock quantity, highest first.
         Picking a part fills in its identity below — the function in this system and the selection rationale stay yours to write.
-        <button class="linklike" id="dkCfgToggle">Part search API settings</button></p>
-      <div id="dkCfgPane" style="display:${cfg.id&&ms.key?'none':'block'}">
-        <div class="row">
-          <div class="kv"><label>DigiKey Client ID</label><input type="text" id="dkId" value="${esc(cfg.id)}" autocomplete="off"></div>
-          <div class="kv"><label>DigiKey Client Secret</label><input type="text" id="dkSecret" value="${esc(cfg.secret)}" autocomplete="off"></div>
-        </div>
-        <div class="kv"><label>Mouser API key</label><input type="text" id="msKey" value="${esc(ms.key)}" autocomplete="off"></div>
-        <div class="kv"><label>CORS proxy prefix (optional)</label><input type="text" id="dkProxy" value="${esc(cfg.proxy)}" placeholder="https://corsproxy.io/?url="></div>
-        <p class="hint">DigiKey: free credentials at developer.digikey.com (a "Product Information v4" app, client-credentials flow).
-          Mouser: the app's own Search API key is filled in already — replace it only to search under another account.
-          Keys are stored only in this browser (localStorage), never in the session or the export. If your browser
-          blocks a request (CORS), route it through the proxy prefix — the full provider URL is appended to it,
-          for both distributors.</p>
-        <div class="btnrow" style="margin-top:0">
-          <button id="dkSave">Save settings</button>
-          <button id="dkLoadFile" title="Read credential/digikey_credentials.json and credential/mouser_credentials.json from the app folder">Load from credential/ files</button>
-        </div>
-      </div>
+        Distributors, currency and API keys are configured in
+        <button class="linklike" id="dkCfgOpen">Part search API settings</button></p>
     </div>
     <div class="kv"><label>Part number *</label><input type="text" id="fPN" placeholder="TPS7A21" value="${esc(v.pn||'')}"></div>
     <div class="kv"><label>IC type *</label><input type="text" id="fType" placeholder="Low-noise LDO regulator" value="${esc(v.type||'')}"></div>
@@ -4028,52 +4055,35 @@ function icFormMarkup(v){
 function wireIcFormHandlers(){
   dkPicked = null;
   $('mCancel').onclick=closeModal;
-  $('dkCfgToggle').onclick=()=>{ const p=$('dkCfgPane'); p.style.display = p.style.display==='none' ? 'block' : 'none'; };
-  $('dkSave').onclick=()=>{
-    dkSaveConfig($('dkId').value.trim(), $('dkSecret').value.trim(), $('dkProxy').value.trim());
-    msSaveConfig($('msKey').value.trim());
-    $('dkCfgPane').style.display='none';
-    toast('API settings saved to this browser');
-  };
-  // One click loads BOTH repo-side credential files; a missing one is reported
-  // without blocking the other.
-  $('dkLoadFile').onclick=async()=>{
-    const got=[], errs=[];
-    try {
-      const c = await dkLoadCredentialFile();
-      $('dkId').value=c.id; $('dkSecret').value=c.secret;
-      if (c.proxy) $('dkProxy').value=c.proxy;
-      got.push('DigiKey');
-    } catch(err){ errs.push(String(err.message||err)); }
-    try {
-      const m = await msLoadCredentialFile();
-      $('msKey').value=m.key;
-      got.push('Mouser');
-    } catch(err){ errs.push(String(err.message||err)); }
-    if (got.length){
-      dkSaveConfig($('dkId').value.trim(), $('dkSecret').value.trim(), $('dkProxy').value.trim());
-      msSaveConfig($('msKey').value.trim());
-      toast(got.join(' + ')+' credentials loaded from file');
-    }
-    $('dkStatus').textContent = errs.join(' · ');
-  };
-  // BOTH providers at once; one failing (no key, CORS, quota) still shows the
-  // other's results, with the failure noted next to the count.
+  // ONE home for the search configuration: the link swaps this modal for
+  // Project Options opened straight at "PN search options" — no duplicate
+  // settings pane living inside the IC form.
+  $('dkCfgOpen').onclick=()=>openProjectOptionsModal('search');
+  // Every ENABLED provider at once; one failing (no key, CORS, quota) still
+  // shows the other's results, with the failure noted next to the count.
   const runSearch = async ()=>{
     const q = $('dkQuery').value.trim();
     if (!q){ $('dkStatus').textContent='Type a part number to search.'; return; }
-    $('dkStatus').textContent='Searching DigiKey and Mouser…';
+    const so = searchOptions();
+    if (!so.digikey && !so.mouser){
+      $('dkStatus').textContent='Both distributors are turned off — enable one in "Part search API settings".';
+      return;
+    }
+    const names = [so.digikey?'DigiKey':null, so.mouser?'Mouser':null].filter(Boolean);
+    $('dkStatus').textContent='Searching '+names.join(' and ')+'…';
     $('dkResults').innerHTML='';
-    const [dk, ms] = await Promise.allSettled([dkSearch(q), msSearch(q)]);
+    const [dk, ms] = await Promise.allSettled([
+      so.digikey ? dkSearch(q) : Promise.resolve(null),
+      so.mouser  ? msSearch(q) : Promise.resolve(null) ]);
     const errs = [];
     if (dk.status==='rejected') errs.push(String((dk.reason&&dk.reason.message)||dk.reason));
     if (ms.status==='rejected') errs.push(String((ms.reason&&ms.reason.message)||ms.reason));
-    if (dk.status==='rejected' && ms.status==='rejected'){
+    if (errs.length===names.length){          // every house asked failed
       $('dkStatus').textContent = errs.join(' · ');
       return;
     }
     const list = mergePartResults(dk.status==='fulfilled'?dk.value:null,
-                                  ms.status==='fulfilled'?ms.value:null);
+                                  ms.status==='fulfilled'?ms.value:null, so.currency);
     const count = list.length ? list.length+' part'+(list.length===1?'':'s')+' — highest stock first' : '';
     $('dkStatus').textContent = count + (errs.length ? (count?' · ':'')+errs.join(' · ') : '');
     dkRenderResults(list);
@@ -4467,19 +4477,32 @@ function projectOf(){
            pageSize: p.pageSize==='A4' ? 'A4' : 'A3',
            orientation: p.orientation==='portrait' ? 'portrait' : 'landscape' };
 }
-function openProjectOptionsModal(){
-  const p = projectOf();
+// Three sub-windows behind tabs: the title-block data ("Project parameters"),
+// the page setup ("PDF export options") and the distributor search setup
+// ("PN search options" — which houses, currency, API keys). The IC form's
+// "Part search API settings" link lands directly on the third tab, so the
+// search configuration has exactly ONE home.
+function openProjectOptionsModal(tab){
+  const p = projectOf(), dk = dkConfig(), ms = msConfig(), so = searchOptions();
   openModal('Project Options', `
-    <div class="kv"><label>Project title</label><input type="text" id="poTitle" value="${esc(S.meta.title||'')}"></div>
-    <div class="row">
-      <div class="kv"><label>Designed for (client)</label><input type="text" id="poClient" placeholder="ACME Corp." value="${esc(p.client)}"></div>
-      <div class="kv"><label>Designed by (company)</label><input type="text" id="poDesigner" placeholder="NX Design" value="${esc(p.designer)}"></div>
+    <div class="tabs">
+      <button id="poTabParams">Project parameters</button>
+      <button id="poTabPdf">PDF export options</button>
+      <button id="poTabSearch">PN search options</button>
     </div>
-    <div class="row">
-      <div class="kv"><label>Date (dd/mm/yyyy)</label><input type="text" id="poDate" value="${esc(p.date)}"></div>
-      <div class="kv"><label>Engineer initials</label><input type="text" id="poInitials" placeholder="J.D." value="${esc(p.initials)}"></div>
+    <div id="poPaneParams">
+      <div class="kv"><label>Project title</label><input type="text" id="poTitle" value="${esc(S.meta.title||'')}"></div>
+      <div class="row">
+        <div class="kv"><label>Designed for (client)</label><input type="text" id="poClient" placeholder="ACME Corp." value="${esc(p.client)}"></div>
+        <div class="kv"><label>Designed by (company)</label><input type="text" id="poDesigner" placeholder="NX Design" value="${esc(p.designer)}"></div>
+      </div>
+      <div class="row">
+        <div class="kv"><label>Date (dd/mm/yyyy)</label><input type="text" id="poDate" value="${esc(p.date)}"></div>
+        <div class="kv"><label>Engineer initials</label><input type="text" id="poInitials" placeholder="J.D." value="${esc(p.initials)}"></div>
+      </div>
+      <p class="hint">These fields fill the drawing frame's title block on every page of Export → PDF drawing, and they are saved with the session.</p>
     </div>
-    <fieldset class="subpane"><legend>PDF Export Options</legend>
+    <div id="poPanePdf" style="display:none">
       <div class="row">
         <div class="kv"><label>Page size</label>
           <select id="poSize"><option ${p.pageSize==='A3'?'selected':''}>A3</option><option ${p.pageSize==='A4'?'selected':''}>A4</option></select></div>
@@ -4489,16 +4512,72 @@ function openProjectOptionsModal(){
             <option value="portrait" ${p.orientation==='portrait'?'selected':''}>Vertical</option>
           </select></div>
       </div>
-    </fieldset>
-    <p class="hint">These fields fill the drawing frame's title block on every page of Export → PDF drawing, and they are saved with the session.</p>
+      <p class="hint">Page setup for every page of Export → PDF drawing; saved with the session.</p>
+    </div>
+    <div id="poPaneSearch" style="display:none">
+      <div class="kv"><label>Distributors searched</label>
+        <div class="row" style="gap:18px;padding:4px 0 2px">
+          <label class="switch"><input type="checkbox" id="psUseDk" ${so.digikey?'checked':''}><span class="knob"></span><span class="swlabel">DigiKey</span></label>
+          <label class="switch"><input type="checkbox" id="psUseMs" ${so.mouser?'checked':''}><span class="knob"></span><span class="swlabel">Mouser</span></label>
+        </div>
+      </div>
+      <div class="kv"><label>Search currency</label>
+        <select id="psCur">
+          <option value="USD" ${so.currency==='USD'?'selected':''}>US dollars ($)</option>
+          <option value="EUR" ${so.currency==='EUR'?'selected':''}>Euros (€)</option>
+        </select></div>
+      <div class="row">
+        <div class="kv"><label>DigiKey Client ID</label><input type="text" id="dkId" value="${esc(dk.id)}" autocomplete="off"></div>
+        <div class="kv"><label>DigiKey Client Secret</label><input type="text" id="dkSecret" value="${esc(dk.secret)}" autocomplete="off"></div>
+      </div>
+      <div class="kv"><label>Mouser API key</label><input type="text" id="msKey" value="${esc(ms.key)}" autocomplete="off"></div>
+      <div class="kv"><label>CORS proxy prefix (optional)</label><input type="text" id="dkProxy" value="${esc(dk.proxy)}" placeholder="https://corsproxy.io/?url="></div>
+      <div class="btnrow" style="margin-top:0">
+        <button id="dkLoadFile" title="Read credential/digikey_credentials.json and credential/mouser_credentials.json from the app folder">Load from credential/ files</button>
+      </div>
+      <p class="hint">DigiKey: free credentials at developer.digikey.com (a "Product Information v4" app, client-credentials flow).
+        Mouser: the app's own Search API key is filled in already — replace it only to search under another account.
+        Keys and these options are stored only in this browser (localStorage), never in the session or the export.
+        If your browser blocks a request (CORS), route it through the proxy prefix — the full provider URL is appended to it,
+        for both distributors.</p>
+    </div>
   `, `<button id="mCancel">Cancel</button><button class="primary" id="mOk">Save</button>`);
+  const KEYS=['Params','Pdf','Search'];
+  const show=k=>KEYS.forEach(q=>{ $('poPane'+q).style.display = q===k ? '' : 'none';
+                                  $('poTab'+q).classList.toggle('on', q===k); });
+  KEYS.forEach(q=>$('poTab'+q).onclick=()=>show(q));
+  show(tab==='search' ? 'Search' : tab==='pdf' ? 'Pdf' : 'Params');
   $('mCancel').onclick=closeModal;
+  // Loading the repo-side credential files fills the fields AND saves right
+  // away (a missing file is reported without blocking the other one).
+  $('dkLoadFile').onclick=async()=>{
+    const got=[], errs=[];
+    try {
+      const c = await dkLoadCredentialFile();
+      $('dkId').value=c.id; $('dkSecret').value=c.secret;
+      if (c.proxy) $('dkProxy').value=c.proxy;
+      got.push('DigiKey');
+    } catch(err){ errs.push(String(err.message||err)); }
+    try {
+      const m = await msLoadCredentialFile();
+      $('msKey').value=m.key;
+      got.push('Mouser');
+    } catch(err){ errs.push(String(err.message||err)); }
+    if (got.length){
+      dkSaveConfig($('dkId').value.trim(), $('dkSecret').value.trim(), $('dkProxy').value.trim());
+      msSaveConfig($('msKey').value.trim());
+    }
+    toast(got.length ? got.join(' + ')+' credentials loaded from file' : errs.join(' · '));
+  };
   $('mOk').onclick=()=>{
     commit();
     S.meta.title = $('poTitle').value.trim();
     S.project = { client:$('poClient').value.trim(), designer:$('poDesigner').value.trim(),
       date:$('poDate').value.trim(), initials:$('poInitials').value.trim(),
       pageSize:$('poSize').value, orientation:$('poOrient').value };
+    dkSaveConfig($('dkId').value.trim(), $('dkSecret').value.trim(), $('dkProxy').value.trim());
+    msSaveConfig($('msKey').value.trim());
+    saveSearchOptions({ digikey:$('psUseDk').checked, mouser:$('psUseMs').checked, currency:$('psCur').value });
     closeModal(); render(); toast('Project options saved');
   };
 }

@@ -40,15 +40,32 @@ check('the PDF engine is vendored and loaded before app.js',
   const btn=doc.getElementById('btnProjOpts');
   check('the System panel offers a Project Options button', !!btn);
   btn.onclick();
-  check('the modal opens with every title-block field',
+  check('the modal opens with three sub-windows: parameters, PDF export, PN search',
     doc.getElementById('modalTitle').textContent==='Project Options' &&
-    ['poTitle','poClient','poDesigner','poDate','poInitials'].every(id=>doc.getElementById(id)));
-  const fset=doc.querySelector('#modalBody fieldset.subpane');
-  check('a "PDF Export Options" sub-window holds size and orientation',
-    !!fset && /PDF Export Options/i.test(fset.querySelector('legend').textContent) &&
-    !!doc.getElementById('poSize') && !!doc.getElementById('poOrient'));
+    ['poTabParams','poTabPdf','poTabSearch'].every(id=>!!doc.getElementById(id)) &&
+    ['poPaneParams','poPanePdf','poPaneSearch'].every(id=>!!doc.getElementById(id)));
+  check('"Project parameters" is the default sub-window, holding every title-block field',
+    doc.getElementById('poPaneParams').style.display!=='none' &&
+    doc.getElementById('poPanePdf').style.display==='none' &&
+    doc.getElementById('poPaneSearch').style.display==='none' &&
+    ['poTitle','poClient','poDesigner','poDate','poInitials'].every(id=>
+      !!doc.getElementById(id) && !!doc.getElementById(id).closest('#poPaneParams')));
+  doc.getElementById('poTabPdf').onclick();
+  check('the "PDF export options" sub-window holds size and orientation',
+    doc.getElementById('poPanePdf').style.display!=='none' &&
+    doc.getElementById('poPaneParams').style.display==='none' &&
+    !!doc.getElementById('poSize').closest('#poPanePdf') &&
+    !!doc.getElementById('poOrient').closest('#poPanePdf'));
   check('…defaulting to A3 horizontal',
     doc.getElementById('poSize').value==='A3' && doc.getElementById('poOrient').value==='landscape');
+  doc.getElementById('poTabSearch').onclick();
+  check('the "PN search options" sub-window holds distributors, currency and the API keys',
+    doc.getElementById('poPaneSearch').style.display!=='none' &&
+    ['psUseDk','psUseMs','psCur','dkId','dkSecret','msKey','dkProxy','dkLoadFile'].every(id=>
+      !!doc.getElementById(id) && !!doc.getElementById(id).closest('#poPaneSearch')));
+  doc.getElementById('poTabParams').onclick();
+  check('tabs switch back and forth', doc.getElementById('poPaneParams').style.display!=='none' &&
+    doc.getElementById('poPaneSearch').style.display==='none');
   doc.getElementById('poClient').value='ACME Robotics';
   doc.getElementById('poDesigner').value='NX Design';
   doc.getElementById('poDate').value='10/08/2026';
