@@ -17,7 +17,7 @@ window.__T={get S(){return S;},loadFromContract,render,dkNormalizeProducts,dkSea
  dkConfig,dkSaveConfig,buildSessionJSON,nodeById,findFreeSpot,openReplaceICModal,renameNodeId,
  nodePortRowsFor,isHvNet,shortDatasheetLabel,icSelected,undo,GRID:GRID,
  msNormalizeParts,msSearch,msConfig,msSaveConfig,mergePartResults,resolveDatasheetFor,
- msParsePrice,searchOptions,saveSearchOptions};`);
+ msParsePrice,searchOptions,saveSearchOptions,msCurrencyNote};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -61,6 +61,11 @@ const MFIX={Errors:[],SearchResults:{NumberOfResult:3,Parts:[
    Availability:'5 In Stock', PriceBreaks:[]}
 ]}};
 const MCRED=JSON.parse(fs.readFileSync('credential/mouser_credentials.json','utf8'));
+// A euro-account answer: Mouser's Search API pegs prices to the key's account,
+// so this is what a mouser.es key returns even when USD was asked for.
+const EUROFIX={Errors:[],SearchResults:{NumberOfResult:1,Parts:[
+  {ManufacturerPartNumber:'EU-PART', Manufacturer:'ST', Description:'Reg',
+   Availability:'7 In Stock', PriceBreaks:[{Quantity:1,Price:'0,62 €',Currency:'EUR'}]}]}};
 
 /* ---- Mouser normalization + the two-house merge (pure) ---- */
 {
@@ -116,6 +121,7 @@ const MCRED=JSON.parse(fs.readFileSync('credential/mouser_credentials.json','utf
 /* ---- OAuth + search plumbing over a mocked network ---- */
 {
   let calls=[]; const reqs=[];
+  let MOUSER_PAYLOAD=MFIX;   // swapped to EUROFIX to simulate a euro-pegged key
   const CREDFILE=JSON.parse(fs.readFileSync('credential/digikey_credentials.json','utf8'));
   window.fetch=async (url,opts)=>{
     calls.push(url); reqs.push({ url:String(url), opts });
@@ -126,7 +132,7 @@ const MCRED=JSON.parse(fs.readFileSync('credential/mouser_credentials.json','utf
     if (String(url).includes('/oauth2/token'))
       return { ok:true, json:async()=>({ access_token:'TOK', expires_in:600 }) };
     if (String(url).includes('api.mouser.com'))
-      return { ok:true, json:async()=>MFIX };
+      return { ok:true, json:async()=>MOUSER_PAYLOAD };
     // DigiKey keyword search asked about the Mouser-only part: answer with an
     // exact match so the datasheet-borrowing path has something to borrow.
     if (opts && opts.body && String(opts.body).includes('MS-MID'))
@@ -230,25 +236,33 @@ const MCRED=JSON.parse(fs.readFileSync('credential/mouser_credentials.json','utf
         pp('$0.0821')===0.0821 && pp('1,234')===1234);
       check('an unparseable price is null, never NaN', pp('')===null && pp('call us')===null);
 
-      const eurofix={Errors:[],SearchResults:{NumberOfResult:1,Parts:[
-        {ManufacturerPartNumber:'EU-PART', Manufacturer:'ST', Description:'Reg',
-         Availability:'7 In Stock', PriceBreaks:[{Quantity:1,Price:'0,62 €',Currency:'EUR'}]}]}};
-      const eu=T.msNormalizeParts(eurofix,'EUR');
+      const eu=T.msNormalizeParts(EUROFIX,'EUR');
       check('a euro response normalizes to 0.62 EUR', eu[0].price===0.62 && eu[0].currency==='EUR');
       T.dkRenderResults(eu);
       check('…and renders with the € symbol', doc.querySelector('.dkrow .dkprice').textContent==='€0.6200');
 
       T.saveSearchOptions({digikey:true,mouser:true,currency:'EUR'});
       await T.msSearch('ldo');
-      check('Mouser is asked for euros explicitly (currencyCode=EUR)',
-        reqs[reqs.length-1].url.includes('currencyCode=EUR'));
+      check('Mouser is asked for euros explicitly (currencyCode=EUR + countryCode=ES)',
+        reqs[reqs.length-1].url.includes('currencyCode=EUR') &&
+        reqs[reqs.length-1].url.includes('countryCode=ES'));
       await T.dkSearch('ldo');
       check('DigiKey is asked for euros too (locale currency header)',
         reqs[reqs.length-1].opts.headers['X-DIGIKEY-Locale-Currency']==='EUR');
       T.saveSearchOptions({digikey:true,mouser:true,currency:'USD'});
       await T.msSearch('ldo');
-      check('back to dollars by default (currencyCode=USD)',
-        reqs[reqs.length-1].url.includes('currencyCode=USD'));
+      check('back to dollars by default (currencyCode=USD + countryCode=US)',
+        reqs[reqs.length-1].url.includes('currencyCode=USD') &&
+        reqs[reqs.length-1].url.includes('countryCode=US'));
+
+      // Mouser has NO search currency parameter — a euro-pegged key answers in
+      // EUR whatever was asked. The mismatch is called out, never papered over.
+      check('a currency mismatch produces an honest note naming the fix',
+        /Mouser answered in EUR/.test(T.msCurrencyNote(eu,'USD')) &&
+        /www\.mouser\.com/.test(T.msCurrencyNote(eu,'USD')));
+      check('…and matching answers produce no note',
+        T.msCurrencyNote(eu,'EUR')==='' && T.msCurrencyNote([],'USD')==='' &&
+        T.msCurrencyNote(T.msNormalizeParts(MFIX),'USD')==='');
     }
 
     /* ---- Mouser search plumbing (mocked network) ---- */
@@ -306,6 +320,17 @@ const MCRED=JSON.parse(fs.readFileSync('credential/mouser_credentials.json','utf
       check('both OFF: the search refuses and points at the settings',
         /turned off/i.test(doc.getElementById('dkStatus').textContent) &&
         /Part search API settings/.test(doc.getElementById('dkStatus').textContent));
+
+      /* ---- a euro-pegged key asked for USD: honest note, true symbols ---- */
+      MOUSER_PAYLOAD=EUROFIX;
+      T.saveSearchOptions({digikey:false,mouser:true,currency:'USD'});
+      await doc.getElementById('dkGo').onclick();
+      check('the search status calls out the Mouser currency mismatch',
+        /Mouser answered in EUR/.test(doc.getElementById('dkStatus').textContent) &&
+        /www\.mouser\.com/.test(doc.getElementById('dkStatus').textContent));
+      check('…while the rows keep wearing the TRUE currency, never mislabeled',
+        doc.querySelector('.dkrow .dkprice').textContent==='€0.6200');
+      MOUSER_PAYLOAD=MFIX;
       T.saveSearchOptions({digikey:true,mouser:true,currency:'USD'});
     }
 
