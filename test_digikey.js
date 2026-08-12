@@ -84,6 +84,19 @@ const MCRED=JSON.parse(fs.readFileSync('credential/mouser_credentials.json','utf
     merged.map(r=>r.src).join(',')==='Mouser,DigiKey,Mouser,DigiKey,DigiKey');
   check('the repo carries the Mouser API key like the DigiKey credentials',
     MCRED.api_key==='7b7a3d60-7a68-4328-9f8c-9a16b02e7f3c');
+
+  // The key ships with the app: nothing to paste before the first search.
+  window.localStorage.removeItem('mouser_api_key');
+  check('with nothing stored, the Mouser key defaults to the account key',
+    T.msConfig().key===MCRED.api_key);
+  check('the built-in default matches credential/mouser_credentials.json — the two cannot drift',
+    fs.readFileSync('app.js','utf8').includes("const MS_DEFAULT_KEY = '"+MCRED.api_key+"'"));
+  T.msSaveConfig('');
+  check('emptying the field on purpose is honoured — the default does not creep back',
+    T.msConfig().key==='');
+  T.msSaveConfig('other-account-key');
+  check('a key typed into the settings overrides the built-in one', T.msConfig().key==='other-account-key');
+  window.localStorage.removeItem('mouser_api_key');
 }
 
 /* ---- a Mouser pick without a datasheet borrows DigiKey's ---- */
@@ -135,7 +148,9 @@ const MCRED=JSON.parse(fs.readFileSync('credential/mouser_credentials.json','utf
 
     /* ---- modal: render + click-to-autofill ---- */
     doc.getElementById('btnAddIC').onclick();
-    check('Add IC modal shows the DigiKey search box', !!doc.getElementById('dkQuery') && !!doc.getElementById('dkGo'));
+    check('Add IC modal shows the part search box', !!doc.getElementById('dkQuery') && !!doc.getElementById('dkGo'));
+    check('the settings pane opens with the Mouser key already in the field',
+      doc.getElementById('msKey').value===MCRED.api_key);
     T.dkRenderResults(T.dkNormalizeProducts(FIX));
     const rows=[...doc.querySelectorAll('.dkrow')];
     check('one row per part, in stock order', rows.length===3 &&
