@@ -258,6 +258,15 @@ button.warn:hover{background:var(--danger-hover);border-color:var(--warn)}
 /* Auto IC Selection progress log inside the modal */
 .ailog{font-family:var(--mono);font-size:11px;line-height:1.8;max-height:300px;overflow-y:auto;color:var(--ink-soft)}
 
+/* IC cost breakdown table (System panel → total → modal) */
+.costtbl{width:100%;border-collapse:collapse;font-size:11.5px}
+.costtbl th{font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-soft);
+  text-align:left;padding:4px 8px;border-bottom:1.5px solid var(--line)}
+.costtbl td{padding:4px 8px;border-bottom:1px solid var(--line)}
+.costtbl .num{text-align:right;font-family:var(--mono)}
+.costtbl tr.dim td{color:var(--ink-soft);opacity:.65}
+.costtbl tfoot td{border-top:2px solid var(--ink);border-bottom:none;font-weight:600}
+
 /* ---------- modal ---------- */
 .overlay{position:fixed;inset:0;background:var(--overlay);display:none;align-items:center;justify-content:center;z-index:40}
 .overlay.open{display:flex}

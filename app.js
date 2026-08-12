@@ -2934,6 +2934,50 @@ function allGroupsOptions(currentId){
     .join('');
 }
 
+/* ---------- accumulated IC cost ----------
+   One piece per IC, qty-1 unit price from its selected part card. Cards can
+   in principle carry different currencies (per-currency Mouser keys), so the
+   total is kept per currency and printed joined ("$12.34 + €0.62"). */
+function icCostRows(){
+  return S.nodes.filter(n=>n.kind==='ic').map(n=>({
+    label: n.label,
+    pn: n.data.dk ? n.data.dk.pn : '',
+    price: (n.data.dk && n.data.dk.price!=null) ? n.data.dk.price : null,
+    currency: (n.data.dk && n.data.dk.currency) || 'USD',
+    src: n.data.dk ? (n.data.dk.src||'DigiKey') : '' }));
+}
+function icCostTotal(){
+  const t = {};
+  for (const r of icCostRows()) if (r.price!=null) t[r.currency] = (t[r.currency]||0) + r.price;
+  return t;
+}
+function fmtCostTotal(t){
+  const ks = Object.keys(t);
+  return ks.length ? ks.map(c=>dkFmtPrice(t[c], c)).join(' + ') : '—';
+}
+// The full list behind the number: every IC with its picked part, house and
+// unit price — priced cards first (most expensive on top), pending ones after.
+function openIcCostModal(){
+  const rows = icCostRows().sort((a,b)=> ((b.price??-1)-(a.price??-1)) || a.label.localeCompare(b.label));
+  const priced = rows.filter(r=>r.price!=null).length;
+  openModal('IC cost — full list', `
+    <table class="costtbl">
+      <thead><tr><th>Block</th><th>Selected part</th><th>Source</th><th class="num">Unit price</th></tr></thead>
+      <tbody>${rows.map(r=>`<tr${r.price==null?' class="dim"':''}>
+        <td>${esc(r.label)}</td>
+        <td>${r.pn ? esc(r.pn) : '<i>not selected</i>'}</td>
+        <td>${esc(r.src||'—')}</td>
+        <td class="num">${r.price!=null ? dkFmtPrice(r.price, r.currency) : '—'}</td></tr>`).join('')}
+      </tbody>
+      <tfoot><tr><td colspan="3">Total — ${priced} of ${rows.length} IC${rows.length===1?'':'s'} priced</td>
+        <td class="num">${fmtCostTotal(icCostTotal())}</td></tr></tfoot>
+    </table>
+    <p class="hint">One piece per IC, qty-1 unit prices from the selected part cards. ICs without a selected part
+      carry no price — select them (or run Auto IC Selection) to complete the total.</p>
+  `, `<button class="primary" id="mCancel">Close</button>`);
+  $('mCancel').onclick = closeModal;
+}
+
 function renderInspector(){
   inspOnRender();   // unpinned panel: show while something is selected, then fold away
   const eye=$('insEyebrow'), title=$('insTitle'), body=$('insBody');
@@ -2946,6 +2990,8 @@ function renderInspector(){
     body.innerHTML = `
       <p>${esc((S.meta.description||'').slice(0,420))}${descTruncated?'… ':''}${descTruncated?'<button class="linklike" id="btnFullDesc">Read full description</button>':''}</p>
       <div class="kv"><label>Blocks</label><div class="val">${S.nodes.filter(n=>n.kind==='ic').length} ICs · ${S.nodes.filter(n=>n.kind==='external').length} external</div></div>
+      <div class="kv"><label>IC cost (total)</label><div class="val">
+        <button class="linklike" id="btnIcCost" title="Click for the full list of ICs with their prices">${esc(fmtCostTotal(icCostTotal()))}</button></div></div>
       <div class="kv"><label>Connections</label><div class="val">${S.edges.length} edges · ${S.edges.reduce((s,e)=>s+e.nets.length,0)} nets</div></div>
       <div class="kv"><label>Groups</label><div class="val">${groups.length} shown${ungrouped&&ungrouped.members.length?` · ${ungrouped.members.length} ungrouped`:''}</div></div>
       <div class="btnrow"><button id="btnProjOpts">Project Options</button></div>
@@ -2953,6 +2999,7 @@ function renderInspector(){
         ? 'System-level view — each block is a functional group, derived automatically from the underlying connections. Select a group or a connection to inspect it, or double-click a group to open it. Drag a group to reposition it.'
         : 'Select a block or a connection to inspect it. Press <b>Delete</b> to remove the selection. Click "System" above to return to the top level.'}</p>`;
     $('btnProjOpts').onclick = openProjectOptionsModal;
+    $('btnIcCost').onclick = openIcCostModal;
     if (descTruncated) $('btnFullDesc').onclick = () => {
       openModal(S.meta.title||'System description',
         `<p style="white-space:pre-wrap;line-height:1.6">${esc(S.meta.description)}</p>`,
@@ -4181,6 +4228,15 @@ function newIcObstacles(){
    distributors. A quick pass for when speed beats judgement: the block's
    identity stays untouched (only the card is filled), the whole run is one
    undoable edit, and any card can still be replaced via Select IC or ✕. */
+// The pick rule, pure and testable: only the TOP 5 rows of the merged,
+// stock-sorted list are considered (deep-list offers are the low-stock ones),
+// anything out of stock is out — a part that cannot be bought is no
+// selection — and the cheapest priced survivor wins, stock as tie-break.
+function autoIcPick(rows){
+  const pool = (rows||[]).filter(r=>r.stock>0).slice(0,5).filter(r=>r.price!=null);
+  if (!pool.length) return null;
+  return pool.slice().sort((a,b)=> a.price-b.price || b.stock-a.stock || a.pn.localeCompare(b.pn))[0];
+}
 async function autoIcSelection(){
   const targets = S.nodes.filter(n=>n.kind==='ic' && !icSelected(n));
   const so = searchOptions();
@@ -4201,13 +4257,12 @@ async function autoIcSelection(){
       so.mouser  ? msSearch(pn) : Promise.resolve(null) ]);
     const rows = mergePartResults(dk.status==='fulfilled'?dk.value:null,
                                   ms.status==='fulfilled'?ms.value:null, so.currency);
-    const priced = rows.filter(r=>r.price!=null);
-    if (!priced.length){
+    const best = autoIcPick(rows);
+    if (!best){
       skipped.push(pn);
-      line.textContent = pn+' — no priced offers, skipped';
+      line.textContent = pn+' — no in-stock priced offers, skipped';
       continue;
     }
-    const best = priced.slice().sort((a,b)=> a.price-b.price || b.stock-a.stock || a.pn.localeCompare(b.pn))[0];
     n.data.dk = { ...best };
     // A Mouser winner has no datasheet — the DigiKey rows of this very search
     // usually do, so borrow locally before falling back to the async lookup.
@@ -4234,8 +4289,9 @@ $('btnAutoIC').onclick=()=>{
     <p>This searches ${where} for each of the <b>${targets.length} IC${targets.length>1?'s':''}</b> without a
       selected part and assigns the <b>CHEAPEST priced offer</b> found — no engineering judgement involved.
       Are you sure?</p>
-    <p class="hint">Cheapest by unit price, stock as the tie-break. Block names stay as they are — the chosen offer
-      lands on the part card, where "✕" or Select IC… can still replace it. The whole pass is one undoable edit (Ctrl+Z).</p>
+    <p class="hint">Cheapest by unit price among the <b>top 5 in-stock offers</b> of each search (stock as the
+      tie-break) — an out-of-stock part is never picked. Block names stay as they are — the chosen offer lands on
+      the part card, where "✕" or Select IC… can still replace it. The whole pass is one undoable edit (Ctrl+Z).</p>
   `, `<button id="mCancel">Cancel</button><button class="primary" id="mOk">Assign cheapest</button>`);
   $('mCancel').onclick=closeModal;
   $('mOk').onclick=()=>autoIcSelection();
