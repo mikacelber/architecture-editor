@@ -16,7 +16,8 @@ window.eval(fs.readFileSync('app.js','utf8')+`
 window.__T={get S(){return S;},loadFromContract,render,dkNormalizeProducts,dkSearch,dkRenderResults,
  dkConfig,dkSaveConfig,buildSessionJSON,nodeById,findFreeSpot,openReplaceICModal,renameNodeId,
  nodePortRowsFor,isHvNet,shortDatasheetLabel,icSelected,undo,GRID:GRID,
- msNormalizeParts,msSearch,msConfig,msSaveConfig,mergePartResults,resolveDatasheetFor};`);
+ msNormalizeParts,msSearch,msConfig,msSaveConfig,mergePartResults,resolveDatasheetFor,
+ msParsePrice,searchOptions,saveSearchOptions};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -149,8 +150,8 @@ const MCRED=JSON.parse(fs.readFileSync('credential/mouser_credentials.json','utf
     /* ---- modal: render + click-to-autofill ---- */
     doc.getElementById('btnAddIC').onclick();
     check('Add IC modal shows the part search box', !!doc.getElementById('dkQuery') && !!doc.getElementById('dkGo'));
-    check('the settings pane opens with the Mouser key already in the field',
-      doc.getElementById('msKey').value===MCRED.api_key);
+    check('the IC form carries no inline credential fields — settings live in ONE place',
+      !doc.getElementById('dkCfgPane') && !doc.getElementById('msKey') && !doc.getElementById('dkSave'));
     T.dkRenderResults(T.dkNormalizeProducts(FIX));
     const rows=[...doc.querySelectorAll('.dkrow')];
     check('one row per part, in stock order', rows.length===3 &&
@@ -199,13 +200,56 @@ const MCRED=JSON.parse(fs.readFileSync('credential/mouser_credentials.json','utf
         /shortDatasheetLabel\(n\.data\.DatasheetUrl\)/.test(src));
     }
 
-    /* ---- repo-side credential files, selectable from the settings pane ---- */
-    check('settings pane offers loading the credential/ files', !!doc.getElementById('dkLoadFile'));
+    /* ---- "Part search API settings" → Project Options › PN search options ---- */
+    doc.getElementById('dkCfgOpen').onclick();
+    check('the IC form\'s settings link opens Project Options straight at "PN search options"',
+      doc.getElementById('modalTitle').textContent==='Project Options' &&
+      doc.getElementById('poPaneSearch').style.display!=='none' &&
+      doc.getElementById('poPaneParams').style.display==='none');
+    check('both distributors are ON by default and the currency is USD',
+      doc.getElementById('psUseDk').checked && doc.getElementById('psUseMs').checked &&
+      doc.getElementById('psCur').value==='USD');
+    check('the pane opens with the Mouser key already in the field',
+      doc.getElementById('msKey').value===MCRED.api_key);
+    check('…and offers loading the credential/ files', !!doc.getElementById('dkLoadFile'));
     await doc.getElementById('dkLoadFile').onclick();
     check('loading the files fills and saves the DigiKey credentials',
       T.dkConfig().id===CREDFILE.client_id && T.dkConfig().secret===CREDFILE.client_secret);
     check('…and the Mouser key in the same click', T.msConfig().key===MCRED.api_key);
     check('the credential file carries both keys', !!CREDFILE.client_id && !!CREDFILE.client_secret);
+    doc.getElementById('modalClose').onclick();
+    doc.getElementById('btnAddIC').onclick();   // back to the IC form for the blocks below
+
+    /* ---- currency: the euro-format bug is dead, both houses are asked ---- */
+    {
+      const pp=T.msParsePrice;
+      check('the euro-price bug is dead: "0,62 €" parses to 0.62, not 62',
+        pp('0,62 €')===0.62 && pp('2,34 €')===2.34);
+      check('US and European thousand/decimal formats both parse',
+        pp('$1,234.56')===1234.56 && pp('1.234,56 €')===1234.56 &&
+        pp('$0.0821')===0.0821 && pp('1,234')===1234);
+      check('an unparseable price is null, never NaN', pp('')===null && pp('call us')===null);
+
+      const eurofix={Errors:[],SearchResults:{NumberOfResult:1,Parts:[
+        {ManufacturerPartNumber:'EU-PART', Manufacturer:'ST', Description:'Reg',
+         Availability:'7 In Stock', PriceBreaks:[{Quantity:1,Price:'0,62 €',Currency:'EUR'}]}]}};
+      const eu=T.msNormalizeParts(eurofix,'EUR');
+      check('a euro response normalizes to 0.62 EUR', eu[0].price===0.62 && eu[0].currency==='EUR');
+      T.dkRenderResults(eu);
+      check('…and renders with the € symbol', doc.querySelector('.dkrow .dkprice').textContent==='€0.6200');
+
+      T.saveSearchOptions({digikey:true,mouser:true,currency:'EUR'});
+      await T.msSearch('ldo');
+      check('Mouser is asked for euros explicitly (currencyCode=EUR)',
+        reqs[reqs.length-1].url.includes('currencyCode=EUR'));
+      await T.dkSearch('ldo');
+      check('DigiKey is asked for euros too (locale currency header)',
+        reqs[reqs.length-1].opts.headers['X-DIGIKEY-Locale-Currency']==='EUR');
+      T.saveSearchOptions({digikey:true,mouser:true,currency:'USD'});
+      await T.msSearch('ldo');
+      check('back to dollars by default (currencyCode=USD)',
+        reqs[reqs.length-1].url.includes('currencyCode=USD'));
+    }
 
     /* ---- Mouser search plumbing (mocked network) ---- */
     {
@@ -245,6 +289,24 @@ const MCRED=JSON.parse(fs.readFileSync('credential/mouser_credentials.json','utf
       await new Promise(res=>setTimeout(res,20));
       check('the datasheet arrives from DigiKey for that exact part number',
         doc.getElementById('fUrl').value==='https://x/ms-mid-from-dk.pdf');
+
+      /* ---- the distributor toggles steer which houses a search asks ---- */
+      T.saveSearchOptions({digikey:false,mouser:true,currency:'USD'});
+      await doc.getElementById('dkGo').onclick();
+      const rowsMs=[...doc.querySelectorAll('.dkrow')];
+      check('DigiKey OFF: only Mouser rows come back',
+        rowsMs.length===2 && rowsMs.every(b=>b.querySelector('.dksrc').textContent==='Mouser'));
+      T.saveSearchOptions({digikey:true,mouser:false,currency:'USD'});
+      await doc.getElementById('dkGo').onclick();
+      const rowsDk=[...doc.querySelectorAll('.dkrow')];
+      check('Mouser OFF: only DigiKey rows come back',
+        rowsDk.length===3 && rowsDk.every(b=>b.querySelector('.dksrc').textContent==='DigiKey'));
+      T.saveSearchOptions({digikey:false,mouser:false,currency:'USD'});
+      await doc.getElementById('dkGo').onclick();
+      check('both OFF: the search refuses and points at the settings',
+        /turned off/i.test(doc.getElementById('dkStatus').textContent) &&
+        /Part search API settings/.test(doc.getElementById('dkStatus').textContent));
+      T.saveSearchOptions({digikey:true,mouser:true,currency:'USD'});
     }
 
     /* ---- a new IC never lands on top of an existing block ---- */
@@ -390,8 +452,7 @@ const MCRED=JSON.parse(fs.readFileSync('credential/mouser_credentials.json','utf
     {
       const src=fs.readFileSync('app.js','utf8');
       check('the search UI names both houses and the settings pane is provider-neutral',
-        /Search DigiKey \+ Mouser by part number/.test(src) && /Part search API settings/.test(src) &&
-        /Searching DigiKey and Mouser/.test(src));
+        /Search DigiKey \+ Mouser by part number/.test(src) && /Part search API settings/.test(src));
       check('no warning claims DigiKey is the only house any more',
         !/Part not selected on DigiKey/.test(src) && !/the DigiKey part selected/.test(src) &&
         !/needs its DigiKey selection/.test(src));
