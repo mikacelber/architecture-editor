@@ -13,7 +13,7 @@ window.Element.prototype.setPointerCapture=()=>{};
 window.eval(fs.readFileSync('app.js','utf8')+`
 window.__T={get S(){return S;},loadFromContract,render,dkNormalizeProducts,dkSearch,dkRenderResults,
  dkConfig,dkSaveConfig,buildSessionJSON,nodeById,findFreeSpot,openReplaceICModal,renameNodeId,
- nodePortRowsFor,isHvNet,shortDatasheetLabel,GRID:GRID};`);
+ nodePortRowsFor,isHvNet,shortDatasheetLabel,icSelected,GRID:GRID};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -139,20 +139,71 @@ const FIX={Products:[
       check('the dodged spot still sits on the grid', dodged.x%T.GRID===0 && dodged.y%T.GRID===0);
     }
 
-    /* ---- Replace IC: identity swaps, engineering judgement carries over ---- */
+    /* ---- Select IC: warnings until picked, identity swaps, judgement carries ---- */
     {
       const old=S.nodes.find(n=>n.kind==='ic' && S.edges.some(e=>e.source===n.id||e.target===n.id));
       const oldId=old.id, oldDesc=old.data.description;
       const touching=S.edges.filter(e=>e.source===oldId||e.target===oldId).length;
       const rowsBefore=T.nodePortRowsFor(oldId).length;
       const grp=S.groups.find(g=>g.members.includes(oldId));
-      // the inspector offers Replace ABOVE Delete
+
+      // imported ICs are unselected proposals: everything warns
+      check('an imported IC counts as NOT selected', !T.icSelected(old));
+      check('the status bar counts the unselected ICs',
+        /IC[s]? without a selected part/.test(doc.getElementById('statusBar').innerHTML));
+      S.openGroup=grp.id; T.render();
+      const icNode=[...doc.querySelectorAll(`#nodesG g[data-nid]`)].find(x=>x.dataset.nid===oldId);
+      check('the unselected IC block wears the amber warning outline and tag',
+        icNode.innerHTML.includes('var(--warn)') && icNode.innerHTML.includes('Part not selected'));
+      S.openGroup=null; T.render();
+      const grpNode=[...doc.querySelectorAll(`#nodesG g[data-nid]`)].find(x=>x.dataset.nid===grp.id);
+      check('its group block warns at the top level too',
+        grpNode.innerHTML.includes('var(--warn)') && /need[s]? the DigiKey part selected/.test(grpNode.innerHTML));
+
+      // the inspector leads with Select IC (right under the name), Replace is gone
       S.sel={ type:'node', id:oldId }; T.render();
       const bodyHtml=doc.getElementById('insBody').innerHTML;
-      check('the IC inspector offers "Replace IC…" above the delete button',
-        bodyHtml.indexOf('btnReplaceIC')>=0 && bodyHtml.indexOf('btnReplaceIC')<bodyHtml.indexOf('btnDelNode'));
-      T.openReplaceICModal(old);
-      check('the replace form carries over function and rationale (editable)',
+      check('the inspector leads with "Select IC…" and the pending warning',
+        bodyHtml.indexOf('btnSelectIC')>=0 &&
+        bodyHtml.indexOf('btnSelectIC')<bodyHtml.indexOf('Type') &&
+        /Part not selected yet/.test(bodyHtml));
+      check('the redundant "Replace IC…" button is gone', !bodyHtml.includes('btnReplaceIC'));
+
+      // Select IC opens the DigiKey picker; PICKING a result makes it selected
+      doc.getElementById('btnSelectIC').onclick();
+      check('Select IC opens the picker prefilled with the part',
+        doc.getElementById('modalTitle').textContent.startsWith('Select IC') &&
+        doc.getElementById('fPN').value===(old.data.ic_part_number||oldId));
+      T.dkRenderResults(T.dkNormalizeProducts(FIX));
+      doc.querySelector('.dkrow').onclick();          // pick HI-STOCK from the results
+      doc.getElementById('fDesc').value=oldDesc;
+      doc.getElementById('mOk').onclick();
+      const picked=T.nodeById('HI-STOCK');
+      check('picking a result selects the part (dk data stored, price included)',
+        !!picked && T.icSelected(picked) && picked.data.dk.pn==='HI-STOCK' && picked.data.dk.price===0.5321);
+      S.sel={ type:'node', id:'HI-STOCK' }; T.render();
+      const body2=doc.getElementById('insBody').innerHTML;
+      check('the chosen part shows under Select IC like a search result',
+        body2.includes('dkchosen') && body2.includes('HI-STOCK') && body2.includes('$0.5321') &&
+        !/Part not selected yet/.test(body2));
+      S.openGroup=grp.id; T.render();
+      const icNode2=doc.querySelector('#nodesG g[data-nid="HI-STOCK"]');
+      check('…and its block warning is gone', !icNode2.innerHTML.includes('Part not selected'));
+      S.openGroup=null; T.render();
+      check('the selection rides the session export',
+        T.buildSessionJSON().nodes.find(n=>n.id==='HI-STOCK').data.dk.pn==='HI-STOCK');
+      // put the block back for the identity-swap checks below
+      T.openReplaceICModal(T.nodeById('HI-STOCK'));
+      doc.getElementById('fPN').value=oldId;
+      doc.getElementById('fType').value=old.data.ic_type||'x';
+      doc.getElementById('fDesc').value=oldDesc||'x';
+      doc.getElementById('mOk').onclick();
+      const back=T.nodeById(oldId);
+      check('hand-typing a different part number drops the selection again',
+        !!back && !T.icSelected(back));
+
+      T.openReplaceICModal(back);
+      check('the select form carries over function and rationale (editable)',
         doc.getElementById('fDesc').value===oldDesc &&
         doc.getElementById('fPN').value===(old.data.ic_part_number||oldId));
       doc.getElementById('fPN').value='NEWPART-123';
