@@ -3141,11 +3141,17 @@ function renderInspector(){
       // "Select IC" sits right under the block's name: picking the physical
       // part on DigiKey is THE next action for an imported proposal. Once
       // picked, the chosen part shows beneath it exactly like a search result.
-      const dk = n.data.dk;
+      const dk = n.data.dk, picked = icSelected(n);
+      // Pending selection is the block's loudest state, so the button and its
+      // note wear the warning color too — the amber on the block, on its
+      // group and here are one and the same signal. The chosen card carries a
+      // "✕" that clears the pick and brings the warnings straight back.
       const selectSection = `
-        <div class="btnrow" style="margin-top:0;margin-bottom:10px"><button id="btnSelectIC">Select IC…</button></div>
-        ${icSelected(n) ? `
+        <div class="btnrow" style="margin-top:0;margin-bottom:10px">
+          <button id="btnSelectIC"${picked?'':' class="warn"'}>Select IC…</button></div>
+        ${picked ? `
         <div class="dkchosen">
+          <button class="x" id="btnClearIC" title="Remove this part — the block goes back to needing a selection">✕</button>
           <span class="dkpn">${esc(dk.pn)}</span><span class="dkman">${esc(dk.man||'')}</span>
           <span class="dkdesc">${esc(dk.desc||'')}</span>
           <span class="dkstock">${dkFmtStock(dk.stock)} in stock</span><span class="dkprice">${dkFmtPrice(dk.price)}</span>
@@ -3177,6 +3183,8 @@ function renderInspector(){
     $('fSide').onchange=()=>{ n.hvSide = $('fSide').value || undefined; render(); };
     const ff=$('fFlip'); if (ff) ff.onchange=()=>{ commit(); n.hvFlip = ff.checked || undefined; render(); };
     const selIc=$('btnSelectIC'); if (selIc) selIc.onclick=()=>openReplaceICModal(n);
+    const clrIc=$('btnClearIC'); if (clrIc) clrIc.onclick=()=>{
+      commit(); delete n.data.dk; render(); toast('Part removed — this IC needs a selection again'); };
     const rp=$('btnResetNodePorts'); if (rp) rp.onclick=()=>{ commit(); resetGroupPortLayout(n.id); render(); };
     const del=$('btnDelNode'); if (del) del.onclick=()=>deleteNode(n.id);
     const anNet=$('anNet'), anGroup=$('anGroup');
