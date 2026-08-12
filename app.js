@@ -3801,6 +3801,22 @@ function dkUrl(path){
   const { proxy } = dkConfig();
   return proxy ? proxy + encodeURIComponent(DK_BASE+path) : DK_BASE+path;
 }
+// The body of a failed response usually names the ACTUAL reason (bad client,
+// quota, maintenance) — pull the most human line out of it, because a bare
+// HTTP status is undiagnosable from the search box.
+async function httpErrorDetail(res){
+  try {
+    const text = await res.text();
+    try {
+      const j = JSON.parse(text);
+      const m = j.error_description || j.ErrorMessage || j.detail || j.message || j.error
+        || (j.Errors && j.Errors[0] && (j.Errors[0].Message || j.Errors[0].Code));
+      if (m) return ' — '+String(m).slice(0,180);
+    } catch(_){ /* not JSON — fall through to plain text */ }
+    const t = text.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim();
+    return t ? ' — '+t.slice(0,180) : '';
+  } catch(_){ return ''; }
+}
 let _dkToken = null;   // { token, exp } — cached until shortly before expiry
 async function dkToken(){
   const { id, secret } = dkConfig();
@@ -3809,7 +3825,7 @@ async function dkToken(){
   const res = await fetch(dkUrl('/v1/oauth2/token'), { method:'POST',
     headers:{ 'Content-Type':'application/x-www-form-urlencoded' },
     body:`client_id=${encodeURIComponent(id)}&client_secret=${encodeURIComponent(secret)}&grant_type=client_credentials` });
-  if (!res.ok) throw new Error('DigiKey auth failed (HTTP '+res.status+')');
+  if (!res.ok) throw new Error('DigiKey auth failed (HTTP '+res.status+')'+await httpErrorDetail(res));
   const j = await res.json();
   _dkToken = { token: j.access_token, exp: Date.now() + (j.expires_in||600)*1000 };
   return _dkToken.token;
@@ -3839,7 +3855,7 @@ async function dkSearch(keyword){
       'X-DIGIKEY-Client-Id': dkConfig().id,
       'X-DIGIKEY-Locale-Site':'US', 'X-DIGIKEY-Locale-Currency':searchOptions().currency },
     body: JSON.stringify({ Keywords: keyword, Limit: 25, Offset: 0 }) });
-  if (!res.ok) throw new Error('DigiKey search failed (HTTP '+res.status+')');
+  if (!res.ok) throw new Error('DigiKey search failed (HTTP '+res.status+')'+await httpErrorDetail(res));
   return dkNormalizeProducts(await res.json());
 }
 const dkFmtStock = s => s.toLocaleString('en-US');
@@ -3962,7 +3978,7 @@ async function msSearchWith(key, keyword, cur){
   const res = await fetch(msUrl('/api/v1/search/partnumber?apiKey='+encodeURIComponent(key)), { method:'POST',
     headers:{ 'Content-Type':'application/json' },
     body: JSON.stringify({ SearchByPartRequest: { mouserPartNumber: keyword, partSearchOptions: '' } }) });
-  if (!res.ok) throw new Error('Mouser search failed (HTTP '+res.status+')');
+  if (!res.ok) throw new Error('Mouser search failed (HTTP '+res.status+')'+await httpErrorDetail(res));
   return msNormalizeParts(await res.json(), cur);
 }
 // "Invalid unique identifier" is Mouser's answer to a key that is not a valid
