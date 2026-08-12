@@ -168,6 +168,15 @@ const FIX={Products:[
         bodyHtml.indexOf('btnSelectIC')<bodyHtml.indexOf('Type') &&
         /Part not selected yet/.test(bodyHtml));
       check('the redundant "Replace IC…" button is gone', !bodyHtml.includes('btnReplaceIC'));
+      {
+        const css=fs.readFileSync('styles.css','utf8');
+        check('while pending, the button itself is amber like the block warning',
+          /<button id="btnSelectIC" class="warn"/.test(bodyHtml) &&
+          /button\.warn\{border-color:var\(--warn\);color:var\(--warn\)\}/.test(css));
+        // the panel's generic paragraph rule must not out-rank the warning
+        check('the pending note is amber too, not panel grey',
+          /#inspector \.body p\.icwarn[^{]*\{color:var\(--warn\)/.test(css));
+      }
 
       // Select IC opens the DigiKey picker; PICKING a result makes it selected
       doc.getElementById('btnSelectIC').onclick();
@@ -186,6 +195,8 @@ const FIX={Products:[
       check('the chosen part shows under Select IC like a search result',
         body2.includes('dkchosen') && body2.includes('HI-STOCK') && body2.includes('$0.5321') &&
         !/Part not selected yet/.test(body2));
+      check('once picked, the button drops the amber', !/id="btnSelectIC" class="warn"/.test(body2));
+      check('the chosen card carries a "✕" to drop the part', body2.includes('btnClearIC'));
       // the "✕" clears the pick and the warnings come straight back
       doc.getElementById('btnClearIC').onclick();
       check('clearing the part un-selects the IC again', !T.icSelected(T.nodeById('HI-STOCK')));
