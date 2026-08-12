@@ -17,7 +17,7 @@ window.__T={get S(){return S;},loadFromContract,render,dkNormalizeProducts,dkSea
  dkConfig,dkSaveConfig,buildSessionJSON,nodeById,findFreeSpot,openReplaceICModal,renameNodeId,
  nodePortRowsFor,isHvNet,shortDatasheetLabel,icSelected,undo,GRID:GRID,
  msNormalizeParts,msSearch,msConfig,msSaveConfig,mergePartResults,resolveDatasheetFor,
- msParsePrice,searchOptions,saveSearchOptions,msCurrencyNote};`);
+ msParsePrice,searchOptions,saveSearchOptions,msCurrencyNote,autoIcPick,icCostTotal,fmtCostTotal};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -114,6 +114,22 @@ const EUROFIX={Errors:[],SearchResults:{NumberOfResult:1,Parts:[
   check('a legacy single stored key is read as the EUR key it always was',
     T.msConfig().eur==='legacy-eur-key' && T.msConfig().usd===(MCRED.api_key_usd||''));
   ['mouser_api_key','mouser_api_key_usd','mouser_api_key_eur'].forEach(k=>window.localStorage.removeItem(k));
+}
+
+/* ---- Auto IC pick rule: top-5 window, in-stock only, then cheapest ---- */
+{
+  const R=(pn,stock,price)=>({pn,stock,price,currency:'USD',src:'DigiKey',man:'',desc:'',datasheet:''});
+  const pick=T.autoIcPick;
+  check('an out-of-stock offer is never picked, however cheap',
+    pick([R('A',0,0.01),R('B',50,1.5)]).pn==='B');
+  check('only the top 5 stock-sorted rows are considered — a cheap 6th is ignored',
+    pick([R('r1',900,5),R('r2',800,5),R('r3',700,5),R('r4',600,5),R('r5',500,4),R('r6',400,0.01)]).pn==='r5');
+  check('within the window the cheapest priced offer wins, stock breaks price ties',
+    pick([R('x',100,2),R('y',90,1),R('z',80,1)]).pn==='y');
+  check('unpriced rows cannot win', pick([R('a',100,null),R('b',50,3)]).pn==='b');
+  check('nothing in stock at all → no pick', pick([R('a',0,1),R('b',0,2)])===null && pick([])===null);
+  check('cost totals run per currency and an empty total prints as a dash',
+    T.fmtCostTotal({USD:1.5,EUR:0.62})==='$1.50 + €0.6200' && T.fmtCostTotal({})==='—');
 }
 
 /* ---- a Mouser pick without a datasheet borrows DigiKey's ---- */
@@ -562,6 +578,21 @@ const EUROFIX={Errors:[],SearchResults:{NumberOfResult:1,Parts:[
         !!firstUnpicked.data.dk.datasheet);
       T.render();
       check('the button drops the amber once every IC is selected', !btn.classList.contains('warn'));
+
+      /* the System panel totals the cards; the number opens the full list */
+      S.sel=null; T.render();
+      const icCount=S.nodes.filter(n=>n.kind==='ic').length;
+      const sum=S.nodes.filter(n=>n.kind==='ic').reduce((s,n)=>s+n.data.dk.price,0);
+      const shown=doc.getElementById('btnIcCost').textContent;
+      check('the System panel shows the accumulated IC cost — the total alone',
+        shown===T.fmtCostTotal(T.icCostTotal()) && shown===T.fmtCostTotal({USD:sum}) && /^\$/.test(shown));
+      doc.getElementById('btnIcCost').onclick();
+      check('clicking the total opens the full per-IC price list',
+        doc.getElementById('modalTitle').textContent==='IC cost — full list' &&
+        doc.querySelectorAll('.costtbl tbody tr').length===icCount &&
+        doc.getElementById('modalBody').innerHTML.includes(icCount+' of '+icCount+' ICs priced'));
+      doc.getElementById('mCancel').onclick();
+
       T.undo();
       check('the whole pass is ONE undoable edit',
         S.nodes.filter(n=>n.kind==='ic' && !T.icSelected(n)).length===before);
