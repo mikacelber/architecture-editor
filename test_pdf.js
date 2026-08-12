@@ -40,14 +40,19 @@ check('the PDF engine is vendored and loaded before app.js',
   const btn=doc.getElementById('btnProjOpts');
   check('the System panel offers a Project Options button', !!btn);
   btn.onclick();
-  check('the modal opens with three sub-windows: parameters, PDF export, PN search',
+  check('the modal opens with four sub-windows: General, parameters, PDF export, PN search',
     doc.getElementById('modalTitle').textContent==='Project Options' &&
-    ['poTabParams','poTabPdf','poTabSearch'].every(id=>!!doc.getElementById(id)) &&
-    ['poPaneParams','poPanePdf','poPaneSearch'].every(id=>!!doc.getElementById(id)));
-  check('"Project parameters" is the default sub-window, holding every title-block field',
+    ['poTabGeneral','poTabParams','poTabPdf','poTabSearch'].every(id=>!!doc.getElementById(id)) &&
+    ['poPaneGeneral','poPaneParams','poPanePdf','poPaneSearch'].every(id=>!!doc.getElementById(id)));
+  check('"General" is the default sub-window, holding language and theme',
+    doc.getElementById('poPaneGeneral').style.display!=='none' &&
+    doc.getElementById('poPaneParams').style.display==='none' &&
+    !!doc.getElementById('poLang').closest('#poPaneGeneral') &&
+    !!doc.getElementById('poTheme').closest('#poPaneGeneral'));
+  doc.getElementById('poTabParams').onclick();
+  check('"Project parameters" holds every title-block field',
     doc.getElementById('poPaneParams').style.display!=='none' &&
-    doc.getElementById('poPanePdf').style.display==='none' &&
-    doc.getElementById('poPaneSearch').style.display==='none' &&
+    doc.getElementById('poPaneGeneral').style.display==='none' &&
     ['poTitle','poClient','poDesigner','poDate','poInitials'].every(id=>
       !!doc.getElementById(id) && !!doc.getElementById(id).closest('#poPaneParams')));
   doc.getElementById('poTabPdf').onclick();

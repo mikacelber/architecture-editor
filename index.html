@@ -8,8 +8,10 @@
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="styles.css">
 <script>
-  // Dark by default (session-only, no persistence) — the header toggle can still switch to light.
-  document.documentElement.dataset.theme = 'dark';
+  // Theme lives in Project Options → General now — read it before first paint
+  // so the page never flashes the wrong colors. Dark is the default.
+  try { document.documentElement.dataset.theme = localStorage.getItem('ui_theme')==='light' ? 'light' : 'dark'; }
+  catch(e){ document.documentElement.dataset.theme = 'dark'; }
 </script>
 </head>
 <body>
@@ -23,7 +25,6 @@
   <div class="spacer"></div>
   <button id="btnUndo" title="Undo (Ctrl+Z)" disabled>&#8630;</button>
   <button id="btnRedo" title="Redo (Ctrl+Y)" disabled>&#8631;</button>
-  <button id="btnTheme" title="Toggle light/dark theme">Dark</button>
   <button id="btnLayout" title="Recompute deterministic layout">Auto-layout</button>
   <button id="btnAutoIC" title="Assign every IC without a selected part the cheapest offer found on the enabled distributors">Auto IC Selection</button>
   <button id="btnAddIC">Add IC</button>
@@ -86,18 +87,33 @@
       </g>
     </svg>
 
-    <!-- Empty sheet: nothing is loaded at boot, so the canvas offers the one
-         action that makes sense — a "+" card that opens Import. Hidden as
-         soon as the diagram has blocks (see renderEmptyState). -->
+    <!-- Empty sheet: nothing is loaded at boot, so the canvas offers the two
+         actions that make sense — a "+" card that opens Import, and a blank-
+         page card that starts a diagram from scratch. Hidden as soon as the
+         diagram has blocks or scratch mode began (see renderEmptyState). -->
     <div id="emptyState" hidden>
-      <button id="emptyAdd" title="Import a system JSON or a saved session">
-        <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round">
-          <line x1="24" y1="12" x2="24" y2="36"/>
-          <line x1="12" y1="24" x2="36" y2="24"/>
-        </svg>
-      </button>
+      <div class="es-actions">
+        <div class="es-choice">
+          <button id="emptyAdd" title="Import a system JSON or a saved session">
+            <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round">
+              <line x1="24" y1="12" x2="24" y2="36"/>
+              <line x1="12" y1="24" x2="36" y2="24"/>
+            </svg>
+          </button>
+          <p class="es-cap" data-k="imp">Import</p>
+        </div>
+        <div class="es-choice">
+          <button id="emptyBlank" title="Start a new empty diagram and add ICs by hand">
+            <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 8 h14 l8 8 v24 h-22 Z"/>
+              <polyline points="28,8 28,16 36,16"/>
+            </svg>
+          </button>
+          <p class="es-cap" data-k="new">Start from scratch</p>
+        </div>
+      </div>
       <p class="es-title">No system loaded</p>
-      <p class="es-hint">Click <b>+</b> to import a system JSON or a saved session.</p>
+      <p class="es-hint">Click <b>+</b> to import a system JSON or a saved session — or start from scratch and build the diagram by hand.</p>
     </div>
 
     <!-- View controls, bottom-right of the sheet: zoom out / zoom in / fit.
