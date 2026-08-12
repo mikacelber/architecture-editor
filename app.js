@@ -3855,30 +3855,46 @@ const dkFmtPrice = (p, cur) => p==null ? '—' : (CUR_SYMBOL[cur]||'$')+(+p).toF
    and rides the same optional CORS proxy prefix as DigiKey.
    ============================================================ */
 const MS_BASE = 'https://api.mouser.com';
-// The account's Search API key ships with the app — the same one that sits in
-// credential/mouser_credentials.json — so Mouser answers from the first search
-// and the settings field opens pre-filled instead of blank. A key typed (or
-// loaded from the credential file) into the settings pane overrides it, and
-// emptying the field on purpose is honoured: no key, no Mouser results.
-const MS_DEFAULT_KEY = '7b7a3d60-7a68-4328-9f8c-9a16b02e7f3c';
+// Mouser pegs search prices to the KEY'S ACCOUNT (the site it was created
+// on), so the app carries ONE KEY PER CURRENCY — a www.mouser.com key answers
+// in dollars, a European-site key in euros — and the currency picked in PN
+// search options selects which one is used. Both ship with the app (same
+// values as credential/mouser_credentials.json); keys typed in the settings
+// override them, and emptying a field on purpose is honoured. If the matching
+// key is missing the other one answers and the search says so.
+const MS_DEFAULT_KEY_USD = '';
+const MS_DEFAULT_KEY_EUR = '7b7a3d60-7a68-4328-9f8c-9a16b02e7f3c';
 function msConfig(){
   try {
-    const v = localStorage.getItem('mouser_api_key');
-    return { key: v==null ? MS_DEFAULT_KEY : v };   // null = never set · '' = cleared on purpose
-  } catch(e){ return { key: MS_DEFAULT_KEY }; }
+    const usd = localStorage.getItem('mouser_api_key_usd');
+    const eur = localStorage.getItem('mouser_api_key_eur');
+    const legacy = localStorage.getItem('mouser_api_key');   // pre-dual-key storage held the EUR account's key
+    return { usd: usd==null ? MS_DEFAULT_KEY_USD : usd,      // null = never set · '' = cleared on purpose
+             eur: eur==null ? (legacy==null ? MS_DEFAULT_KEY_EUR : legacy) : eur };
+  } catch(e){ return { usd: MS_DEFAULT_KEY_USD, eur: MS_DEFAULT_KEY_EUR }; }
 }
-function msSaveConfig(key){
-  try { localStorage.setItem('mouser_api_key', key); }
-  catch(e){ /* storage unavailable — config just won't persist */ }
+function msSaveConfig(usdKey, eurKey){
+  try {
+    localStorage.setItem('mouser_api_key_usd', usdKey);
+    localStorage.setItem('mouser_api_key_eur', eurKey);
+  } catch(e){ /* storage unavailable — config just won't persist */ }
+}
+// The key the configured currency calls for, falling back to the other one —
+// better an answer in the wrong currency, called out, than no answer at all.
+function msKeyFor(cur){
+  const k = msConfig();
+  return (cur==='USD' ? k.usd : k.eur) || (cur==='USD' ? k.eur : k.usd);
 }
 // Optional repo-side credential file (credential/mouser_credentials.json),
-// same one-click pickup as the DigiKey file.
+// same one-click pickup as the DigiKey file. A legacy single api_key is read
+// as the EUR key — that is the account it belonged to.
 async function msLoadCredentialFile(){
   const res = await fetch('credential/mouser_credentials.json', { cache:'no-store' });
   if (!res.ok) throw new Error('credential/mouser_credentials.json not found (HTTP '+res.status+')');
   const j = await res.json();
-  if (!j.api_key) throw new Error('mouser_credentials.json is missing api_key');
-  return { key:String(j.api_key) };
+  const usd = String(j.api_key_usd||''), eur = String(j.api_key_eur||j.api_key||'');
+  if (!usd && !eur) throw new Error('mouser_credentials.json carries no api_key_usd / api_key_eur');
+  return { usd, eur };
 }
 function msUrl(path){
   const { proxy } = dkConfig();   // the CORS proxy prefix is shared
@@ -3948,14 +3964,14 @@ function msNormalizeParts(json, cur){
 // The country each currency pins Mouser to, for accounts that honor it.
 const MS_COUNTRY = { USD:'US', EUR:'ES' };
 async function msSearch(keyword){
-  const { key } = msConfig();
   const cur = searchOptions().currency;
+  const key = msKeyFor(cur);
   if (!key) throw new Error('No Mouser API key — open "Part search API settings" below');
   // Mouser's Search API documents NO currency parameter — search prices come
-  // in the currency of the ACCOUNT the key belongs to (the site it was
-  // created on). currencyCode/countryCode are still sent because some
-  // accounts honor them; when the answer disagrees with the configured
-  // currency anyway, msCurrencyNote says so instead of pretending.
+  // in the currency of the ACCOUNT the key belongs to, which is why the key
+  // is picked per currency above. currencyCode/countryCode are still sent
+  // because some accounts honor them; when the answer disagrees with the
+  // configured currency anyway, msCurrencyNote says so instead of pretending.
   const res = await fetch(msUrl('/api/v1/search/partnumber?apiKey='+encodeURIComponent(key)
       +'&currencyCode='+cur+'&countryCode='+(MS_COUNTRY[cur]||'US')), { method:'POST',
     headers:{ 'Content-Type':'application/json' },
@@ -3970,8 +3986,8 @@ function msCurrencyNote(rows, cur){
   const got = [...new Set((rows||[]).map(r=>r.currency).filter(Boolean))];
   if (!got.length || (got.length===1 && got[0]===cur)) return '';
   const site = cur==='USD' ? 'www.mouser.com' : 'eu.mouser.com';
-  return 'Mouser answered in '+got.join('/')+' — its Search API pegs prices to the key\'s account, so for '
-    +(CUR_SYMBOL[cur]||cur)+' prices use a key created on '+site;
+  return 'Mouser answered in '+got.join('/')+' — add a '+cur+' key (from '+site
+    +') in "Part search API settings" to search Mouser in '+(CUR_SYMBOL[cur]||cur);
 }
 // Both providers into ONE list: each row tagged with its house and currency,
 // the whole thing re-sorted by the same rule each provider already used —
@@ -4546,16 +4562,19 @@ function openProjectOptionsModal(tab){
         <div class="kv"><label>DigiKey Client ID</label><input type="text" id="dkId" value="${esc(dk.id)}" autocomplete="off"></div>
         <div class="kv"><label>DigiKey Client Secret</label><input type="text" id="dkSecret" value="${esc(dk.secret)}" autocomplete="off"></div>
       </div>
-      <div class="kv"><label>Mouser API key</label><input type="text" id="msKey" value="${esc(ms.key)}" autocomplete="off"></div>
+      <div class="row">
+        <div class="kv"><label>Mouser API key — USD (www.mouser.com)</label><input type="text" id="msKeyUsd" value="${esc(ms.usd)}" autocomplete="off"></div>
+        <div class="kv"><label>Mouser API key — EUR (eu.mouser.com)</label><input type="text" id="msKeyEur" value="${esc(ms.eur)}" autocomplete="off"></div>
+      </div>
       <div class="kv"><label>CORS proxy prefix (optional)</label><input type="text" id="dkProxy" value="${esc(dk.proxy)}" placeholder="https://corsproxy.io/?url="></div>
       <div class="btnrow" style="margin-top:0">
         <button id="dkLoadFile" title="Read credential/digikey_credentials.json and credential/mouser_credentials.json from the app folder">Load from credential/ files</button>
       </div>
-      <p class="hint">DigiKey: free credentials at developer.digikey.com (a "Product Information v4" app, client-credentials flow).
-        Mouser: the app's own Search API key is filled in already — replace it only to search under another account.
-        DigiKey follows the currency chosen above; Mouser's Search API pegs prices to the account that owns the key
-        (the Mouser site it was created on), so if its answer disagrees with the choice here the search says so —
-        for $ prices use a key created on www.mouser.com, for € one from eu.mouser.com.
+      <p class="hint">DigiKey: free credentials at developer.digikey.com (a "Product Information v4" app, client-credentials flow)
+        — it follows the currency chosen above directly. Mouser pegs search prices to the key's account, so there is
+        ONE key per currency: the USD key from a www.mouser.com account, the EUR key from a European site — the
+        Currency choice picks which one is used, and if the matching key is missing the other answers (the search
+        notes it). The app's own keys are filled in already; replace them only to search under another account.
         Keys and these options are stored only in this browser (localStorage), never in the session or the export.
         If your browser blocks a request (CORS), route it through the proxy prefix — the full provider URL is appended to it,
         for both distributors.</p>
@@ -4579,12 +4598,13 @@ function openProjectOptionsModal(tab){
     } catch(err){ errs.push(String(err.message||err)); }
     try {
       const m = await msLoadCredentialFile();
-      $('msKey').value=m.key;
+      if (m.usd) $('msKeyUsd').value=m.usd;
+      if (m.eur) $('msKeyEur').value=m.eur;
       got.push('Mouser');
     } catch(err){ errs.push(String(err.message||err)); }
     if (got.length){
       dkSaveConfig($('dkId').value.trim(), $('dkSecret').value.trim(), $('dkProxy').value.trim());
-      msSaveConfig($('msKey').value.trim());
+      msSaveConfig($('msKeyUsd').value.trim(), $('msKeyEur').value.trim());
     }
     toast(got.length ? got.join(' + ')+' credentials loaded from file' : errs.join(' · '));
   };
@@ -4595,7 +4615,7 @@ function openProjectOptionsModal(tab){
       date:$('poDate').value.trim(), initials:$('poInitials').value.trim(),
       pageSize:$('poSize').value, orientation:$('poOrient').value };
     dkSaveConfig($('dkId').value.trim(), $('dkSecret').value.trim(), $('dkProxy').value.trim());
-    msSaveConfig($('msKey').value.trim());
+    msSaveConfig($('msKeyUsd').value.trim(), $('msKeyEur').value.trim());
     saveSearchOptions({ digikey:$('psUseDk').checked, mouser:$('psUseMs').checked, currency:$('psCur').value });
     closeModal(); render(); toast('Project options saved');
   };

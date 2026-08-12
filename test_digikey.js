@@ -88,21 +88,31 @@ const EUROFIX={Errors:[],SearchResults:{NumberOfResult:1,Parts:[
     merged.map(r=>r.pn).join(',')==='MS-HI,HI-STOCK,MS-MID,MID-STOCK,LOW-STOCK');
   check('every merged row is tagged with its house',
     merged.map(r=>r.src).join(',')==='Mouser,DigiKey,Mouser,DigiKey,DigiKey');
-  check('the repo carries the Mouser API key like the DigiKey credentials',
-    MCRED.api_key==='7b7a3d60-7a68-4328-9f8c-9a16b02e7f3c');
+  check('the repo carries a Mouser key per currency, the EUR one being the account key',
+    MCRED.api_key_eur==='7b7a3d60-7a68-4328-9f8c-9a16b02e7f3c' && 'api_key_usd' in MCRED);
 
-  // The key ships with the app: nothing to paste before the first search.
-  window.localStorage.removeItem('mouser_api_key');
-  check('with nothing stored, the Mouser key defaults to the account key',
-    T.msConfig().key===MCRED.api_key);
-  check('the built-in default matches credential/mouser_credentials.json — the two cannot drift',
-    fs.readFileSync('app.js','utf8').includes("const MS_DEFAULT_KEY = '"+MCRED.api_key+"'"));
-  T.msSaveConfig('');
-  check('emptying the field on purpose is honoured — the default does not creep back',
-    T.msConfig().key==='');
-  T.msSaveConfig('other-account-key');
-  check('a key typed into the settings overrides the built-in one', T.msConfig().key==='other-account-key');
-  window.localStorage.removeItem('mouser_api_key');
+  // The keys ship with the app — one per currency, nothing to paste.
+  ['mouser_api_key','mouser_api_key_usd','mouser_api_key_eur'].forEach(k=>window.localStorage.removeItem(k));
+  check('with nothing stored, the keys default to the account keys (one per currency)',
+    T.msConfig().eur===MCRED.api_key_eur && T.msConfig().usd===(MCRED.api_key_usd||''));
+  {
+    const src=fs.readFileSync('app.js','utf8');
+    check('the built-in defaults match credential/mouser_credentials.json — they cannot drift',
+      src.includes("MS_DEFAULT_KEY_EUR = '"+MCRED.api_key_eur+"'") &&
+      src.includes("MS_DEFAULT_KEY_USD = '"+(MCRED.api_key_usd||'')+"'"));
+  }
+  T.msSaveConfig('','');
+  check('emptying the fields on purpose is honoured — the defaults do not creep back',
+    T.msConfig().usd==='' && T.msConfig().eur==='');
+  T.msSaveConfig('other-usd','other-eur');
+  check('keys typed into the settings override the built-in ones',
+    T.msConfig().usd==='other-usd' && T.msConfig().eur==='other-eur');
+  window.localStorage.removeItem('mouser_api_key_usd');
+  window.localStorage.removeItem('mouser_api_key_eur');
+  window.localStorage.setItem('mouser_api_key','legacy-eur-key');
+  check('a legacy single stored key is read as the EUR key it always was',
+    T.msConfig().eur==='legacy-eur-key' && T.msConfig().usd===(MCRED.api_key_usd||''));
+  ['mouser_api_key','mouser_api_key_usd','mouser_api_key_eur'].forEach(k=>window.localStorage.removeItem(k));
 }
 
 /* ---- a Mouser pick without a datasheet borrows DigiKey's ---- */
@@ -157,7 +167,7 @@ const EUROFIX={Errors:[],SearchResults:{NumberOfResult:1,Parts:[
     doc.getElementById('btnAddIC').onclick();
     check('Add IC modal shows the part search box', !!doc.getElementById('dkQuery') && !!doc.getElementById('dkGo'));
     check('the IC form carries no inline credential fields — settings live in ONE place',
-      !doc.getElementById('dkCfgPane') && !doc.getElementById('msKey') && !doc.getElementById('dkSave'));
+      !doc.getElementById('dkCfgPane') && !doc.getElementById('msKeyUsd') && !doc.getElementById('dkSave'));
     T.dkRenderResults(T.dkNormalizeProducts(FIX));
     const rows=[...doc.querySelectorAll('.dkrow')];
     check('one row per part, in stock order', rows.length===3 &&
@@ -215,13 +225,14 @@ const EUROFIX={Errors:[],SearchResults:{NumberOfResult:1,Parts:[
     check('both distributors are ON by default and the currency is USD',
       doc.getElementById('psUseDk').checked && doc.getElementById('psUseMs').checked &&
       doc.getElementById('psCur').value==='USD');
-    check('the pane opens with the Mouser key already in the field',
-      doc.getElementById('msKey').value===MCRED.api_key);
+    check('the pane opens with one Mouser key field per currency, EUR pre-filled',
+      doc.getElementById('msKeyEur').value===MCRED.api_key_eur &&
+      doc.getElementById('msKeyUsd').value===(MCRED.api_key_usd||''));
     check('…and offers loading the credential/ files', !!doc.getElementById('dkLoadFile'));
     await doc.getElementById('dkLoadFile').onclick();
     check('loading the files fills and saves the DigiKey credentials',
       T.dkConfig().id===CREDFILE.client_id && T.dkConfig().secret===CREDFILE.client_secret);
-    check('…and the Mouser key in the same click', T.msConfig().key===MCRED.api_key);
+    check('…and the Mouser keys in the same click', T.msConfig().eur===MCRED.api_key_eur);
     check('the credential file carries both keys', !!CREDFILE.client_id && !!CREDFILE.client_secret);
     doc.getElementById('modalClose').onclick();
     doc.getElementById('btnAddIC').onclick();   // back to the IC form for the blocks below
@@ -267,12 +278,13 @@ const EUROFIX={Errors:[],SearchResults:{NumberOfResult:1,Parts:[
 
     /* ---- Mouser search plumbing (mocked network) ---- */
     {
-      T.msSaveConfig('');
+      T.msSaveConfig('','');
       let threw=null; try{ await T.msSearch('ldo'); }catch(e){ threw=e; }
-      check('Mouser search without a key refuses and points at the settings pane',
+      check('Mouser search without any key refuses and points at the settings pane',
         /Mouser API key/.test(String(threw)) && /Part search API settings/.test(String(threw)));
-      T.msSaveConfig('test-key-123');
-      check('the Mouser key round-trips through config storage', T.msConfig().key==='test-key-123');
+      T.msSaveConfig('test-key-123','');
+      check('the Mouser keys round-trip through config storage',
+        T.msConfig().usd==='test-key-123' && T.msConfig().eur==='');
       const list=await T.msSearch('ldo');
       const r=reqs[reqs.length-1];
       check('the search hits api.mouser.com/api/v1/search/partnumber with the key in the query',
@@ -280,6 +292,24 @@ const EUROFIX={Errors:[],SearchResults:{NumberOfResult:1,Parts:[
       check('…as a SearchByPartRequest POST carrying the typed part number',
         r.opts.method==='POST' && /SearchByPartRequest/.test(r.opts.body) && /"mouserPartNumber":"ldo"/.test(r.opts.body));
       check('Mouser search returns the normalized, stock-sorted list', list[0].pn==='MS-HI');
+
+      /* the Currency choice picks WHICH key is used — with a fallback */
+      T.msSaveConfig('usd-key','eur-key');
+      T.saveSearchOptions({digikey:true,mouser:true,currency:'USD'});
+      await T.msSearch('x');
+      check('USD selected → the www.mouser.com key is used',
+        reqs[reqs.length-1].url.includes('apiKey=usd-key'));
+      T.saveSearchOptions({digikey:true,mouser:true,currency:'EUR'});
+      await T.msSearch('x');
+      check('EUR selected → the European key is used',
+        reqs[reqs.length-1].url.includes('apiKey=eur-key'));
+      T.msSaveConfig('','eur-key');
+      T.saveSearchOptions({digikey:true,mouser:true,currency:'USD'});
+      await T.msSearch('x');
+      check('USD selected but no USD key → the EUR key answers instead of nothing',
+        reqs[reqs.length-1].url.includes('apiKey=eur-key'));
+      T.saveSearchOptions({digikey:true,mouser:true,currency:'USD'});
+      T.msSaveConfig('test-key-123','test-key-123');
     }
 
     /* ---- ONE search, BOTH houses: the modal's own Search button ---- */
