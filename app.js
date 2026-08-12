@@ -3860,9 +3860,9 @@ const MS_BASE = 'https://api.mouser.com';
 // in dollars, a European-site key in euros — and the currency picked in PN
 // search options selects which one is used. Both ship with the app (same
 // values as credential/mouser_credentials.json); keys typed in the settings
-// override them, and emptying a field on purpose is honoured. If the matching
-// key is missing the other one answers and the search says so.
-const MS_DEFAULT_KEY_USD = '2ddd6605-e151-4132-9d5b-865bcde6c393';
+// override them, and emptying a field on purpose is honoured. A missing or
+// rejected key is an error naming the fix — never a silent account switch.
+const MS_DEFAULT_KEY_USD = '47fe710d-eff2-40d8-8ff7-8edeba348677';
 const MS_DEFAULT_KEY_EUR = '7b7a3d60-7a68-4328-9f8c-9a16b02e7f3c';
 function msConfig(){
   try {
@@ -3971,21 +3971,18 @@ const MS_KEY_REJECTED = /invalid\s*unique\s*identifier|invalid\s*api\s*key/i;
 async function msSearch(keyword){
   const cur = searchOptions().currency;
   const k = msConfig();
-  // The configured currency's key first, the other account's key as fallback —
-  // a rejected or missing key falls through to it (msCurrencyNote then tells
-  // the user the answer came from the other account).
-  const keys = [...new Set([cur==='USD'?k.usd:k.eur, cur==='USD'?k.eur:k.usd].filter(Boolean))];
-  if (!keys.length) throw new Error('No Mouser API key — open "Part search API settings" below');
-  let lastErr = null;
-  for (const key of keys){
-    try { return await msSearchWith(key, keyword, cur); }
-    catch(e){
-      lastErr = e;
-      if (!MS_KEY_REJECTED.test(String((e&&e.message)||e))) throw e;   // real failure — another key won't help
-    }
+  // The configured currency's key, and ONLY that one — no silent retry with
+  // the other account. A missing or rejected key is an error that names the
+  // currency and the fix, not a result set in the wrong currency.
+  const key = cur==='USD' ? k.usd : k.eur;
+  if (!key) throw new Error('No Mouser '+cur+' API key — open "Part search API settings" below');
+  try { return await msSearchWith(key, keyword, cur); }
+  catch(e){
+    if (MS_KEY_REJECTED.test(String((e&&e.message)||e)))
+      throw new Error(String((e&&e.message)||e)
+        +' — Mouser rejected the '+cur+' key; check in "Part search API settings" that it is a SEARCH API key (not an Order API one)');
+    throw e;
   }
-  throw new Error(String((lastErr&&lastErr.message)||lastErr)
-    +' — Mouser rejected the key; check in "Part search API settings" that it is a SEARCH API key (not an Order API one)');
 }
 // '' when Mouser answered in the configured currency; otherwise a status note
 // naming the currency it DID answer in and the actual fix — the rows always
@@ -4581,8 +4578,8 @@ function openProjectOptionsModal(tab){
       <p class="hint">DigiKey: free credentials at developer.digikey.com (a "Product Information v4" app, client-credentials flow)
         — it follows the currency chosen above directly. Mouser pegs search prices to the key's account, so there is
         ONE key per currency: the USD key from a www.mouser.com account, the EUR key from a European site — the
-        Currency choice picks which one is used, and if the matching key is missing the other answers (the search
-        notes it). The app's own keys are filled in already; replace them only to search under another account.
+        Currency choice picks which one is used — a missing or rejected key shows an error naming the fix.
+        The app's own keys are filled in already; replace them only to search under another account.
         Keys and these options are stored only in this browser (localStorage), never in the session or the export.
         If your browser blocks a request (CORS), route it through the proxy prefix — the full provider URL is appended to it,
         for both distributors.</p>
