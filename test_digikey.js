@@ -240,6 +240,23 @@ const EUROFIX={Errors:[],SearchResults:{NumberOfResult:1,Parts:[
     doc.getElementById('modalClose').onclick();
     doc.getElementById('btnAddIC').onclick();   // back to the IC form for the blocks below
 
+    /* ---- failed provider calls surface the provider's OWN reason ---- */
+    {
+      const stub=window.fetch;
+      window.fetch=async()=>({ ok:false, status:500,
+        text:async()=>JSON.stringify({ error:'invalid_client', error_description:'Client authentication failed' }) });
+      T.dkSaveConfig('id-x','secret-x','');   // fresh creds → clears the cached token
+      let e=null; try{ await T.dkSearch('x'); }catch(err){ e=err; }
+      check('a failed DigiKey auth carries DigiKey\'s own reason, not just the status',
+        /DigiKey auth failed \(HTTP 500\)/.test(String(e)) && /Client authentication failed/.test(String(e)));
+      window.fetch=async()=>({ ok:false, status:403, text:async()=>'quota exceeded for today' });
+      let m=null; try{ await T.msSearch('x'); }catch(err){ m=err; }
+      check('a failed Mouser call carries the body detail too',
+        /Mouser search failed \(HTTP 403\)/.test(String(m)) && /quota exceeded/.test(String(m)));
+      window.fetch=stub;
+      T.dkSaveConfig(CREDFILE.client_id, CREDFILE.client_secret, '');   // restore + clear token cache
+    }
+
     /* ---- currency: the euro-format bug is dead, both houses are asked ---- */
     {
       const pp=T.msParsePrice;
