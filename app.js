@@ -3862,7 +3862,7 @@ const MS_BASE = 'https://api.mouser.com';
 // values as credential/mouser_credentials.json); keys typed in the settings
 // override them, and emptying a field on purpose is honoured. If the matching
 // key is missing the other one answers and the search says so.
-const MS_DEFAULT_KEY_USD = '';
+const MS_DEFAULT_KEY_USD = '2ddd6605-e151-4132-9d5b-865bcde6c393';
 const MS_DEFAULT_KEY_EUR = '7b7a3d60-7a68-4328-9f8c-9a16b02e7f3c';
 function msConfig(){
   try {
@@ -3961,19 +3961,16 @@ function msNormalizeParts(json, cur){
   }).filter(x=>x.pn)
     .sort((a,b)=> b.stock - a.stock || a.pn.localeCompare(b.pn));
 }
-// The country each currency pins Mouser to, for accounts that honor it.
-const MS_COUNTRY = { USD:'US', EUR:'ES' };
 async function msSearch(keyword){
   const cur = searchOptions().currency;
   const key = msKeyFor(cur);
   if (!key) throw new Error('No Mouser API key — open "Part search API settings" below');
-  // Mouser's Search API documents NO currency parameter — search prices come
-  // in the currency of the ACCOUNT the key belongs to, which is why the key
-  // is picked per currency above. currencyCode/countryCode are still sent
-  // because some accounts honor them; when the answer disagrees with the
-  // configured currency anyway, msCurrencyNote says so instead of pretending.
-  const res = await fetch(msUrl('/api/v1/search/partnumber?apiKey='+encodeURIComponent(key)
-      +'&currencyCode='+cur+'&countryCode='+(MS_COUNTRY[cur]||'US')), { method:'POST',
+  // Mouser's Search API has NO currency parameter — search prices come in the
+  // currency of the ACCOUNT the key belongs to. Picking the key per currency
+  // above IS the currency selection; the request itself carries only the key.
+  // Should the answer still disagree with the configured currency (matching
+  // key missing → the other one answered), msCurrencyNote says so.
+  const res = await fetch(msUrl('/api/v1/search/partnumber?apiKey='+encodeURIComponent(key)), { method:'POST',
     headers:{ 'Content-Type':'application/json' },
     body: JSON.stringify({ SearchByPartRequest: { mouserPartNumber: keyword, partSearchOptions: '' } }) });
   if (!res.ok) throw new Error('Mouser search failed (HTTP '+res.status+')');
