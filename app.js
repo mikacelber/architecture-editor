@@ -1095,6 +1095,49 @@ function deconflictGroupRails(){
    RENDER
    ============================================================ */
 function esc(s){ return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+/* ---------- language + theme (Project Options → General) ----------
+   Both are workstation preferences in localStorage — never part of the
+   project or its export. English is the source language of the code, so
+   L(en, es) keeps every string readable in place and the default UI
+   identical to what it always was. */
+function uiLang(){ try { return localStorage.getItem('ui_lang')==='es' ? 'es' : 'en'; } catch(e){ return 'en'; } }
+function saveUiLang(l){ try { localStorage.setItem('ui_lang', l==='es'?'es':'en'); } catch(e){} }
+function L(en, es){ return uiLang()==='es' ? es : en; }
+function uiTheme(){ try { return localStorage.getItem('ui_theme')==='light' ? 'light' : 'dark'; } catch(e){ return 'dark'; } }
+function saveUiTheme(t){
+  try { localStorage.setItem('ui_theme', t==='light'?'light':'dark'); } catch(e){}
+  document.documentElement.dataset.theme = t==='light' ? 'light' : 'dark';
+}
+// The static chrome (header buttons, empty-sheet card, view tools) lives in
+// index.html in English — this rewrites it for the active language, at boot
+// and whenever the language changes.
+function applyStaticLang(){
+  const set=(id,txt,title)=>{ const el=$(id); if(!el) return; if(txt!=null) el.textContent=txt; if(title!=null) el.title=title; };
+  set('btnUndo',null,L('Undo (Ctrl+Z)','Deshacer (Ctrl+Z)'));
+  set('btnRedo',null,L('Redo (Ctrl+Y)','Rehacer (Ctrl+Y)'));
+  set('btnLayout',L('Auto-layout','Auto-colocación'),L('Recompute deterministic layout','Recalcular la colocación determinista'));
+  set('btnAutoIC',L('Auto IC Selection','Selección auto de CI'),
+    L('Assign every IC without a selected part the cheapest offer found on the enabled distributors',
+      'Asigna a cada CI sin componente seleccionado la oferta más barata de los distribuidores activados'));
+  set('btnAddIC',L('Add IC','Añadir CI'));
+  set('btnAddExt',L('Add External','Añadir externo'));
+  set('btnImport',L('Import','Importar'));
+  set('btnExport',L('Export','Exportar'));
+  const eyebrow=document.querySelector('header .brand .eyebrow');
+  if (eyebrow) eyebrow.textContent=L('Block architecture · pipeline stage 0','Arquitectura de bloques · etapa 0 del pipeline');
+  set('btnZoomIn',null,L('Zoom in','Acercar'));
+  set('btnZoomOut',null,L('Zoom out','Alejar'));
+  set('btnZoomFit',null,L('Fit diagram to view','Ajustar el diagrama a la vista'));
+  set('inspHandle',null,L('Hide the inspector panel','Ocultar el panel inspector'));
+  set('emptyAdd',null,L('Import a system JSON or a saved session','Importar un JSON de sistema o una sesión guardada'));
+  set('emptyBlank',null,L('Start a new empty diagram and add ICs by hand','Empezar un diagrama vacío y añadir CIs a mano'));
+  const cap=document.querySelectorAll('#emptyState .es-cap');
+  cap.forEach(c=>{ c.textContent = c.dataset.k==='imp' ? L('Import','Importar') : L('Start from scratch','Empezar de cero'); });
+  const et=document.querySelector('#emptyState .es-title'); if (et) et.textContent=L('No system loaded','Ningún sistema cargado');
+  const eh=document.querySelector('#emptyState .es-hint');
+  if (eh) eh.innerHTML=L('Click <b>+</b> to import a system JSON or a saved session — or start from scratch and build the diagram by hand.',
+                         'Pulsa <b>+</b> para importar un JSON de sistema o una sesión guardada — o empieza de cero y construye el diagrama a mano.');
+}
 /* ---------- datasheet links ----------
    The stored URL is whatever the vendor gave us — DigiKey's redirectors and
    tracking parameters included. Rewriting a link is how a working datasheet
@@ -2048,16 +2091,23 @@ function render(){
   updateViewTools();
   // A long title is clipped with an ellipsis so the header never grows or
   // squeezes the buttons — the whole thing stays readable on hover.
-  const title = S.meta.title || 'Untitled system';
+  const title = S.meta.title || L('Untitled system','Sistema sin título');
   $('projTitle').textContent = title;
   $('projTitle').title = title;
 }
-// The blank sheet's "+" card: visible exactly while there is nothing to draw
-// (fresh page, or every block deleted). It sits over the canvas, so it also
-// hides the zoom/fit controls' reason to exist — those stay, harmless.
+// The blank sheet's card: visible exactly while there is nothing to draw
+// (fresh page, or every block deleted) AND the user hasn't chosen to start
+// from scratch — the scratch choice dismisses it so the empty canvas is
+// theirs to build on with Add IC / Add External.
 function renderEmptyState(){
   const el = $('emptyState');
-  if (el) el.hidden = S.nodes.length > 0;
+  if (el) el.hidden = S.nodes.length > 0 || !!S.blankStart;
+}
+function startBlankDiagram(){
+  S.blankStart = true;
+  render();
+  toast(L('Blank sheet — use "Add IC" and "Add External" to build the diagram',
+          'Hoja en blanco — usa "Añadir CI" y "Añadir externo" para construir el diagrama'));
 }
 
 // Boundary-crossing edges for the currently open group, keyed by the neighboring
@@ -2897,9 +2947,9 @@ function renderLink(){
 
 function renderBreadcrumb(){
   const el = $('breadcrumb');
-  if (isTopLevel()){ el.innerHTML = `<span class="crumb-current">System</span>`; return; }
+  if (isTopLevel()){ el.innerHTML = `<span class="crumb-current">${L('System','Sistema')}</span>`; return; }
   const g = groupsWithUngrouped().find(x=>x.id===S.openGroup);
-  el.innerHTML = `<button class="crumb-link" id="crumbSystem">System</button><span class="crumb-sep">/</span><span class="crumb-current">${esc(g?g.title:S.openGroup)}</span>`;
+  el.innerHTML = `<button class="crumb-link" id="crumbSystem">${L('System','Sistema')}</button><span class="crumb-sep">/</span><span class="crumb-current">${esc(g?g.title:S.openGroup)}</span>`;
   $('crumbSystem').onclick = closeGroupView;
 }
 
@@ -2960,21 +3010,20 @@ function fmtCostTotal(t){
 function openIcCostModal(){
   const rows = icCostRows().sort((a,b)=> ((b.price??-1)-(a.price??-1)) || a.label.localeCompare(b.label));
   const priced = rows.filter(r=>r.price!=null).length;
-  openModal('IC cost — full list', `
+  openModal(L('IC cost — full list','Coste de CIs — lista completa'), `
     <table class="costtbl">
-      <thead><tr><th>Block</th><th>Selected part</th><th>Source</th><th class="num">Unit price</th></tr></thead>
+      <thead><tr><th>${L('Block','Bloque')}</th><th>${L('Selected part','Componente elegido')}</th><th>${L('Source','Origen')}</th><th class="num">${L('Unit price','Precio unitario')}</th></tr></thead>
       <tbody>${rows.map(r=>`<tr${r.price==null?' class="dim"':''}>
         <td>${esc(r.label)}</td>
-        <td>${r.pn ? esc(r.pn) : '<i>not selected</i>'}</td>
+        <td>${r.pn ? esc(r.pn) : `<i>${L('not selected','sin seleccionar')}</i>`}</td>
         <td>${esc(r.src||'—')}</td>
         <td class="num">${r.price!=null ? dkFmtPrice(r.price, r.currency) : '—'}</td></tr>`).join('')}
       </tbody>
-      <tfoot><tr><td colspan="3">Total — ${priced} of ${rows.length} IC${rows.length===1?'':'s'} priced</td>
+      <tfoot><tr><td colspan="3">${uiLang()==='es' ? `Total — ${priced} de ${rows.length} CI${rows.length===1?'':'s'} con precio` : `Total — ${priced} of ${rows.length} IC${rows.length===1?'':'s'} priced`}</td>
         <td class="num">${fmtCostTotal(icCostTotal())}</td></tr></tfoot>
     </table>
-    <p class="hint">One piece per IC, qty-1 unit prices from the selected part cards. ICs without a selected part
-      carry no price — select them (or run Auto IC Selection) to complete the total.</p>
-  `, `<button class="primary" id="mCancel">Close</button>`);
+    <p class="hint">${L('One piece per IC, qty-1 unit prices from the selected part cards. ICs without a selected part carry no price — select them (or run Auto IC Selection) to complete the total.','Una unidad por CI, precios unitarios qty-1 de las tarjetas seleccionadas. Los CIs sin componente seleccionado no tienen precio — selecciónalos (o ejecuta la Selección auto de CI) para completar el total.')}</p>
+  `, `<button class="primary" id="mCancel">${L('Close','Cerrar')}</button>`);
   $('mCancel').onclick = closeModal;
 }
 
@@ -2982,22 +3031,24 @@ function renderInspector(){
   inspOnRender();   // unpinned panel: show while something is selected, then fold away
   const eye=$('insEyebrow'), title=$('insTitle'), body=$('insBody');
   if (!S.sel){
-    eye.textContent='System';
-    title.textContent=S.meta.title||'Untitled system';
+    eye.textContent=L('System','Sistema');
+    title.textContent=S.meta.title||L('Untitled system','Sistema sin título');
     const groups = visibleGroups();
     const ungrouped = groups.find(g=>g.id===UNGROUPED_ID);
     const descTruncated = (S.meta.description||'').length > 420;
     body.innerHTML = `
-      <p>${esc((S.meta.description||'').slice(0,420))}${descTruncated?'… ':''}${descTruncated?'<button class="linklike" id="btnFullDesc">Read full description</button>':''}</p>
-      <div class="kv"><label>Blocks</label><div class="val">${S.nodes.filter(n=>n.kind==='ic').length} ICs · ${S.nodes.filter(n=>n.kind==='external').length} external</div></div>
-      <div class="kv"><label>IC cost (total)</label><div class="val">
-        <button class="linklike" id="btnIcCost" title="Click for the full list of ICs with their prices">${esc(fmtCostTotal(icCostTotal()))}</button></div></div>
-      <div class="kv"><label>Connections</label><div class="val">${S.edges.length} edges · ${S.edges.reduce((s,e)=>s+e.nets.length,0)} nets</div></div>
-      <div class="kv"><label>Groups</label><div class="val">${groups.length} shown${ungrouped&&ungrouped.members.length?` · ${ungrouped.members.length} ungrouped`:''}</div></div>
-      <div class="btnrow"><button id="btnProjOpts">Project Options</button></div>
+      <p>${esc((S.meta.description||'').slice(0,420))}${descTruncated?'… ':''}${descTruncated?`<button class="linklike" id="btnFullDesc">${L('Read full description','Leer la descripción completa')}</button>`:''}</p>
+      <div class="kv"><label>${L('Blocks','Bloques')}</label><div class="val">${S.nodes.filter(n=>n.kind==='ic').length} ${L('ICs','CIs')} · ${S.nodes.filter(n=>n.kind==='external').length} ${L('external','externos')}</div></div>
+      <div class="kv"><label>${L('IC cost (total)','Coste de CIs (total)')}</label><div class="val">
+        <button class="linklike" id="btnIcCost" title="${L('Click for the full list of ICs with their prices','Clic para ver la lista completa de CIs con sus precios')}">${esc(fmtCostTotal(icCostTotal()))}</button></div></div>
+      <div class="kv"><label>${L('Connections','Conexiones')}</label><div class="val">${S.edges.length} ${L('edges','conexiones')} · ${S.edges.reduce((s,e)=>s+e.nets.length,0)} ${L('nets','redes')}</div></div>
+      <div class="kv"><label>${L('Groups','Grupos')}</label><div class="val">${groups.length} ${L('shown','mostrados')}${ungrouped&&ungrouped.members.length?` · ${ungrouped.members.length} ${L('ungrouped','sin grupo')}`:''}</div></div>
+      <div class="btnrow"><button id="btnProjOpts">${L('Project Options','Opciones de proyecto')}</button></div>
       <p style="margin-top:14px">${isTopLevel()
-        ? 'System-level view — each block is a functional group, derived automatically from the underlying connections. Select a group or a connection to inspect it, or double-click a group to open it. Drag a group to reposition it.'
-        : 'Select a block or a connection to inspect it. Press <b>Delete</b> to remove the selection. Click "System" above to return to the top level.'}</p>`;
+        ? L('System-level view — each block is a functional group, derived automatically from the underlying connections. Select a group or a connection to inspect it, or double-click a group to open it. Drag a group to reposition it.',
+            'Vista de sistema — cada bloque es un grupo funcional, derivado automáticamente de las conexiones subyacentes. Selecciona un grupo o una conexión para inspeccionarlo, o haz doble clic en un grupo para abrirlo. Arrastra un grupo para recolocarlo.')
+        : L('Select a block or a connection to inspect it. Press <b>Delete</b> to remove the selection. Click "System" above to return to the top level.',
+            'Selecciona un bloque o una conexión para inspeccionarlo. Pulsa <b>Supr</b> para eliminar la selección. Pulsa "Sistema" arriba para volver al nivel superior.')}</p>`;
     $('btnProjOpts').onclick = openProjectOptionsModal;
     $('btnIcCost').onclick = openIcCostModal;
     if (descTruncated) $('btnFullDesc').onclick = () => {
@@ -3013,7 +3064,7 @@ function renderInspector(){
     if (!g){ S.sel=null; renderInspector(); return; }
     const isUngrouped = g.id===UNGROUPED_ID;
     const customPorts = !!S.groupPortOrder[g.id] || Object.keys(S.groupPortSides).some(k=>k.startsWith(g.id+'|'));
-    eye.textContent = isUngrouped ? 'Ungrouped blocks' : 'Functional group';
+    eye.textContent = isUngrouped ? L('Ungrouped blocks','Bloques sin grupo') : L('Functional group','Grupo funcional');
     title.textContent = g.title;
     const memberRows = g.members.map(id=>{
       const n = nodeById(id);
@@ -3021,26 +3072,28 @@ function renderInspector(){
         <div style="font-family:var(--mono);font-size:12px;word-break:break-word">${esc(n?n.label:id)}</div>
         <select data-move-member="${esc(id)}">${allGroupsOptions(g.id)}</select>
       </div>`;
-    }).join('') || '<p style="color:var(--ink-soft)">No members.</p>';
+    }).join('') || `<p style="color:var(--ink-soft)">${L('No members.','Sin miembros.')}</p>`;
     body.innerHTML = `
       ${isUngrouped
         ? `<p>${esc(g.description||'')}</p>`
-        : `<div class="kv"><label>Title</label><input type="text" id="gTitle" value="${esc(g.title)}"></div>
-           <div class="kv"><label>Description</label><textarea id="gDesc">${esc(g.description)}</textarea></div>`}
+        : `<div class="kv"><label>${L('Title','Título')}</label><input type="text" id="gTitle" value="${esc(g.title)}"></div>
+           <div class="kv"><label>${L('Description','Descripción')}</label><textarea id="gDesc">${esc(g.description)}</textarea></div>`}
       ${groupSide(g.id)==='barrier'?`
-      <div class="kv"><label>LV | HV halves</label>
+      <div class="kv"><label>${L('LV | HV halves','Mitades LV | HV')}</label>
         <label class="switch"><input type="checkbox" id="gFlip" ${groupHvFlip(g.id)?'checked':''}><span class="knob"></span>
-          <span class="swlabel">${groupHvFlip(g.id)?'HV left · LV right':'LV left · HV right'}</span></label>
+          <span class="swlabel">${groupHvFlip(g.id)?L('HV left · LV right','HV izquierda · LV derecha'):L('LV left · HV right','LV izquierda · HV derecha')}</span></label>
       </div>`:''}
-      <div class="kv"><label>Members (${g.members.length}) — move to group</label></div>
+      <div class="kv"><label>${L('Members','Miembros')} (${g.members.length}) — ${L('move to group','mover a grupo')}</label></div>
       ${memberRows}
       <div class="btnrow">
-        <button id="btnOpenGroup">Open group</button>
-        ${customPorts?'<button id="btnResetPorts">Reset port layout</button>':''}
-        ${isUngrouped?'':'<button class="danger" id="btnDelGroup">Delete group</button>'}
+        <button id="btnOpenGroup">${L('Open group','Abrir grupo')}</button>
+        ${customPorts?`<button id="btnResetPorts">${L('Reset port layout','Restablecer puertos')}</button>`:''}
+        ${isUngrouped?'':`<button class="danger" id="btnDelGroup">${L('Delete group','Eliminar grupo')}</button>`}
       </div>
-      <p class="hint">${groupPortRowsFor(g.id).length} port${groupPortRowsFor(g.id).length===1?'':'s'} in this block's port zone. Drag a port's net-count badge sideways to switch which edge it attaches to, or up/down to reorder it.</p>
-      ${isUngrouped?'':'<p style="margin-top:10px;color:var(--ink-soft);font-size:11.5px">Deleting a group moves its members to Ungrouped — blocks are never deleted.</p>'}`;
+      <p class="hint">${uiLang()==='es'
+        ? `${groupPortRowsFor(g.id).length} puerto${groupPortRowsFor(g.id).length===1?'':'s'} en la zona de puertos de este bloque. Arrastra la etiqueta de recuento de un puerto lateralmente para cambiar el borde al que se ancla, o arriba/abajo para reordenarlo.`
+        : `${groupPortRowsFor(g.id).length} port${groupPortRowsFor(g.id).length===1?'':'s'} in this block's port zone. Drag a port's net-count badge sideways to switch which edge it attaches to, or up/down to reorder it.`}</p>
+      ${isUngrouped?'':`<p style="margin-top:10px;color:var(--ink-soft);font-size:11.5px">${L('Deleting a group moves its members to Ungrouped — blocks are never deleted.','Eliminar un grupo mueve sus miembros a Sin grupo — los bloques nunca se borran.')}</p>`}`;
     $('btnOpenGroup').onclick=()=>openGroupView(g.id);
     const gf=$('gFlip'); if (gf) gf.onchange=()=>{
       commit(); setGroupHvFlip(g.id, gf.checked); render();
@@ -3081,17 +3134,20 @@ function renderInspector(){
     const gs = visibleGroups().find(g=>g.id===e.source), gt = visibleGroups().find(g=>g.id===e.target);
     const hasRoute = !!groupEdgeRouteOf(e.source,e.target,e.dom);
     const hasSides = !!(S.groupPortSides[groupPortKey(e.source,e.source,e.target,e.dom)] || S.groupPortSides[groupPortKey(e.target,e.source,e.target,e.dom)]);
-    eye.textContent = e.dom==='hv' ? 'Group connection · HV domain (read-only)' : 'Group connection (read-only)';
+    eye.textContent = e.dom==='hv' ? L('Group connection · HV domain (read-only)','Conexión de grupos · dominio HV (solo lectura)') : L('Group connection (read-only)','Conexión de grupos (solo lectura)');
     title.textContent = `${gs?gs.title:e.source} → ${gt?gt.title:e.target}${e.dom==='hv'?' · HV':''}`;
     body.innerHTML = `
-      <p style="color:var(--ink-soft)">Derived from ${e.nets.length} underlying net${e.nets.length===1?'':'s'} between member blocks. Open a group to edit its individual connections. Drag the vertical segments sideways or the horizontal segments up/down to reroute — including the last segment where the wire enters the block.</p>
+      <p style="color:var(--ink-soft)">${uiLang()==='es'
+        ? `Derivada de ${e.nets.length} red${e.nets.length===1?'':'es'} subyacente${e.nets.length===1?'':'s'} entre bloques miembros. Abre un grupo para editar sus conexiones individuales. Arrastra los segmentos verticales lateralmente o los horizontales arriba/abajo para redirigir — incluido el último segmento donde el cable entra al bloque.`
+        : `Derived from ${e.nets.length} underlying net${e.nets.length===1?'':'s'} between member blocks. Open a group to edit its individual connections. Drag the vertical segments sideways or the horizontal segments up/down to reroute — including the last segment where the wire enters the block.`}</p>
       ${e.nets.map(n=>`
-        <div class="netcard traceable cat-${netCategory(n)}${S.traceNet===n.name?' on':''}" data-tracenet="${esc(n.name)}" title="Click to trace this net end to end">
+        <div class="netcard traceable cat-${netCategory(n)}${S.traceNet===n.name?' on':''}" data-tracenet="${esc(n.name)}" title="${L('Click to trace this net end to end','Clic para trazar esta red de extremo a extremo')}">
           <div class="nettop"><span class="netname">${esc(n.name)}</span><span class="nettype">${esc(n.type)}</span></div>
           ${n.description?`<div class="netdesc">${esc(n.description)}</div>`:''}
         </div>`).join('')}
-      <p class="hint">Each end attaches in its block's port zone, under the member list. Drag a port's net-count badge sideways to move that input/output to the opposite edge of its block, or up/down to reorder it against the group's other ports — the wire and its routing follow.</p>
-      ${(hasRoute||hasSides)?'<div class="btnrow"><button id="btnResetRoute">Reset routing &amp; ports</button></div>':''}`;
+      <p class="hint">${L('Each end attaches in its block\'s port zone, under the member list. Drag a port\'s net-count badge sideways to move that input/output to the opposite edge of its block, or up/down to reorder it against the group\'s other ports — the wire and its routing follow.',
+                          'Cada extremo se ancla en la zona de puertos de su bloque, bajo la lista de miembros. Arrastra la etiqueta de recuento de un puerto lateralmente para mover esa entrada/salida al borde opuesto de su bloque, o arriba/abajo para reordenarla frente a los otros puertos del grupo — el cable y su ruta la siguen.')}</p>
+      ${(hasRoute||hasSides)?`<div class="btnrow"><button id="btnResetRoute">${L('Reset routing &amp; ports','Restablecer ruta y puertos')}</button></div>`:''}`;
     const rb=$('btnResetRoute'); if (rb) rb.onclick=()=>{
       delete S.groupEdgeRoutes[groupEdgeRouteKey(e.source,e.target,e.dom)];
       delete S.groupPortSides[groupPortKey(e.source, e.source, e.target, e.dom)];
@@ -3108,23 +3164,27 @@ function renderInspector(){
     const otherId = dir==='in' ? e.source : e.target;
     const other = groupsWithUngrouped().find(g=>g.id===otherId);
     const here = groupsWithUngrouped().find(g=>g.id===S.openGroup);
-    eye.textContent = e.dom==='hv' ? 'Portal · HV domain (read-only)' : 'Portal (read-only)';
+    eye.textContent = e.dom==='hv' ? L('Portal · HV domain (read-only)','Portal · dominio HV (solo lectura)') : L('Portal (read-only)','Portal (solo lectura)');
     title.textContent = (dir==='in'
       ? `${other?other.title:otherId} → ${here?here.title:S.openGroup}`
       : `${here?here.title:S.openGroup} → ${other?other.title:otherId}`) + (e.dom==='hv'?' · HV':'');
     body.innerHTML = `
-      <p style="color:var(--ink-soft)">This connection leaves the open group. Derived from ${e.nets.length} underlying net${e.nets.length===1?'':'s'}. Open "${esc(other?other.title:otherId)}" to edit it from that side.</p>
+      <p style="color:var(--ink-soft)">${uiLang()==='es'
+        ? `Esta conexión sale del grupo abierto. Derivada de ${e.nets.length} red${e.nets.length===1?'':'es'} subyacente${e.nets.length===1?'':'s'}. Abre "${esc(other?other.title:otherId)}" para editarla desde ese lado.`
+        : `This connection leaves the open group. Derived from ${e.nets.length} underlying net${e.nets.length===1?'':'s'}. Open "${esc(other?other.title:otherId)}" to edit it from that side.`}</p>
       ${e.nets.map(n=>`
-        <div class="netcard traceable cat-${netCategory(n)}${S.traceNet===n.name?' on':''}" data-tracenet="${esc(n.name)}" title="Click to trace this net end to end">
+        <div class="netcard traceable cat-${netCategory(n)}${S.traceNet===n.name?' on':''}" data-tracenet="${esc(n.name)}" title="${L('Click to trace this net end to end','Clic para trazar esta red de extremo a extremo')}">
           <div class="nettop"><span class="netname">${esc(n.name)}</span><span class="nettype">${esc(n.type)}</span></div>
           ${n.description?`<div class="netdesc">${esc(n.description)}</div>`:''}
         </div>`).join('')}
       <div class="btnrow">
-        <button id="btnPortalUp">▲ Move up</button>
-        <button id="btnPortalDown">▼ Move down</button>
+        <button id="btnPortalUp">▲ ${L('Move up','Subir')}</button>
+        <button id="btnPortalDown">▼ ${L('Move down','Bajar')}</button>
       </div>
-      <p class="hint">Move this ${dir==='in'?'FROM':'TO'} box up or down within its column to order the portals as you like.</p>
-      ${other&&other.members.length?`<div class="btnrow"><button id="btnOpenOther">Open "${esc(other.title)}"</button></div>`:''}`;
+      <p class="hint">${uiLang()==='es'
+        ? `Sube o baja esta caja ${dir==='in'?'FROM':'TO'} dentro de su columna para ordenar los portales a tu gusto.`
+        : `Move this ${dir==='in'?'FROM':'TO'} box up or down within its column to order the portals as you like.`}</p>
+      ${other&&other.members.length?`<div class="btnrow"><button id="btnOpenOther">${L('Open','Abrir')} "${esc(other.title)}"</button></div>`:''}`;
     const col = drillSheet().portals.filter(p=>p.dir===dir).map(p=>p.key);
     const pos = col.indexOf(S.sel.id);
     $('btnPortalUp').disabled = pos<=0;
@@ -3139,24 +3199,26 @@ function renderInspector(){
   if (S.sel.type==='node'){
     const n = nodeById(S.sel.id);
     if (!n){ S.sel=null; renderInspector(); return; }
-    eye.textContent = n.kind==='ic' ? 'Integrated circuit' : 'External block';
+    eye.textContent = n.kind==='ic' ? L('Integrated circuit','Circuito integrado') : L('External block','Bloque externo');
     title.textContent = n.label;
     const sideRow = `
-      <div class="kv"><label>Voltage domain</label>
+      <div class="kv"><label>${L('Voltage domain','Dominio de tensión')}</label>
         <select id="fSide">
           <option value="" ${!n.hvSide?'selected':''}>Auto (${inferNodeSide(n.id)})</option>
-          <option value="lv" ${n.hvSide==='lv'?'selected':''}>Low voltage</option>
-          <option value="barrier" ${n.hvSide==='barrier'?'selected':''}>Isolation barrier (half/half)</option>
-          <option value="hv" ${n.hvSide==='hv'?'selected':''}>High voltage</option>
+          <option value="lv" ${n.hvSide==='lv'?'selected':''}>${L('Low voltage','Baja tensión')}</option>
+          <option value="barrier" ${n.hvSide==='barrier'?'selected':''}>${L('Isolation barrier (half/half)','Barrera de aislamiento (mitad/mitad)')}</option>
+          <option value="hv" ${n.hvSide==='hv'?'selected':''}>${L('High voltage','Alta tensión')}</option>
         </select>
       </div>
       ${nodeSide(n.id)==='barrier'?`
-      <div class="kv"><label>LV | HV halves</label>
+      <div class="kv"><label>${L('LV | HV halves','Mitades LV | HV')}</label>
         <label class="switch"><input type="checkbox" id="fFlip" ${n.hvFlip?'checked':''}><span class="knob"></span>
-          <span class="swlabel">${n.hvFlip?'HV left · LV right':'LV left · HV right'}</span></label>
+          <span class="swlabel">${n.hvFlip?L('HV left · LV right','HV izquierda · LV derecha'):L('LV left · HV right','LV izquierda · HV derecha')}</span></label>
       </div>`:''}`;
     const customPorts = !!S.groupPortOrder[n.id] || Object.keys(S.groupPortSides).some(k=>k.startsWith(n.id+'|'));
-    const portHint = `<p class="hint">${nodePortRowsFor(n.id).length} port${nodePortRowsFor(n.id).length===1?'':'s'} in this block's port zone. Drag a port's net-count badge sideways to switch which edge it attaches to, or up/down to reorder it.</p>`;
+    const portHint = `<p class="hint">${uiLang()==='es'
+      ? `${nodePortRowsFor(n.id).length} puerto${nodePortRowsFor(n.id).length===1?'':'s'} en la zona de puertos de este bloque. Arrastra la etiqueta de recuento de un puerto lateralmente para cambiar el borde al que se ancla, o arriba/abajo para reordenarlo.`
+      : `${nodePortRowsFor(n.id).length} port${nodePortRowsFor(n.id).length===1?'':'s'} in this block's port zone. Drag a port's net-count badge sideways to switch which edge it attaches to, or up/down to reorder it.`}</p>`;
     // "Add net" — two steps, so a block can join a net of ANY group, not only
     // its own. Step 1 picks the group whose nets are offered (this block's
     // group by default, every other group listed by its block title); step 2
@@ -3168,21 +3230,21 @@ function renderInspector(){
     const memberLabel = id => { const x=nodeById(id); return x?x.label:id; };
     const addNetSection = `
       <div class="addnet">
-        <div class="kv"><label>Nets from</label>
+        <div class="kv"><label>${L('Nets from','Redes de')}</label>
           <select id="anGroup">${addNetGroupOptions(gid, n.id)}</select></div>
-        <div class="kv"><label>Net</label>
+        <div class="kv"><label>${L('Net','Red')}</label>
           <select id="anNet">${addNetNetOptions(gid)}</select></div>
-        <div class="kv"><label>Direction at this block</label>
-          <select id="anDir"><option value="in">Input (arrives here)</option><option value="out">Output (driven here)</option></select></div>
+        <div class="kv"><label>${L('Direction at this block','Dirección en este bloque')}</label>
+          <select id="anDir"><option value="in">${L('Input (arrives here)','Entrada (llega aquí)')}</option><option value="out">${L('Output (driven here)','Salida (se genera aquí)')}</option></select></div>
         <div id="anNewPane" style="display:none">
-          <div class="kv"><label>Net name</label><input type="text" id="anName" placeholder="MY_NEW_NET"></div>
-          <div class="kv"><label>Type</label><select id="anType">${NET_TYPES.map(t=>`<option>${t}</option>`).join('')}</select></div>
-          <div class="kv"><label>Description</label><textarea id="anDesc" placeholder="One line: purpose, polarity if applicable"></textarea></div>
-          <div class="kv"><label>Counterpart block</label>
+          <div class="kv"><label>${L('Net name','Nombre de la red')}</label><input type="text" id="anName" placeholder="MY_NEW_NET"></div>
+          <div class="kv"><label>${L('Type','Tipo')}</label><select id="anType">${NET_TYPES.map(t=>`<option>${t}</option>`).join('')}</select></div>
+          <div class="kv"><label>${L('Description','Descripción')}</label><textarea id="anDesc" placeholder="${L('One line: purpose, polarity if applicable','Una línea: propósito, polaridad si aplica')}"></textarea></div>
+          <div class="kv"><label>${L('Counterpart block','Bloque contraparte')}</label>
             <select id="anOther">${addNetMemberOptions(gid, n.id)}</select></div>
         </div>
         <p class="hint" id="anHint"></p>
-        <button id="btnAddNetNode">Add net</button>
+        <button id="btnAddNetNode">${L('Add net','Añadir red')}</button>
       </div>`;
     if (n.kind==='ic'){
       // "Select IC" sits right under the block's name: picking the physical
@@ -3195,43 +3257,44 @@ function renderInspector(){
       // "✕" that clears the pick and brings the warnings straight back.
       const selectSection = `
         <div class="btnrow" style="margin-top:0;margin-bottom:10px">
-          <button id="btnSelectIC"${picked?'':' class="warn"'}>Select IC…</button></div>
+          <button id="btnSelectIC"${picked?'':' class="warn"'}>${L('Select IC…','Seleccionar CI…')}</button></div>
         ${picked ? `
         <div class="dkchosen">
-          <button class="x" id="btnClearIC" title="Remove this part — the block goes back to needing a selection">✕</button>
+          <button class="x" id="btnClearIC" title="${L('Remove this part — the block goes back to needing a selection','Quitar este componente — el bloque vuelve a necesitar una selección')}">✕</button>
           <span class="dkpn">${esc(dk.pn)}</span><span class="dksrc">${esc(dk.src||'DigiKey')}</span><span class="dkman">${esc(dk.man||'')}</span>
           <span class="dkdesc">${esc(dk.desc||'')}</span>
-          <span class="dkstock">${dkFmtStock(dk.stock)} in stock</span><span class="dkprice">${dkFmtPrice(dk.price, dk.currency)}</span>
+          <span class="dkstock">${dkFmtStock(dk.stock)} ${L('in stock','en stock')}</span><span class="dkprice">${dkFmtPrice(dk.price, dk.currency)}</span>
         </div>` : `
-        <p class="icwarn">⚠ Part not selected yet — pick the physical part (package, price, stock) on DigiKey or Mouser.</p>`}`;
+        <p class="icwarn">${L('⚠ Part not selected yet — pick the physical part (package, price, stock) on DigiKey or Mouser.',
+                              '⚠ Componente aún sin seleccionar — elige el componente físico (encapsulado, precio, stock) en DigiKey o Mouser.')}</p>`}`;
       body.innerHTML = `
         ${selectSection}
-        <div class="kv"><label>Type</label><div class="val">${esc(n.data.ic_type||'')}</div></div>
-        <div class="kv"><label>Manufacturer</label><div class="val">${esc(n.data.manufacturer||'—')}</div></div>
-        <div class="kv"><label>Function</label><div class="val">${esc(n.data.description||'')}</div></div>
-        <div class="kv"><label>Selection rationale</label><div class="val">${esc(n.data.selection_rationale||'')}</div></div>
-        <div class="kv"><label>Datasheet</label><div class="val">${n.data.DatasheetUrl
+        <div class="kv"><label>${L('Type','Tipo')}</label><div class="val">${esc(n.data.ic_type||'')}</div></div>
+        <div class="kv"><label>${L('Manufacturer','Fabricante')}</label><div class="val">${esc(n.data.manufacturer||'—')}</div></div>
+        <div class="kv"><label>${L('Function','Función')}</label><div class="val">${esc(n.data.description||'')}</div></div>
+        <div class="kv"><label>${L('Selection rationale','Justificación de selección')}</label><div class="val">${esc(n.data.selection_rationale||'')}</div></div>
+        <div class="kv"><label>${L('Datasheet','Hoja de datos')}</label><div class="val">${n.data.DatasheetUrl
           ? `<a href="${esc(n.data.DatasheetUrl)}" target="_blank" rel="noopener"
                title="${esc(n.data.DatasheetUrl)}">${esc(shortDatasheetLabel(n.data.DatasheetUrl))}</a>`
           : '—'}</div></div>
         ${sideRow}
         ${portHint}
         ${addNetSection}
-        ${customPorts?'<div class="btnrow"><button id="btnResetNodePorts">Reset port layout</button></div>':''}
-        <div class="btnrow"><button class="danger" id="btnDelNode">Delete IC and its connections</button></div>`;
+        ${customPorts?`<div class="btnrow"><button id="btnResetNodePorts">${L('Reset port layout','Restablecer puertos')}</button></div>`:''}
+        <div class="btnrow"><button class="danger" id="btnDelNode">${L('Delete IC and its connections','Eliminar el CI y sus conexiones')}</button></div>`;
     } else {
       body.innerHTML = `
-        <div class="kv"><label>Description</label><div class="val">${esc(n.data.description||'')}</div></div>
+        <div class="kv"><label>${L('Description','Descripción')}</label><div class="val">${esc(n.data.description||'')}</div></div>
         ${sideRow}
         ${portHint}
         ${addNetSection}
-        <div class="btnrow">${customPorts?'<button id="btnResetNodePorts">Reset port layout</button>':''}<button class="danger" id="btnDelNode">Delete block and its connections</button></div>`;
+        <div class="btnrow">${customPorts?`<button id="btnResetNodePorts">${L('Reset port layout','Restablecer puertos')}</button>`:''}<button class="danger" id="btnDelNode">${L('Delete block and its connections','Eliminar el bloque y sus conexiones')}</button></div>`;
     }
     $('fSide').onchange=()=>{ n.hvSide = $('fSide').value || undefined; render(); };
     const ff=$('fFlip'); if (ff) ff.onchange=()=>{ commit(); n.hvFlip = ff.checked || undefined; render(); };
     const selIc=$('btnSelectIC'); if (selIc) selIc.onclick=()=>openReplaceICModal(n);
     const clrIc=$('btnClearIC'); if (clrIc) clrIc.onclick=()=>{
-      commit(); delete n.data.dk; render(); toast('Part removed — this IC needs a selection again'); };
+      commit(); delete n.data.dk; render(); toast(L('Part removed — this IC needs a selection again','Componente quitado — este CI vuelve a necesitar una selección')); };
     const rp=$('btnResetNodePorts'); if (rp) rp.onclick=()=>{ commit(); resetGroupPortLayout(n.id); render(); };
     const del=$('btnDelNode'); if (del) del.onclick=()=>deleteNode(n.id);
     const anNet=$('anNet'), anGroup=$('anGroup');
@@ -3241,10 +3304,12 @@ function renderInspector(){
         const isNew = anNet.value==='__new__';
         $('anNewPane').style.display = isNew ? 'block' : 'none';
         const g = groupsWithUngrouped().find(x=>x.id===chosenGid());
-        const where = !g ? '' : (g.id===gid ? 'this group' : esc(g.title));
+        const where = !g ? '' : (g.id===gid ? L('this group','este grupo') : esc(g.title));
         $('anHint').innerHTML = isNew
-          ? `The new net connects this block to the chosen block of <b>${where}</b>.`
-          : `Offered nets are the ones <b>${where}</b> sees. Picking a net in another group creates the boundary connection, and its FROM/TO portals and the group-to-group wire follow automatically.`;
+          ? (uiLang()==='es' ? `La nueva red conecta este bloque con el bloque elegido de <b>${where}</b>.`
+                             : `The new net connects this block to the chosen block of <b>${where}</b>.`)
+          : (uiLang()==='es' ? `Las redes ofrecidas son las que ve <b>${where}</b>. Elegir una red de otro grupo crea la conexión de frontera, y sus portales FROM/TO y el cable grupo-a-grupo siguen automáticamente.`
+                             : `Offered nets are the ones <b>${where}</b> sees. Picking a net in another group creates the boundary connection, and its FROM/TO portals and the group-to-group wire follow automatically.`);
       };
       // Changing the group re-stocks BOTH lists — the nets it sees and the
       // members a new net can be drawn against.
@@ -3259,10 +3324,10 @@ function renderInspector(){
         const dir=$('anDir').value, tgtGid=chosenGid();
         if (anNet.value==='__new__'){
           const name=$('anName').value.trim().toUpperCase().replace(/[^A-Z0-9]+/g,'_').replace(/^_|_$/g,'');
-          if (!name){ toast('Net name required'); return; }
+          if (!name){ toast(L('Net name required','El nombre de la red es obligatorio')); return; }
           const other=$('anOther').value;
-          if (!other){ toast('Pick the counterpart block'); return; }
-          if (hasNet(dir==='in'?other:n.id, dir==='in'?n.id:other, name)){ toast('That connection already carries '+name); return; }
+          if (!other){ toast(L('Pick the counterpart block','Elige el bloque contraparte')); return; }
+          if (hasNet(dir==='in'?other:n.id, dir==='in'?n.id:other, name)){ toast(L('That connection already carries ','Esa conexión ya lleva ')+name); return; }
           const net={ name, type:$('anType').value, description:$('anDesc').value.trim() };
           commit();
           if (dir==='in') addNetToEdge(other, n.id, net); else addNetToEdge(n.id, other, net);
@@ -3278,13 +3343,13 @@ function renderInspector(){
           // sees; for a foreign group the wire has to start inside it.
           const inGroup=[...ends.drivers].filter(id=>id!==n.id).sort();
           const src = inGroup[0] || (tgtGid===gid && ends.driver!==n.id ? ends.driver : null);
-          if (!src){ toast('No block in that group drives '+ends.net.name+' — create a new net instead'); return; }
-          if (hasNet(src, n.id, ends.net.name)){ toast('Already connected as input'); return; }
+          if (!src){ toast(uiLang()==='es' ? 'Ningún bloque de ese grupo genera '+ends.net.name+' — crea una red nueva' : 'No block in that group drives '+ends.net.name+' — create a new net instead'); return; }
+          if (hasNet(src, n.id, ends.net.name)){ toast(L('Already connected as input','Ya está conectado como entrada')); return; }
           commit(); addNetToEdge(src, n.id, ends.net); render();
         } else {
           // this block becomes a driver feeding that group's consumers
           const targets=[...ends.consumers].filter(id=>id!==n.id && !hasNet(n.id, id, ends.net.name)).sort();
-          if (!targets.length){ toast('No block in that group consumes '+ends.net.name+' — add it as Input or create a new net'); return; }
+          if (!targets.length){ toast(uiLang()==='es' ? 'Ningún bloque de ese grupo consume '+ends.net.name+' — añádela como Entrada o crea una red nueva' : 'No block in that group consumes '+ends.net.name+' — add it as Input or create a new net'); return; }
           commit(); targets.forEach(t=>addNetToEdge(n.id, t, ends.net)); render();
         }
       };
@@ -3294,7 +3359,7 @@ function renderInspector(){
   // edge
   const e = S.edges.find(x=>x.id===S.sel.id);
   if (!e){ S.sel=null; renderInspector(); return; }
-  eye.textContent='Connection';
+  eye.textContent=L('Connection','Conexión');
   title.textContent = `${nodeById(e.source)?.label||'?'} → ${nodeById(e.target)?.label||'?'}`;
   // Ground nets are held in the model for the export but never drawn, so they're
   // summarised here instead of listed. Delete buttons carry the ORIGINAL index.
@@ -3308,33 +3373,35 @@ function renderInspector(){
       ? { label:n.label, url:n.data.DatasheetUrl, role:x.role } : null;
   }).filter(Boolean);
   body.innerHTML = `
-    ${e.nets.length?'':'<p style="color:var(--warn)">This connection has no nets yet — add at least one, or it will be dropped on export.</p>'}
+    ${e.nets.length?'':`<p style="color:var(--warn)">${L('This connection has no nets yet — add at least one, or it will be dropped on export.','Esta conexión aún no tiene redes — añade al menos una, o se descartará al exportar.')}</p>`}
     ${shown.map(({n,i})=>`
-      <div class="netcard traceable cat-${netCategory(n)}${S.traceNet===n.name?' on':''}" data-tracenet="${esc(n.name)}" title="Click to trace this net end to end">
+      <div class="netcard traceable cat-${netCategory(n)}${S.traceNet===n.name?' on':''}" data-tracenet="${esc(n.name)}" title="${L('Click to trace this net end to end','Clic para trazar esta red de extremo a extremo')}">
         <div class="nettop">
           <span class="netname">${esc(n.name)}</span>
           <span class="nettype">${esc(n.type)}</span>
           <button class="netdom ${isHvNet(n)?'hv':'lv'}" data-domnet="${i}"
-            title="Insulation domain of this net — click to flip. Blocks re-classify automatically (unless their Voltage domain is set by hand).">${isHvNet(n)?'HV':'LV'}</button>
-          <button class="x" data-delnet="${i}" title="Remove net">✕</button>
+            title="${L('Insulation domain of this net — click to flip. Blocks re-classify automatically (unless their Voltage domain is set by hand).','Dominio de aislamiento de esta red — clic para cambiarlo. Los bloques se reclasifican automáticamente (salvo que su dominio esté fijado a mano).')}">${isHvNet(n)?'HV':'LV'}</button>
+          <button class="x" data-delnet="${i}" title="${L('Remove net','Quitar red')}">✕</button>
         </div>
         ${n.description?`<div class="netdesc">${esc(n.description)}</div>`:''}
       </div>`).join('')}
-    ${gndCount?`<p class="hint">${gndCount} ground net${gndCount>1?'s':''} on this connection — kept in the export, never drawn.</p>`:''}
-    ${dsLinks.length?`<div class="kv" style="margin-top:12px"><label>Datasheets</label><div class="val">${dsLinks.map(d=>
+    ${gndCount?`<p class="hint">${uiLang()==='es'
+      ? `${gndCount} red${gndCount>1?'es':''} de masa en esta conexión — se conserva${gndCount>1?'n':''} en la exportación, nunca se dibuja${gndCount>1?'n':''}.`
+      : `${gndCount} ground net${gndCount>1?'s':''} on this connection — kept in the export, never drawn.`}</p>`:''}
+    ${dsLinks.length?`<div class="kv" style="margin-top:12px"><label>${L('Datasheets','Hojas de datos')}</label><div class="val">${dsLinks.map(d=>
       `<a href="${esc(d.url)}" target="_blank" rel="noopener">${esc(d.label)}</a> <span style="color:var(--ink-soft)">(${d.role})</span>`).join('<br>')}</div></div>`:''}
     <div class="addnet">
-      <div class="kv"><label>Net name</label><input type="text" id="newNetName" placeholder="MY_NEW_NET"></div>
+      <div class="kv"><label>${L('Net name','Nombre de la red')}</label><input type="text" id="newNetName" placeholder="MY_NEW_NET"></div>
       <div class="row">
-        <div class="kv"><label>Type</label><select id="newNetType">${NET_TYPES.map(t=>`<option>${t}</option>`).join('')}</select></div>
+        <div class="kv"><label>${L('Type','Tipo')}</label><select id="newNetType">${NET_TYPES.map(t=>`<option>${t}</option>`).join('')}</select></div>
       </div>
-      <div class="kv"><label>Description</label><textarea id="newNetDesc" placeholder="One line: purpose, polarity/tie point if applicable"></textarea></div>
-      <button id="btnAddNet">Add net</button>
+      <div class="kv"><label>${L('Description','Descripción')}</label><textarea id="newNetDesc" placeholder="${L('One line: purpose, polarity/tie point if applicable','Una línea: propósito, polaridad/punto de unión si aplica')}"></textarea></div>
+      <button id="btnAddNet">${L('Add net','Añadir red')}</button>
     </div>
-    <p class="hint">Drag the vertical segments sideways or the horizontal segments up/down to reroute — including the last segment where the wire enters the block. The arrow always enters the block perpendicular to its edge.</p>
+    <p class="hint">${L('Drag the vertical segments sideways or the horizontal segments up/down to reroute — including the last segment where the wire enters the block. The arrow always enters the block perpendicular to its edge.','Arrastra los segmentos verticales lateralmente o los horizontales arriba/abajo para redirigir — incluido el último segmento donde el cable entra al bloque. La flecha siempre entra al bloque perpendicular a su borde.')}</p>
     <div class="btnrow">
-      ${nodeEdgeRouteOf(e)?'<button id="btnResetRoute">Reset routing</button>':''}
-      <button class="danger" id="btnDelEdge">Delete connection</button>
+      ${nodeEdgeRouteOf(e)?`<button id="btnResetRoute">${L('Reset routing','Restablecer ruta')}</button>`:''}
+      <button class="danger" id="btnDelEdge">${L('Delete connection','Eliminar conexión')}</button>
     </div>`;
   body.querySelectorAll('[data-delnet]').forEach(b=>b.onclick=()=>{ commit(); e.nets.splice(+b.dataset.delnet,1); render(); });
   body.querySelectorAll('[data-domnet]').forEach(b=>b.onclick=()=>{
@@ -3346,8 +3413,8 @@ function renderInspector(){
   $('btnAddNet').onclick=()=>{
     commit();
     const name = $('newNetName').value.trim().toUpperCase().replace(/[^A-Z0-9]+/g,'_').replace(/^_|_$/g,'');
-    if (!name){ toast('Net name required'); return; }
-    if (e.nets.some(n=>n.name===name)){ toast('This connection already carries a net with that name'); return; }
+    if (!name){ toast(L('Net name required','El nombre de la red es obligatorio')); return; }
+    if (e.nets.some(n=>n.name===name)){ toast(L('This connection already carries a net with that name','Esta conexión ya lleva una red con ese nombre')); return; }
     e.nets.push({ name, type:$('newNetType').value, description:$('newNetDesc').value.trim() });
     e.nets.sort((a,b)=>a.name.localeCompare(b.name));
     render();
@@ -3381,16 +3448,16 @@ function renderStatus(){
   const emptyEdges = S.edges.filter(e=>e.nets.length===0);
   const ungrouped = groupsWithUngrouped().find(g=>g.id===UNGROUPED_ID);
   const bits = [];
-  bits.push(`<span class="chip"><span class="dot" style="background:var(--copper)"></span>${S.nodes.length} blocks · ${drawn.length} connections</span>`);
+  bits.push(`<span class="chip"><span class="dot" style="background:var(--copper)"></span>${S.nodes.length} ${L('blocks','bloques')} · ${drawn.length} ${L('connections','conexiones')}</span>`);
   // On an empty sheet there is nothing to vouch for — "all blocks connected"
   // would be a claim about nothing.
   if (S.nodes.length) bits.push(isolated.length
-    ? `<span class="chip warn"><span class="dot"></span>${isolated.length} unconnected block${isolated.length>1?'s':''}: ${esc(isolated.slice(0,3).map(n=>n.label).join(', '))}${isolated.length>3?'…':''}</span>`
-    : `<span class="chip ok"><span class="dot"></span>all blocks connected</span>`);
-  if (emptyEdges.length) bits.push(`<span class="chip warn"><span class="dot"></span>${emptyEdges.length} connection${emptyEdges.length>1?'s':''} without nets</span>`);
-  if (ungrouped && ungrouped.members.length) bits.push(`<span class="chip warn"><span class="dot"></span>${ungrouped.members.length} ungrouped block${ungrouped.members.length>1?'s':''}</span>`);
+    ? `<span class="chip warn"><span class="dot"></span>${isolated.length} ${L('unconnected block','bloque')}${isolated.length>1?'s':''}${uiLang()==='es'?' sin conectar':''}: ${esc(isolated.slice(0,3).map(n=>n.label).join(', '))}${isolated.length>3?'…':''}</span>`
+    : `<span class="chip ok"><span class="dot"></span>${L('all blocks connected','todos los bloques conectados')}</span>`);
+  if (emptyEdges.length) bits.push(`<span class="chip warn"><span class="dot"></span>${emptyEdges.length} ${L('connection','conexión')}${emptyEdges.length>1?(uiLang()==='es'?'es':'s'):''} ${L('without nets','sin redes')}</span>`);
+  if (ungrouped && ungrouped.members.length) bits.push(`<span class="chip warn"><span class="dot"></span>${ungrouped.members.length} ${L('ungrouped block','bloque')}${ungrouped.members.length>1?'s':''}${uiLang()==='es'?' sin grupo':''}</span>`);
   const unpicked = S.nodes.filter(n=>n.kind==='ic' && !icSelected(n)).length;
-  if (unpicked) bits.push(`<span class="chip warn"><span class="dot"></span>${unpicked} IC${unpicked>1?'s':''} without a selected part</span>`);
+  if (unpicked) bits.push(`<span class="chip warn"><span class="dot"></span>${unpicked} ${L('IC','CI')}${unpicked>1?'s':''} ${L('without a selected part','sin componente seleccionado')}</span>`);
   // The header's Auto IC Selection wears the same amber while any IC still
   // lacks its part, and goes back to normal once every card is filled.
   const autoBtn = $('btnAutoIC'); if (autoBtn) autoBtn.classList.toggle('warn', unpicked>0);
@@ -3401,11 +3468,13 @@ function renderStatus(){
 // The legend floats over the canvas (top-right, see #legend in styles.css) so
 // the color key sits next to the wires it explains, in every view level.
 const LEGEND_LABELS = { hv:'HV', power:'Power', control:'Control', logic:'Logic', analog:'Analog/sense', switching:'Switching', other:'Other' };
+const LEGEND_LABELS_ES = { hv:'HV', power:'Potencia', control:'Control', logic:'Lógica', analog:'Analógica', switching:'Conmutación', other:'Otras' };
 function renderLegend(){
+  const labels = uiLang()==='es' ? LEGEND_LABELS_ES : LEGEND_LABELS;
   $('legend').innerHTML = CATEGORY_PRIORITY.map(cat=>{
     const style = NET_CATEGORY_STYLE[cat];
     const dash = style.dash ? `border-top-style:dashed;` : '';
-    return `<span class="litem"><span class="lswatch" style="border-top-color:${style.color};${dash}"></span>${LEGEND_LABELS[cat]}</span>`;
+    return `<span class="litem"><span class="lswatch" style="border-top-color:${style.color};${dash}"></span>${labels[cat]}</span>`;
   }).join('');
 }
 
@@ -3591,7 +3660,7 @@ svg.addEventListener('pointermove', ev=>{
       // other way round. Vertical reordering below is still allowed.
       if (wantedSide !== row.side && !drag.warned){
         drag.warned = true;
-        toast(`${row.hv?'HV':'LV'} connections stay on the ${row.hv?'HV':'LV'} side of this block`);
+        toast(uiLang()==='es' ? `Las conexiones ${row.hv?'HV':'LV'} se quedan en el lado ${row.hv?'HV':'LV'} de este bloque` : `${row.hv?'HV':'LV'} connections stay on the ${row.hv?'HV':'LV'} side of this block`);
       }
     } else if (groupPortSideOf(drag.gid, drag.src, drag.tgt, drag.dir, drag.dom) !== wantedSide){
       setGroupPortSide(drag.gid, drag.src, drag.tgt, wantedSide, drag.dom);
@@ -3616,7 +3685,7 @@ svg.addEventListener('pointermove', ev=>{
     if (row && row.pinned){
       if (wantedSide !== row.side && !drag.warned){
         drag.warned = true;
-        toast(`${row.hv?'HV':'LV'} connections stay on the ${row.hv?'HV':'LV'} side of this block`);
+        toast(uiLang()==='es' ? `Las conexiones ${row.hv?'HV':'LV'} se quedan en el lado ${row.hv?'HV':'LV'} de este bloque` : `${row.hv?'HV':'LV'} connections stay on the ${row.hv?'HV':'LV'} side of this block`);
       }
     } else if (groupPortSideOf(drag.nid, drag.src, drag.tgt, drag.dir) !== wantedSide){
       setGroupPortSide(drag.nid, drag.src, drag.tgt, wantedSide);
@@ -4102,12 +4171,12 @@ function fillMissingDatasheet(n){
 let dkPicked = null;
 function dkRenderResults(list){
   const box = $('dkResults');
-  if (!list.length){ box.innerHTML = '<p class="hint">No parts found.</p>'; return; }
+  if (!list.length){ box.innerHTML = `<p class="hint">${L('No parts found.','Ningún componente encontrado.')}</p>`; return; }
   box.innerHTML = list.map((r,i)=>`
     <button type="button" class="dkrow" data-i="${i}">
       <span class="dkpn">${esc(r.pn)}</span><span class="dksrc">${esc(r.src||'DigiKey')}</span><span class="dkman">${esc(r.man)}</span>
       <span class="dkdesc">${esc(r.desc)}</span>
-      <span class="dkstock">${dkFmtStock(r.stock)} in stock</span><span class="dkprice">${dkFmtPrice(r.price, r.currency)}</span>
+      <span class="dkstock">${dkFmtStock(r.stock)} ${L('in stock','en stock')}</span><span class="dkprice">${dkFmtPrice(r.price, r.currency)}</span>
     </button>`).join('');
   box.querySelectorAll('.dkrow').forEach(btn=>btn.onclick=()=>{
     const r = list[+btn.dataset.i];
@@ -4136,23 +4205,21 @@ function dkRenderResults(list){
 function icFormMarkup(v){
   return `
     <div class="dksearch">
-      <div class="kv"><label>Search DigiKey + Mouser by part number</label>
+      <div class="kv"><label>${L('Search DigiKey + Mouser by part number','Buscar en DigiKey + Mouser por número de componente')}</label>
         <div class="row"><input type="text" id="dkQuery" placeholder="TPS7A21" autocomplete="off" value="${esc(v.query||'')}">
-        <button id="dkGo" style="flex:0 0 auto">Search</button></div>
+        <button id="dkGo" style="flex:0 0 auto">${L('Search','Buscar')}</button></div>
       </div>
       <div id="dkStatus" class="hint" style="margin:4px 0"></div>
       <div id="dkResults" class="dkresults"></div>
-      <p class="hint" style="margin-bottom:4px">Results from both distributors are merged and sorted by stock quantity, highest first.
-        Picking a part fills in its identity below — the function in this system and the selection rationale stay yours to write.
-        Distributors, currency and API keys are configured in
-        <button class="linklike" id="dkCfgOpen">Part search API settings</button></p>
+      <p class="hint" style="margin-bottom:4px">${L('Results from both distributors are merged and sorted by stock quantity, highest first. Picking a part fills in its identity below — the function in this system and the selection rationale stay yours to write. Distributors, currency and API keys are configured in','Los resultados de ambos distribuidores se mezclan y ordenan por stock, de mayor a menor. Elegir un componente rellena su identidad abajo — la función en este sistema y la justificación de selección siguen siendo tuyas. Distribuidores, moneda y API keys se configuran en')}
+        <button class="linklike" id="dkCfgOpen">${L('Part search API settings','Ajustes de las APIs de búsqueda')}</button></p>
     </div>
-    <div class="kv"><label>Part number *</label><input type="text" id="fPN" placeholder="TPS7A21" value="${esc(v.pn||'')}"></div>
-    <div class="kv"><label>IC type *</label><input type="text" id="fType" placeholder="Low-noise LDO regulator" value="${esc(v.type||'')}"></div>
-    <div class="kv"><label>Manufacturer</label><input type="text" id="fMan" placeholder="TEXAS INSTRUMENTS" value="${esc(v.man||'')}"></div>
-    <div class="kv"><label>Function in this system *</label><textarea id="fDesc">${esc(v.desc||'')}</textarea></div>
-    <div class="kv"><label>Selection rationale</label><textarea id="fRat">${esc(v.rat||'')}</textarea></div>
-    <div class="kv"><label>Datasheet URL</label><input type="text" id="fUrl" placeholder="https://www.ti.com/lit/ds/symlink/....pdf" value="${esc(v.url||'')}"></div>`;
+    <div class="kv"><label>${L('Part number *','Número de componente *')}</label><input type="text" id="fPN" placeholder="TPS7A21" value="${esc(v.pn||'')}"></div>
+    <div class="kv"><label>${L('IC type *','Tipo de CI *')}</label><input type="text" id="fType" placeholder="${L('Low-noise LDO regulator','Regulador LDO de bajo ruido')}" value="${esc(v.type||'')}"></div>
+    <div class="kv"><label>${L('Manufacturer','Fabricante')}</label><input type="text" id="fMan" placeholder="TEXAS INSTRUMENTS" value="${esc(v.man||'')}"></div>
+    <div class="kv"><label>${L('Function in this system *','Función en este sistema *')}</label><textarea id="fDesc">${esc(v.desc||'')}</textarea></div>
+    <div class="kv"><label>${L('Selection rationale','Justificación de selección')}</label><textarea id="fRat">${esc(v.rat||'')}</textarea></div>
+    <div class="kv"><label>${L('Datasheet URL','URL de la hoja de datos')}</label><input type="text" id="fUrl" placeholder="https://www.ti.com/lit/ds/symlink/....pdf" value="${esc(v.url||'')}"></div>`;
 }
 function wireIcFormHandlers(){
   dkPicked = null;
@@ -4165,14 +4232,15 @@ function wireIcFormHandlers(){
   // shows the other's results, with the failure noted next to the count.
   const runSearch = async ()=>{
     const q = $('dkQuery').value.trim();
-    if (!q){ $('dkStatus').textContent='Type a part number to search.'; return; }
+    if (!q){ $('dkStatus').textContent=L('Type a part number to search.','Escribe un número de componente para buscar.'); return; }
     const so = searchOptions();
     if (!so.digikey && !so.mouser){
-      $('dkStatus').textContent='Both distributors are turned off — enable one in "Part search API settings".';
+      $('dkStatus').textContent=L('Both distributors are turned off — enable one in "Part search API settings".',
+                                  'Ambos distribuidores están desactivados — activa uno en "Ajustes de las APIs de búsqueda".');
       return;
     }
     const names = [so.digikey?'DigiKey':null, so.mouser?'Mouser':null].filter(Boolean);
-    $('dkStatus').textContent='Searching '+names.join(' and ')+'…';
+    $('dkStatus').textContent=L('Searching ','Buscando en ')+names.join(L(' and ',' y '))+'…';
     $('dkResults').innerHTML='';
     const [dk, ms] = await Promise.allSettled([
       so.digikey ? dkSearch(q) : Promise.resolve(null),
@@ -4186,7 +4254,9 @@ function wireIcFormHandlers(){
     }
     const msRows = ms.status==='fulfilled' ? ms.value : null;
     const list = mergePartResults(dk.status==='fulfilled'?dk.value:null, msRows, so.currency);
-    const count = list.length ? list.length+' part'+(list.length===1?'':'s')+' — highest stock first' : '';
+    const count = list.length ? list.length+(uiLang()==='es'
+      ? ' componente'+(list.length===1?'':'s')+' — mayor stock primero'
+      : ' part'+(list.length===1?'':'s')+' — highest stock first') : '';
     const notes = [msCurrencyNote(msRows, so.currency), ...errs].filter(Boolean);
     $('dkStatus').textContent = count + (notes.length ? (count?' · ':'')+notes.join(' · ') : '');
     dkRenderResults(list);
@@ -4243,14 +4313,14 @@ async function autoIcSelection(){
   // The confirmation modal is open — flip it into a progress log while the
   // searches run one part at a time (kind to both APIs' rate limits).
   $('modalBody').innerHTML = '<div id="aiLog" class="ailog"></div>';
-  $('modalFoot').innerHTML = '<button disabled>Working…</button>';
+  $('modalFoot').innerHTML = `<button disabled>${L('Working…','Trabajando…')}</button>`;
   const logBox = $('aiLog');
   commit();
   let done = 0; const skipped = [];
   for (const n of targets){
     const pn = n.data.ic_part_number || n.id;
     const line = document.createElement('div');
-    line.textContent = pn+' — searching…';
+    line.textContent = pn+L(' — searching…',' — buscando…');
     logBox.appendChild(line); logBox.scrollTop = 1e9;
     const [dk, ms] = await Promise.allSettled([
       so.digikey ? dkSearch(pn) : Promise.resolve(null),
@@ -4260,7 +4330,7 @@ async function autoIcSelection(){
     const best = autoIcPick(rows);
     if (!best){
       skipped.push(pn);
-      line.textContent = pn+' — no in-stock priced offers, skipped';
+      line.textContent = pn+L(' — no in-stock priced offers, skipped',' — sin ofertas con stock y precio, omitido');
       continue;
     }
     n.data.dk = { ...best };
@@ -4276,23 +4346,31 @@ async function autoIcSelection(){
     line.textContent = pn+' — '+best.pn+' · '+dkFmtPrice(best.price, best.currency)+' · '+best.src;
   }
   closeModal(); render();
-  toast(done+' IC'+(done===1?'':'s')+' assigned the cheapest offer'
-    +(skipped.length ? ' · '+skipped.length+' skipped (no priced offers)' : ''));
+  toast(done+(uiLang()==='es' ? ' CI'+(done===1?'':'s')+' con la oferta más barata asignada' : ' IC'+(done===1?'':'s')+' assigned the cheapest offer')
+    +(skipped.length ? ' · '+skipped.length+L(' skipped (no priced offers)',' omitidos (sin ofertas con precio)') : ''));
 }
 $('btnAutoIC').onclick=()=>{
   const targets = S.nodes.filter(n=>n.kind==='ic' && !icSelected(n));
-  if (!targets.length){ toast('Every IC already has its part selected'); return; }
+  if (!targets.length){ toast(L('Every IC already has its part selected','Todos los CIs ya tienen su componente seleccionado')); return; }
   const so = searchOptions();
-  if (!so.digikey && !so.mouser){ toast('Both distributors are turned off — enable one in "Part search API settings"'); return; }
-  const where = so.digikey && so.mouser ? 'DigiKey and Mouser' : so.digikey ? 'DigiKey' : 'Mouser';
-  openModal('Auto IC Selection', `
+  if (!so.digikey && !so.mouser){ toast(L('Both distributors are turned off — enable one in "Part search API settings"','Ambos distribuidores están desactivados — activa uno en "Ajustes de las APIs de búsqueda"')); return; }
+  const where = so.digikey && so.mouser ? L('DigiKey and Mouser','DigiKey y Mouser') : so.digikey ? 'DigiKey' : 'Mouser';
+  openModal(L('Auto IC Selection','Selección auto de CI'), uiLang()==='es' ? `
+    <p>Esto busca en ${where} cada uno de los <b>${targets.length} CI${targets.length>1?'s':''}</b> sin componente
+      seleccionado y asigna la <b>oferta con precio MÁS BARATA</b> encontrada — sin criterio de ingeniería.
+      ¿Estás seguro?</p>
+    <p class="hint">La más barata por precio unitario entre las <b>5 primeras ofertas con stock</b> de cada búsqueda
+      (el stock desempata) — nunca se elige un componente sin stock. Los nombres de los bloques no cambian — la oferta
+      elegida va a la tarjeta del componente, donde "✕" o Seleccionar CI… pueden reemplazarla. Toda la pasada es un
+      único cambio deshacible (Ctrl+Z).</p>
+  ` : `
     <p>This searches ${where} for each of the <b>${targets.length} IC${targets.length>1?'s':''}</b> without a
       selected part and assigns the <b>CHEAPEST priced offer</b> found — no engineering judgement involved.
       Are you sure?</p>
     <p class="hint">Cheapest by unit price among the <b>top 5 in-stock offers</b> of each search (stock as the
       tie-break) — an out-of-stock part is never picked. Block names stay as they are — the chosen offer lands on
       the part card, where "✕" or Select IC… can still replace it. The whole pass is one undoable edit (Ctrl+Z).</p>
-  `, `<button id="mCancel">Cancel</button><button class="primary" id="mOk">Assign cheapest</button>`);
+  `, `<button id="mCancel">${L('Cancel','Cancelar')}</button><button class="primary" id="mOk">${L('Assign cheapest','Asignar más barata')}</button>`);
   $('mCancel').onclick=closeModal;
   $('mOk').onclick=()=>autoIcSelection();
 };
@@ -4300,16 +4378,16 @@ $('btnAutoIC').onclick=()=>{
 $('btnAddIC').onclick=()=>{
   const openGroup = !isTopLevel() && S.openGroup!==UNGROUPED_ID
     ? S.groups.find(g=>g.id===S.openGroup) : null;
-  openModal('Add IC block', icFormMarkup({}) + `
-    <p class="hint">The new block appears in the nearest clear spot to the center of the view. ${openGroup
-      ? `It will join the open group "${esc(openGroup.title)}".`
-      : 'It will be ungrouped — open a group first if it belongs in one.'}</p>
-  `, `<button id="mCancel">Cancel</button><button class="primary" id="mOk">Add IC</button>`);
+  openModal(L('Add IC block','Añadir bloque de CI'), icFormMarkup({}) + `
+    <p class="hint">${L('The new block appears in the nearest clear spot to the center of the view. ','El nuevo bloque aparece en el hueco libre más cercano al centro de la vista. ')}${openGroup
+      ? (uiLang()==='es' ? `Se unirá al grupo abierto "${esc(openGroup.title)}".` : `It will join the open group "${esc(openGroup.title)}".`)
+      : L('It will be ungrouped — open a group first if it belongs in one.','Quedará sin grupo — abre antes un grupo si pertenece a uno.')}</p>
+  `, `<button id="mCancel">${L('Cancel','Cancelar')}</button><button class="primary" id="mOk">${L('Add IC','Añadir CI')}</button>`);
   wireIcFormHandlers();
   $('mOk').onclick=()=>{
     const pn=$('fPN').value.trim();
-    if (!pn || !$('fType').value.trim() || !$('fDesc').value.trim()){ toast('Part number, type and function are required'); return; }
-    if (nodeById(pn)){ toast('A block with this part number already exists'); return; }
+    if (!pn || !$('fType').value.trim() || !$('fDesc').value.trim()){ toast(L('Part number, type and function are required','Número de componente, tipo y función son obligatorios')); return; }
+    if (nodeById(pn)){ toast(L('A block with this part number already exists','Ya existe un bloque con ese número de componente')); return; }
     const node = { id:pn, kind:'ic', label:pn, x:0, y:0, w:NODE_W_IC, h:NODE_H_IC,
       data:{ ic_part_number:pn, ic_type:$('fType').value.trim(), manufacturer:$('fMan').value.trim(),
              description:$('fDesc').value.trim(), selection_rationale:$('fRat').value.trim(),
@@ -4346,20 +4424,19 @@ $('btnAddIC').onclick=()=>{
 $('btnAddExt').onclick=()=>{
   const openGroup = !isTopLevel() && S.openGroup!==UNGROUPED_ID
     ? S.groups.find(g=>g.id===S.openGroup) : null;
-  openModal('Add external block', `
-    <div class="kv"><label>Name *</label><input type="text" id="fExtName" placeholder="HV output connector"></div>
-    <div class="kv"><label>Description</label><textarea id="fExtDesc" placeholder="One line: what this element is and its role"></textarea></div>
-    <p class="hint">External blocks are connectors, batteries, transformers, passive networks — system elements without a designator.
-      The new block appears in the nearest clear spot. ${openGroup
-      ? `It will join the open group "${esc(openGroup.title)}".`
-      : 'It will be ungrouped — open a group first if it belongs in one.'}</p>
-  `, `<button id="mCancel">Cancel</button><button class="primary" id="mOk">Add external block</button>`);
+  openModal(L('Add external block','Añadir bloque externo'), `
+    <div class="kv"><label>${L('Name *','Nombre *')}</label><input type="text" id="fExtName" placeholder="${L('HV output connector','Conector de salida HV')}"></div>
+    <div class="kv"><label>${L('Description','Descripción')}</label><textarea id="fExtDesc" placeholder="${L('One line: what this element is and its role','Una línea: qué es este elemento y su papel')}"></textarea></div>
+    <p class="hint">${L('External blocks are connectors, batteries, transformers, passive networks — system elements without a designator. The new block appears in the nearest clear spot. ','Los bloques externos son conectores, baterías, transformadores, redes pasivas — elementos del sistema sin designador. El nuevo bloque aparece en el hueco libre más cercano. ')}${openGroup
+      ? (uiLang()==='es' ? `Se unirá al grupo abierto "${esc(openGroup.title)}".` : `It will join the open group "${esc(openGroup.title)}".`)
+      : L('It will be ungrouped — open a group first if it belongs in one.','Quedará sin grupo — abre antes un grupo si pertenece a uno.')}</p>
+  `, `<button id="mCancel">${L('Cancel','Cancelar')}</button><button class="primary" id="mOk">${L('Add external block','Añadir bloque externo')}</button>`);
   $('mCancel').onclick=closeModal;
   $('mOk').onclick=()=>{
     const name=$('fExtName').value.trim();
-    if (!name){ toast('A name is required'); return; }
+    if (!name){ toast(L('A name is required','El nombre es obligatorio')); return; }
     if (nodeById('EXT:'+name) || S.nodes.some(n=>n.kind==='external' && n.label.toLowerCase()===name.toLowerCase())){
-      toast('An external block with this name already exists'); return;
+      toast(L('An external block with this name already exists','Ya existe un bloque externo con ese nombre')); return;
     }
     const node = { id:'EXT:'+name, kind:'external', label:name, x:0, y:0, w:NODE_W_EXT, h:NODE_H_EXT,
       data:{ description:$('fExtDesc').value.trim() } };
@@ -4452,7 +4529,7 @@ function groupNetIndex(gid){
 function addNetToEdge(srcId, tgtId, net){
   let e = S.edges.find(x=>x.source===srcId && x.target===tgtId);
   if (!e){ e = { id:'e'+(S.edgeSeq++), source:srcId, target:tgtId, nets:[] }; S.edges.push(e); }
-  if (e.nets.some(x=>x.name===net.name)){ toast('That connection already carries '+net.name); return false; }
+  if (e.nets.some(x=>x.name===net.name)){ toast(L('That connection already carries ','Esa conexión ya lleva ')+net.name); return false; }
   e.nets.push({ name:net.name, type:net.type||'NA', description:net.description||'',
     ...(net.hv!=null ? { hv:!!net.hv } : {}) });
   e.nets.sort((a,b)=>a.name.localeCompare(b.name));
@@ -4479,7 +4556,7 @@ function candidateNetsForPortal(gid){
 function openAddPortalModal(dir){
   const here = groupsWithUngrouped().find(g=>g.id===S.openGroup);
   const others = groupsWithUngrouped().filter(g=>g.id!==S.openGroup && g.members.length);
-  if (!here || !others.length){ toast('No other group to connect to'); return; }
+  if (!here || !others.length){ toast(L('No other group to connect to','No hay otro grupo al que conectar')); return; }
   const nets = candidateNetsForPortal(S.openGroup);
   const memberLabel = id => { const x=nodeById(id); return x?x.label:id; };
   const memberOpts = ids => ids.map(id=>`<option value="${esc(id)}">${esc(memberLabel(id))}</option>`).join('');
@@ -4505,10 +4582,10 @@ function openAddPortalModal(dir){
   $('mOk').onclick=()=>{
     const far=$('apFar').value, near=$('apNear').value;
     const net=nets.find(n=>n.name===$('apNet').value);
-    if (!far || !near || !net){ toast('Pick both blocks and a net'); return; }
+    if (!far || !near || !net){ toast(L('Pick both blocks and a net','Elige ambos bloques y una red')); return; }
     const src = dir==='in' ? far : near, tgt = dir==='in' ? near : far;
     const existing = S.edges.find(e=>e.source===src && e.target===tgt);
-    if (existing && existing.nets.some(x=>x.name===net.name)){ toast('That connection already carries '+net.name); return; }
+    if (existing && existing.nets.some(x=>x.name===net.name)){ toast(L('That connection already carries ','Esa conexión ya lleva ')+net.name); return; }
     commit();
     addNetToEdge(src, tgt, net);
     closeModal(); render();
@@ -4555,7 +4632,7 @@ function renameNodeId(oldId, newId){
 // the old part (still editable) — only the identity really changes. Every
 // connection, port layout and route survives the swap.
 function openReplaceICModal(n){
-  openModal('Select IC — '+n.label, icFormMarkup({
+  openModal(L('Select IC — ','Seleccionar CI — ')+n.label, icFormMarkup({
     query: n.data.ic_part_number || n.id,
     pn: n.data.ic_part_number || n.id,
     type: n.data.ic_type || '',
@@ -4564,14 +4641,15 @@ function openReplaceICModal(n){
     rat: n.data.selection_rationale || '',
     url: n.data.DatasheetUrl || ''
   }) + `
-    <p class="hint">Selecting keeps every connection, port layout and route of "${esc(n.label)}".
-      The function and selection rationale above were carried over — edit them if the chosen part changes the story.</p>
-  `, `<button id="mCancel">Cancel</button><button class="primary" id="mOk">Select</button>`);
+    <p class="hint">${uiLang()==='es'
+      ? `Seleccionar conserva todas las conexiones, puertos y rutas de "${esc(n.label)}". La función y la justificación de arriba se han arrastrado — edítalas si el componente elegido cambia la historia.`
+      : `Selecting keeps every connection, port layout and route of "${esc(n.label)}". The function and selection rationale above were carried over — edit them if the chosen part changes the story.`}</p>
+  `, `<button id="mCancel">${L('Cancel','Cancelar')}</button><button class="primary" id="mOk">${L('Select','Seleccionar')}</button>`);
   wireIcFormHandlers();
   $('mOk').onclick=()=>{
     const pn=$('fPN').value.trim();
-    if (!pn || !$('fType').value.trim() || !$('fDesc').value.trim()){ toast('Part number, type and function are required'); return; }
-    if (pn!==n.id && nodeById(pn)){ toast('A block with this part number already exists'); return; }
+    if (!pn || !$('fType').value.trim() || !$('fDesc').value.trim()){ toast(L('Part number, type and function are required','Número de componente, tipo y función son obligatorios')); return; }
+    if (pn!==n.id && nodeById(pn)){ toast(L('A block with this part number already exists','Ya existe un bloque con ese número de componente')); return; }
     commit();
     renameNodeId(n.id, pn);
     n.label = pn;
@@ -4585,24 +4663,24 @@ function openReplaceICModal(n){
                DatasheetUrl:$('fUrl').value.trim() };
     if (dk){ n.data.dk = dk; fillMissingDatasheet(n); } else delete n.data.dk;
     closeModal(); S.sel={type:'node',id:pn}; render();
-    toast(dk ? 'Part selected — connections and routing kept' : 'Updated — part still needs to be selected');
+    toast(dk ? L('Part selected — connections and routing kept','Componente seleccionado — conexiones y rutas conservadas') : L('Updated — part still needs to be selected','Actualizado — el componente aún necesita ser seleccionado'));
   };
 }
 
 // Named so the empty-sheet "+" card can raise the very same dialog as the
 // header button — one import path, no duplicated modal.
 function openImportModal(){
-  openModal('Import', `
-    <div class="tabs"><button class="on" id="tabA">System JSON</button><button id="tabB">Saved session</button></div>
+  openModal(L('Import','Importar'), `
+    <div class="tabs"><button class="on" id="tabA">${L('System JSON','JSON de sistema')}</button><button id="tabB">${L('Saved session','Sesión guardada')}</button></div>
     <div id="paneA">
-      <p class="hint">Paste the combined system JSON from your n8n pipeline: <span style="font-family:var(--mono)">{"input":…, "contract":…, "groups":…}</span>. Markdown fences and <span style="font-family:var(--mono)">{"output": "..."}</span> wrappers are handled automatically. A bare legacy input JSON (just <span style="font-family:var(--mono)">ic_components</span>, no contract) is also accepted.</p>
-      <div class="kv"><label>System JSON (input + contract + groups)</label><textarea id="impSys"></textarea></div>
+      <p class="hint">${L('Paste the combined system JSON from your n8n pipeline: ','Pega el JSON de sistema combinado de tu pipeline n8n: ')}<span style="font-family:var(--mono)">{"input":…, "contract":…, "groups":…}</span>. ${L('Markdown fences and ','Las vallas de Markdown y los envoltorios ')}<span style="font-family:var(--mono)">{"output": "..."}</span>${L(' wrappers are handled automatically. A bare legacy input JSON (just ',' se gestionan automáticamente. También se acepta un JSON de entrada legado (solo ')}<span style="font-family:var(--mono)">ic_components</span>${L(', no contract) is also accepted.',', sin contrato).')}</p>
+      <div class="kv"><label>${L('System JSON (input + contract + groups)','JSON de sistema (input + contract + groups)')}</label><textarea id="impSys"></textarea></div>
     </div>
     <div id="paneB" style="display:none">
-      <p class="hint">Paste a session JSON previously saved from Export → Save session (keeps positions and edits).</p>
-      <div class="kv"><label>Session JSON</label><textarea id="impSess"></textarea></div>
+      <p class="hint">${L('Paste a session JSON previously saved from Export → Save session (keeps positions and edits).','Pega un JSON de sesión guardado antes desde Exportar → Guardar sesión (conserva posiciones y ediciones).')}</p>
+      <div class="kv"><label>${L('Session JSON','JSON de sesión')}</label><textarea id="impSess"></textarea></div>
     </div>
-  `, `<button id="mCancel">Cancel</button><button class="primary" id="mOk">Import</button>`);
+  `, `<button id="mCancel">${L('Cancel','Cancelar')}</button><button class="primary" id="mOk">${L('Import','Importar')}</button>`);
   let mode='A';
   $('tabA').onclick=()=>{ mode='A'; $('tabA').classList.add('on'); $('tabB').classList.remove('on'); $('paneA').style.display=''; $('paneB').style.display='none'; };
   $('tabB').onclick=()=>{ mode='B'; $('tabB').classList.add('on'); $('tabA').classList.remove('on'); $('paneB').style.display=''; $('paneA').style.display='none'; };
@@ -4625,12 +4703,13 @@ function openImportModal(){
       } else {
         loadSession(tolerantParse($('impSess').value));
       }
-      closeModal(); toast('Imported');
-    }catch(err){ toast('Import failed: '+err.message); }
+      closeModal(); toast(L('Imported','Importado'));
+    }catch(err){ toast(L('Import failed: ','Fallo al importar: ')+err.message); }
   };
 }
 $('btnImport').onclick=openImportModal;
-$('emptyAdd').onclick=openImportModal;   // the blank sheet's "+" card
+$('emptyAdd').onclick=openImportModal;      // the blank sheet's "+" card
+$('emptyBlank').onclick=startBlankDiagram;  // …and its start-from-scratch twin
 
 /* ============================================================
    PROJECT OPTIONS + PDF DRAWING EXPORT
@@ -4662,46 +4741,66 @@ function projectOf(){
 // search configuration has exactly ONE home.
 function openProjectOptionsModal(tab){
   const p = projectOf(), dk = dkConfig(), ms = msConfig(), so = searchOptions();
-  openModal('Project Options', `
+  const lang = uiLang(), theme = uiTheme();
+  openModal(L('Project Options','Opciones de proyecto'), `
     <div class="tabs">
-      <button id="poTabParams">Project parameters</button>
-      <button id="poTabPdf">PDF export options</button>
-      <button id="poTabSearch">PN search options</button>
+      <button id="poTabGeneral">General</button>
+      <button id="poTabParams">${L('Project parameters','Parámetros de proyecto')}</button>
+      <button id="poTabPdf">${L('PDF export options','Opciones de exportación PDF')}</button>
+      <button id="poTabSearch">${L('PN search options','Opciones de búsqueda de PN')}</button>
     </div>
-    <div id="poPaneParams">
-      <div class="kv"><label>Project title</label><input type="text" id="poTitle" value="${esc(S.meta.title||'')}"></div>
+    <div id="poPaneGeneral">
       <div class="row">
-        <div class="kv"><label>Designed for (client)</label><input type="text" id="poClient" placeholder="ACME Corp." value="${esc(p.client)}"></div>
-        <div class="kv"><label>Designed by (company)</label><input type="text" id="poDesigner" placeholder="NX Design" value="${esc(p.designer)}"></div>
+        <div class="kv"><label>${L('Language','Idioma')}</label>
+          <select id="poLang">
+            <option value="en" ${lang==='en'?'selected':''}>English</option>
+            <option value="es" ${lang==='es'?'selected':''}>Español</option>
+          </select></div>
+        <div class="kv"><label>${L('Theme','Tema')}</label>
+          <select id="poTheme">
+            <option value="dark" ${theme==='dark'?'selected':''}>${L('Dark','Oscuro')}</option>
+            <option value="light" ${theme==='light'?'selected':''}>${L('Light','Claro')}</option>
+          </select></div>
+      </div>
+      <p class="hint">${L('Language and theme apply to the whole editor and are stored in this browser — they are not part of the project or its export.',
+                          'El idioma y el tema se aplican a todo el editor y se guardan en este navegador — no forman parte del proyecto ni de su exportación.')}</p>
+    </div>
+    <div id="poPaneParams" style="display:none">
+      <div class="kv"><label>${L('Project title','Título del proyecto')}</label><input type="text" id="poTitle" value="${esc(S.meta.title||'')}"></div>
+      <div class="row">
+        <div class="kv"><label>${L('Designed for (client)','Diseñado para (cliente)')}</label><input type="text" id="poClient" placeholder="ACME Corp." value="${esc(p.client)}"></div>
+        <div class="kv"><label>${L('Designed by (company)','Diseñado por (empresa)')}</label><input type="text" id="poDesigner" placeholder="NX Design" value="${esc(p.designer)}"></div>
       </div>
       <div class="row">
-        <div class="kv"><label>Date (dd/mm/yyyy)</label><input type="text" id="poDate" value="${esc(p.date)}"></div>
-        <div class="kv"><label>Engineer initials</label><input type="text" id="poInitials" placeholder="J.D." value="${esc(p.initials)}"></div>
+        <div class="kv"><label>${L('Date (dd/mm/yyyy)','Fecha (dd/mm/aaaa)')}</label><input type="text" id="poDate" value="${esc(p.date)}"></div>
+        <div class="kv"><label>${L('Engineer initials','Iniciales del ingeniero')}</label><input type="text" id="poInitials" placeholder="J.D." value="${esc(p.initials)}"></div>
       </div>
-      <p class="hint">These fields fill the drawing frame's title block on every page of Export → PDF drawing, and they are saved with the session.</p>
+      <p class="hint">${L('These fields fill the drawing frame\'s title block on every page of Export → PDF drawing, and they are saved with the session.',
+                          'Estos campos rellenan el cajetín del marco de plano en cada página de Exportar → PDF, y se guardan con la sesión.')}</p>
     </div>
     <div id="poPanePdf" style="display:none">
       <div class="row">
-        <div class="kv"><label>Page size</label>
+        <div class="kv"><label>${L('Page size','Tamaño de página')}</label>
           <select id="poSize"><option ${p.pageSize==='A3'?'selected':''}>A3</option><option ${p.pageSize==='A4'?'selected':''}>A4</option></select></div>
-        <div class="kv"><label>Orientation</label>
+        <div class="kv"><label>${L('Orientation','Orientación')}</label>
           <select id="poOrient">
             <option value="landscape" ${p.orientation==='landscape'?'selected':''}>Horizontal</option>
             <option value="portrait" ${p.orientation==='portrait'?'selected':''}>Vertical</option>
           </select></div>
       </div>
-      <p class="hint">Page setup for every page of Export → PDF drawing; saved with the session.</p>
+      <p class="hint">${L('Page setup for every page of Export → PDF drawing; saved with the session.',
+                          'Configuración de página para cada página de Exportar → PDF; se guarda con la sesión.')}</p>
     </div>
     <div id="poPaneSearch" style="display:none">
-      <div class="kv"><label>Distributors searched</label>
+      <div class="kv"><label>${L('Distributors searched','Distribuidores consultados')}</label>
         <div class="row" style="gap:18px;padding:4px 0 2px">
           <label class="switch"><input type="checkbox" id="psUseDk" ${so.digikey?'checked':''}><span class="knob"></span><span class="swlabel">DigiKey</span></label>
           <label class="switch"><input type="checkbox" id="psUseMs" ${so.mouser?'checked':''}><span class="knob"></span><span class="swlabel">Mouser</span></label>
         </div>
       </div>
-      <div class="kv"><label>Search currency</label>
+      <div class="kv"><label>${L('Search currency','Moneda de búsqueda')}</label>
         <select id="psCur">
-          <option value="USD" ${so.currency==='USD'?'selected':''}>US dollars ($)</option>
+          <option value="USD" ${so.currency==='USD'?'selected':''}>${L('US dollars ($)','Dólares ($)')}</option>
           <option value="EUR" ${so.currency==='EUR'?'selected':''}>Euros (€)</option>
         </select></div>
       <div class="row">
@@ -4709,28 +4808,36 @@ function openProjectOptionsModal(tab){
         <div class="kv"><label>DigiKey Client Secret</label><input type="text" id="dkSecret" value="${esc(dk.secret)}" autocomplete="off"></div>
       </div>
       <div class="row">
-        <div class="kv"><label>Mouser API key — USD (www.mouser.com)</label><input type="text" id="msKeyUsd" value="${esc(ms.usd)}" autocomplete="off"></div>
-        <div class="kv"><label>Mouser API key — EUR (eu.mouser.com)</label><input type="text" id="msKeyEur" value="${esc(ms.eur)}" autocomplete="off"></div>
+        <div class="kv"><label>${L('Mouser API key — USD (www.mouser.com)','API key de Mouser — USD (www.mouser.com)')}</label><input type="text" id="msKeyUsd" value="${esc(ms.usd)}" autocomplete="off"></div>
+        <div class="kv"><label>${L('Mouser API key — EUR (eu.mouser.com)','API key de Mouser — EUR (eu.mouser.com)')}</label><input type="text" id="msKeyEur" value="${esc(ms.eur)}" autocomplete="off"></div>
       </div>
-      <div class="kv"><label>CORS proxy prefix (optional)</label><input type="text" id="dkProxy" value="${esc(dk.proxy)}" placeholder="https://corsproxy.io/?url="></div>
+      <div class="kv"><label>${L('CORS proxy prefix (optional)','Prefijo de proxy CORS (opcional)')}</label><input type="text" id="dkProxy" value="${esc(dk.proxy)}" placeholder="https://corsproxy.io/?url="></div>
       <div class="btnrow" style="margin-top:0">
-        <button id="dkLoadFile" title="Read credential/digikey_credentials.json and credential/mouser_credentials.json from the app folder">Load from credential/ files</button>
+        <button id="dkLoadFile" title="${L('Read credential/digikey_credentials.json and credential/mouser_credentials.json from the app folder','Leer credential/digikey_credentials.json y credential/mouser_credentials.json de la carpeta de la app')}">${L('Load from credential/ files','Cargar de los ficheros credential/')}</button>
       </div>
-      <p class="hint">DigiKey: free credentials at developer.digikey.com (a "Product Information v4" app, client-credentials flow)
+      <p class="hint">${L(`DigiKey: free credentials at developer.digikey.com (a "Product Information v4" app, client-credentials flow)
         — it follows the currency chosen above directly. Mouser pegs search prices to the key's account, so there is
         ONE key per currency: the USD key from a www.mouser.com account, the EUR key from a European site — the
         Currency choice picks which one is used — a missing or rejected key shows an error naming the fix.
         The app's own keys are filled in already; replace them only to search under another account.
         Keys and these options are stored only in this browser (localStorage), never in the session or the export.
         If your browser blocks a request (CORS), route it through the proxy prefix — the full provider URL is appended to it,
-        for both distributors.</p>
+        for both distributors.`,
+        `DigiKey: credenciales gratuitas en developer.digikey.com (una app "Product Information v4", flujo client-credentials)
+        — sigue directamente la moneda elegida arriba. Mouser fija los precios de búsqueda a la cuenta de la key, así que hay
+        UNA key por moneda: la de USD de una cuenta de www.mouser.com, la de EUR de un sitio europeo — la moneda elegida
+        decide cuál se usa; si falta o es rechazada, sale un error indicando el arreglo.
+        Las keys propias de la app ya vienen rellenas; reemplázalas solo para buscar con otra cuenta.
+        Las keys y estas opciones se guardan solo en este navegador (localStorage), nunca en la sesión ni en la exportación.
+        Si tu navegador bloquea una petición (CORS), pásala por el prefijo de proxy — la URL completa del proveedor se añade
+        detrás, para ambos distribuidores.`)}</p>
     </div>
-  `, `<button id="mCancel">Cancel</button><button class="primary" id="mOk">Save</button>`);
-  const KEYS=['Params','Pdf','Search'];
+  `, `<button id="mCancel">${L('Cancel','Cancelar')}</button><button class="primary" id="mOk">${L('Save','Guardar')}</button>`);
+  const KEYS=['General','Params','Pdf','Search'];
   const show=k=>KEYS.forEach(q=>{ $('poPane'+q).style.display = q===k ? '' : 'none';
                                   $('poTab'+q).classList.toggle('on', q===k); });
   KEYS.forEach(q=>$('poTab'+q).onclick=()=>show(q));
-  show(tab==='search' ? 'Search' : tab==='pdf' ? 'Pdf' : 'Params');
+  show(tab==='search' ? 'Search' : tab==='pdf' ? 'Pdf' : tab==='params' ? 'Params' : 'General');
   $('mCancel').onclick=closeModal;
   // Loading the repo-side credential files fills the fields AND saves right
   // away (a missing file is reported without blocking the other one).
@@ -4752,7 +4859,7 @@ function openProjectOptionsModal(tab){
       dkSaveConfig($('dkId').value.trim(), $('dkSecret').value.trim(), $('dkProxy').value.trim());
       msSaveConfig($('msKeyUsd').value.trim(), $('msKeyEur').value.trim());
     }
-    toast(got.length ? got.join(' + ')+' credentials loaded from file' : errs.join(' · '));
+    toast(got.length ? got.join(' + ')+L(' credentials loaded from file',' credenciales cargadas del fichero') : errs.join(' · '));
   };
   $('mOk').onclick=()=>{
     commit();
@@ -4763,7 +4870,10 @@ function openProjectOptionsModal(tab){
     dkSaveConfig($('dkId').value.trim(), $('dkSecret').value.trim(), $('dkProxy').value.trim());
     msSaveConfig($('msKeyUsd').value.trim(), $('msKeyEur').value.trim());
     saveSearchOptions({ digikey:$('psUseDk').checked, mouser:$('psUseMs').checked, currency:$('psCur').value });
-    closeModal(); render(); toast('Project options saved');
+    saveUiLang($('poLang').value);
+    saveUiTheme($('poTheme').value);
+    applyStaticLang();
+    closeModal(); render(); toast(L('Project options saved','Opciones de proyecto guardadas'));
   };
 }
 // The pages of the drawing set: system view first, then every group with members.
@@ -5087,7 +5197,7 @@ function pdfDrawNetTablePage(doc, W, H, items, startIdx){
 }
 async function exportPdfDrawing(){
   if (!(window.jspdf && window.jspdf.jsPDF && window.jspdf.jsPDF.API.svg)){
-    toast('PDF engine not loaded (lib/jspdf + lib/svg2pdf)'); return;
+    toast(L('PDF engine not loaded (lib/jspdf + lib/svg2pdf)','Motor PDF no cargado (lib/jspdf + lib/svg2pdf)')); return;
   }
   const p = projectOf();
   const doc = new window.jspdf.jsPDF({ orientation:p.orientation, unit:'mm',
@@ -5139,26 +5249,28 @@ $('btnExport').onclick=()=>{
   const pipeline = buildPipelineJSON();
   const session = buildSessionJSON();
   const emptyEdges = S.edges.filter(e=>e.nets.length===0).length;
-  openModal('Export', `
-    ${emptyEdges?`<p class="hint" style="color:var(--warn)">Note: ${emptyEdges} connection(s) without nets will be omitted from the contract.</p>`:''}
-    <div class="tabs"><button class="on" id="tabP">Pipeline input</button><button id="tabS">Save session</button><button id="tabF">PDF drawing</button></div>
+  openModal(L('Export','Exportar'), `
+    ${emptyEdges?`<p class="hint" style="color:var(--warn)">${uiLang()==='es' ? `Nota: ${emptyEdges} conexión(es) sin redes se omitirán del contrato.` : `Note: ${emptyEdges} connection(s) without nets will be omitted from the contract.`}</p>`:''}
+    <div class="tabs"><button class="on" id="tabP">${L('Pipeline input','Entrada del pipeline')}</button><button id="tabS">${L('Save session','Guardar sesión')}</button><button id="tabF">${L('PDF drawing','Plano PDF')}</button></div>
     <div id="paneP">
-      <p class="hint">Feed this JSON to <b>Prepare Blocks</b> (it carries <span style="font-family:var(--mono)">global_contract_override</span>, so the Architect agent is skipped).</p>
+      <p class="hint">${L('Feed this JSON to <b>Prepare Blocks</b> (it carries ','Alimenta este JSON a <b>Prepare Blocks</b> (lleva ')}<span style="font-family:var(--mono)">global_contract_override</span>${L(', so the Architect agent is skipped).',', así que el agente Architect se salta).')}</p>
       <pre class="out" id="outP"></pre>
     </div>
     <div id="paneS" style="display:none">
-      <p class="hint">Keeps node positions and all edits — re-import later via Import → Saved session.</p>
+      <p class="hint">${L('Keeps node positions and all edits — re-import later via Import → Saved session.','Conserva posiciones y todas las ediciones — reimpórtalo luego vía Importar → Sesión guardada.')}</p>
       <pre class="out" id="outS"></pre>
     </div>
     <div id="paneF" style="display:none">
-      <p class="hint">A drawing set on white paper, one page per sheet: the system view first, then every
+      <p class="hint">${uiLang()==='es'
+        ? `Un juego de planos en papel blanco, una página por hoja: primero la vista de sistema, después cada grupo — ${pdfSheetList().length} página${pdfSheetList().length===1?'':'s'} en ${projectOf().pageSize} ${projectOf().orientation==='landscape'?'horizontal':'vertical'}. Cada página lleva el marco estilo Altium con el cajetín (abajo a la derecha) y la tabla de tipos de red de la hoja (abajo a la izquierda). Rellena el cajetín en <b>Opciones de proyecto</b> del panel Sistema; el tamaño y la orientación viven en sus <b>Opciones de exportación PDF</b>.`
+        : `A drawing set on white paper, one page per sheet: the system view first, then every
         group — ${pdfSheetList().length} page${pdfSheetList().length===1?'':'s'} of
         ${projectOf().pageSize} ${projectOf().orientation==='landscape'?'horizontal':'vertical'}.
         Each page carries the Altium-style frame with the title block (bottom-right) and the sheet's
         net-type table (bottom-left). Fill the title block via <b>Project Options</b> on the System panel;
-        page size and orientation live in its <b>PDF Export Options</b>.</p>
+        page size and orientation live in its <b>PDF Export Options</b>.`}</p>
     </div>
-  `, `<button id="mCopy">Copy</button><button class="primary" id="mDl">Download</button>`);
+  `, `<button id="mCopy">${L('Copy','Copiar')}</button><button class="primary" id="mDl">${L('Download','Descargar')}</button>`);
   const pTxt=JSON.stringify([pipeline],null,2), sTxt=JSON.stringify(session,null,2);
   $('outP').textContent=pTxt; $('outS').textContent=sTxt;
   let mode='P';
@@ -5168,17 +5280,17 @@ $('btnExport').onclick=()=>{
     for (const [t,id] of [['P','paneP'],['S','paneS'],['F','paneF']]) $(id).style.display = t===m ? '' : 'none';
     // the PDF tab downloads a drawing, not text — Copy has nothing to copy there
     $('mCopy').style.display = m==='F' ? 'none' : '';
-    $('mDl').textContent = m==='F' ? 'Generate PDF' : 'Download';
+    $('mDl').textContent = m==='F' ? L('Generate PDF','Generar PDF') : L('Download','Descargar');
   };
   $('tabP').onclick=()=>setTab('P');
   $('tabS').onclick=()=>setTab('S');
   $('tabF').onclick=()=>setTab('F');
-  $('mCopy').onclick=()=>{ navigator.clipboard.writeText(mode==='P'?pTxt:sTxt).then(()=>toast('Copied')); };
+  $('mCopy').onclick=()=>{ navigator.clipboard.writeText(mode==='P'?pTxt:sTxt).then(()=>toast(L('Copied','Copiado'))); };
   $('mDl').onclick=async()=>{
     if (mode==='F'){
       $('mDl').disabled=true;
-      try { await exportPdfDrawing(); toast('PDF generated'); }
-      catch(err){ toast('PDF failed: '+err.message); }
+      try { await exportPdfDrawing(); toast(L('PDF generated','PDF generado')); }
+      catch(err){ toast(L('PDF failed: ','Fallo del PDF: ')+err.message); }
       finally { $('mDl').disabled=false; }
       return;
     }
@@ -5436,19 +5548,10 @@ inspGrip.addEventListener('pointerdown', ev => {
 });
 inspSetWidth(insp.w);
 
-// Theme is session-only (no localStorage) — index.html seeds the initial value from
-// prefers-color-scheme before first paint; this button just flips it at runtime.
-function updateThemeButton(){
-  const isDark = document.documentElement.dataset.theme==='dark';
-  $('btnTheme').textContent = isDark ? 'Light' : 'Dark';
-  $('btnTheme').title = isDark ? 'Switch to light theme' : 'Switch to dark theme';
-}
-$('btnTheme').onclick=()=>{
-  document.documentElement.dataset.theme = document.documentElement.dataset.theme==='dark' ? 'light' : 'dark';
-  updateThemeButton();
-};
-updateThemeButton();
+// Theme and language live in Project Options → General; index.html seeds the
+// theme before first paint and applyStaticLang dresses the chrome here.
+applyStaticLang();
 
 // Nothing is loaded at boot — render() paints the empty sheet and raises the
-// "+" card, whose click opens Import (see renderEmptyState).
+// two-choice card: "+" opens Import, the blank page starts from scratch.
 render();
