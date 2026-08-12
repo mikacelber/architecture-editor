@@ -13,7 +13,7 @@ window.Element.prototype.setPointerCapture=()=>{};
 window.eval(fs.readFileSync('app.js','utf8')+`
 window.__T={get S(){return S;},loadFromContract,render,dkNormalizeProducts,dkSearch,dkRenderResults,
  dkConfig,dkSaveConfig,buildSessionJSON,nodeById,findFreeSpot,openReplaceICModal,renameNodeId,
- nodePortRowsFor,isHvNet,shortDatasheetLabel,icSelected,GRID:GRID};`);
+ nodePortRowsFor,isHvNet,shortDatasheetLabel,icSelected,undo,GRID:GRID};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -186,6 +186,17 @@ const FIX={Products:[
       check('the chosen part shows under Select IC like a search result',
         body2.includes('dkchosen') && body2.includes('HI-STOCK') && body2.includes('$0.5321') &&
         !/Part not selected yet/.test(body2));
+      // the "✕" clears the pick and the warnings come straight back
+      doc.getElementById('btnClearIC').onclick();
+      check('clearing the part un-selects the IC again', !T.icSelected(T.nodeById('HI-STOCK')));
+      S.sel={ type:'node', id:'HI-STOCK' }; T.render();
+      check('…and the panel shows the amber button and note again',
+        /<button id="btnSelectIC" class="warn"/.test(doc.getElementById('insBody').innerHTML) &&
+        /Part not selected yet/.test(doc.getElementById('insBody').innerHTML));
+      // restore the pick by hand (undo is covered by the history suite; a
+      // restoreState here would swap the node/group objects this test holds)
+      T.nodeById('HI-STOCK').data.dk = { pn:'HI-STOCK', man:'Texas Instruments',
+        desc:'LDO 300mA', stock:250000, price:0.5321, datasheet:'https://x/hi.pdf' };
       S.openGroup=grp.id; T.render();
       const icNode2=doc.querySelector('#nodesG g[data-nid="HI-STOCK"]');
       check('…and its block warning is gone', !icNode2.innerHTML.includes('Part not selected'));
