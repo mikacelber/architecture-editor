@@ -255,6 +255,9 @@ label.switch .swlabel{font-family:var(--mono);font-size:11px;color:var(--ink-sof
 button.warn{border-color:var(--warn);color:var(--warn)}
 button.warn:hover{background:var(--danger-hover);border-color:var(--warn)}
 
+/* Auto IC Selection progress log inside the modal */
+.ailog{font-family:var(--mono);font-size:11px;line-height:1.8;max-height:300px;overflow-y:auto;color:var(--ink-soft)}
+
 /* ---------- modal ---------- */
 .overlay{position:fixed;inset:0;background:var(--overlay);display:none;align-items:center;justify-content:center;z-index:40}
 .overlay.open{display:flex}

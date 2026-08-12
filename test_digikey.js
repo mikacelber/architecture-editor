@@ -532,6 +532,43 @@ const EUROFIX={Errors:[],SearchResults:{NumberOfResult:1,Parts:[
         T.buildSessionJSON().nodes.find(x=>x.id==='MS-HI').data.dk.src==='Mouser');
     }
 
+    /* ---- Auto IC Selection: cheapest offer for every unselected IC ---- */
+    {
+      const btn=doc.getElementById('btnAutoIC');
+      check('the header offers Auto IC Selection', !!btn);
+      T.render();
+      check('…amber while any IC lacks its part', btn.classList.contains('warn'));
+      const before=S.nodes.filter(n=>n.kind==='ic' && !T.icSelected(n)).length;
+      check('there are unselected ICs to act on', before>0);
+      btn.onclick();
+      check('clicking asks for confirmation before assigning anything',
+        doc.getElementById('modalTitle').textContent==='Auto IC Selection' &&
+        /CHEAPEST priced offer/.test(doc.getElementById('modalBody').innerHTML) &&
+        /Are you sure/.test(doc.getElementById('modalBody').innerHTML) &&
+        !!doc.getElementById('mOk'));
+      doc.getElementById('mCancel').onclick();
+      check('Cancel leaves every IC untouched',
+        S.nodes.filter(n=>n.kind==='ic' && !T.icSelected(n)).length===before);
+      btn.onclick();
+      const firstUnpicked=S.nodes.find(n=>n.kind==='ic' && !T.icSelected(n));
+      await doc.getElementById('mOk').onclick();
+      check('confirming fills every IC\'s part card', S.nodes.every(n=>n.kind!=='ic' || T.icSelected(n)));
+      check('…with the cheapest offer of the merged search (MS-HI at $0.0821, Mouser)',
+        firstUnpicked.data.dk.pn==='MS-HI' && firstUnpicked.data.dk.price===0.0821 &&
+        firstUnpicked.data.dk.src==='Mouser');
+      check('the block keeps its own identity — the offer sits on the card only',
+        !!T.nodeById(firstUnpicked.id));
+      check('a Mouser winner still gets a datasheet (borrowed or its own)',
+        !!firstUnpicked.data.dk.datasheet);
+      T.render();
+      check('the button drops the amber once every IC is selected', !btn.classList.contains('warn'));
+      T.undo();
+      check('the whole pass is ONE undoable edit',
+        S.nodes.filter(n=>n.kind==='ic' && !T.icSelected(n)).length===before);
+      T.render();
+      check('…and the amber returns with it', doc.getElementById('btnAutoIC').classList.contains('warn'));
+    }
+
     /* ---- every message is provider-neutral now, the DK API untouched ---- */
     {
       const src=fs.readFileSync('app.js','utf8');

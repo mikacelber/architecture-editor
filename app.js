@@ -3344,6 +3344,9 @@ function renderStatus(){
   if (ungrouped && ungrouped.members.length) bits.push(`<span class="chip warn"><span class="dot"></span>${ungrouped.members.length} ungrouped block${ungrouped.members.length>1?'s':''}</span>`);
   const unpicked = S.nodes.filter(n=>n.kind==='ic' && !icSelected(n)).length;
   if (unpicked) bits.push(`<span class="chip warn"><span class="dot"></span>${unpicked} IC${unpicked>1?'s':''} without a selected part</span>`);
+  // The header's Auto IC Selection wears the same amber while any IC still
+  // lacks its part, and goes back to normal once every card is filled.
+  const autoBtn = $('btnAutoIC'); if (autoBtn) autoBtn.classList.toggle('warn', unpicked>0);
   $('statusBar').innerHTML = bits.join('');
   renderLegend();
 }
@@ -4171,6 +4174,72 @@ function newIcObstacles(){
   const memberSet = new Set(g ? g.members : []);
   return memberObstacleRects(S.nodes.filter(n=>memberSet.has(n.id)));
 }
+
+/* ------------------------------------------------------------------
+   AUTO IC SELECTION — one click fills every empty part card with the
+   CHEAPEST priced offer its part-number search returns on the enabled
+   distributors. A quick pass for when speed beats judgement: the block's
+   identity stays untouched (only the card is filled), the whole run is one
+   undoable edit, and any card can still be replaced via Select IC or ✕. */
+async function autoIcSelection(){
+  const targets = S.nodes.filter(n=>n.kind==='ic' && !icSelected(n));
+  const so = searchOptions();
+  // The confirmation modal is open — flip it into a progress log while the
+  // searches run one part at a time (kind to both APIs' rate limits).
+  $('modalBody').innerHTML = '<div id="aiLog" class="ailog"></div>';
+  $('modalFoot').innerHTML = '<button disabled>Working…</button>';
+  const logBox = $('aiLog');
+  commit();
+  let done = 0; const skipped = [];
+  for (const n of targets){
+    const pn = n.data.ic_part_number || n.id;
+    const line = document.createElement('div');
+    line.textContent = pn+' — searching…';
+    logBox.appendChild(line); logBox.scrollTop = 1e9;
+    const [dk, ms] = await Promise.allSettled([
+      so.digikey ? dkSearch(pn) : Promise.resolve(null),
+      so.mouser  ? msSearch(pn) : Promise.resolve(null) ]);
+    const rows = mergePartResults(dk.status==='fulfilled'?dk.value:null,
+                                  ms.status==='fulfilled'?ms.value:null, so.currency);
+    const priced = rows.filter(r=>r.price!=null);
+    if (!priced.length){
+      skipped.push(pn);
+      line.textContent = pn+' — no priced offers, skipped';
+      continue;
+    }
+    const best = priced.slice().sort((a,b)=> a.price-b.price || b.stock-a.stock || a.pn.localeCompare(b.pn))[0];
+    n.data.dk = { ...best };
+    // A Mouser winner has no datasheet — the DigiKey rows of this very search
+    // usually do, so borrow locally before falling back to the async lookup.
+    if (!n.data.dk.datasheet){
+      const dkHit = rows.find(r=>r.src==='DigiKey' && r.pn===best.pn && r.datasheet)
+                 || rows.find(r=>r.src==='DigiKey' && r.datasheet);
+      if (dkHit) n.data.dk.datasheet = dkHit.datasheet; else fillMissingDatasheet(n);
+    }
+    if (!n.data.DatasheetUrl && n.data.dk.datasheet) n.data.DatasheetUrl = n.data.dk.datasheet;
+    done++;
+    line.textContent = pn+' — '+best.pn+' · '+dkFmtPrice(best.price, best.currency)+' · '+best.src;
+  }
+  closeModal(); render();
+  toast(done+' IC'+(done===1?'':'s')+' assigned the cheapest offer'
+    +(skipped.length ? ' · '+skipped.length+' skipped (no priced offers)' : ''));
+}
+$('btnAutoIC').onclick=()=>{
+  const targets = S.nodes.filter(n=>n.kind==='ic' && !icSelected(n));
+  if (!targets.length){ toast('Every IC already has its part selected'); return; }
+  const so = searchOptions();
+  if (!so.digikey && !so.mouser){ toast('Both distributors are turned off — enable one in "Part search API settings"'); return; }
+  const where = so.digikey && so.mouser ? 'DigiKey and Mouser' : so.digikey ? 'DigiKey' : 'Mouser';
+  openModal('Auto IC Selection', `
+    <p>This searches ${where} for each of the <b>${targets.length} IC${targets.length>1?'s':''}</b> without a
+      selected part and assigns the <b>CHEAPEST priced offer</b> found — no engineering judgement involved.
+      Are you sure?</p>
+    <p class="hint">Cheapest by unit price, stock as the tie-break. Block names stay as they are — the chosen offer
+      lands on the part card, where "✕" or Select IC… can still replace it. The whole pass is one undoable edit (Ctrl+Z).</p>
+  `, `<button id="mCancel">Cancel</button><button class="primary" id="mOk">Assign cheapest</button>`);
+  $('mCancel').onclick=closeModal;
+  $('mOk').onclick=()=>autoIcSelection();
+};
 
 $('btnAddIC').onclick=()=>{
   const openGroup = !isTopLevel() && S.openGroup!==UNGROUPED_ID
