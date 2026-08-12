@@ -143,7 +143,9 @@ const EUROFIX={Errors:[],SearchResults:{NumberOfResult:1,Parts:[
     if (String(url).includes('/oauth2/token'))
       return { ok:true, json:async()=>({ access_token:'TOK', expires_in:600 }) };
     if (String(url).includes('api.mouser.com'))
-      return { ok:true, json:async()=>MOUSER_PAYLOAD };
+      return { ok:true, json:async()=>String(url).includes('apiKey=bad-')
+        ? { Errors:[{ Message:'Invalid unique identifier.' }] }
+        : MOUSER_PAYLOAD };
     // DigiKey keyword search asked about the Mouser-only part: answer with an
     // exact match so the datasheet-borrowing path has something to borrow.
     if (opts && opts.body && String(opts.body).includes('MS-MID'))
@@ -309,6 +311,17 @@ const EUROFIX={Errors:[],SearchResults:{NumberOfResult:1,Parts:[
       await T.msSearch('x');
       check('USD selected but no USD key → the EUR key answers instead of nothing',
         reqs[reqs.length-1].url.includes('apiKey=eur-key'));
+
+      /* a key Mouser REJECTS ("Invalid unique identifier") also falls through */
+      T.msSaveConfig('bad-usd-key','eur-key');
+      const viaFallback=await T.msSearch('x');
+      check('a rejected USD key falls back to the EUR key and still answers',
+        viaFallback[0].pn==='MS-HI' && reqs[reqs.length-1].url.includes('apiKey=eur-key'));
+      T.msSaveConfig('bad-usd-key','');
+      let rej=null; try{ await T.msSearch('x'); }catch(e){ rej=e; }
+      check('with every key rejected, the error says WHAT to check',
+        /Invalid unique identifier/.test(String(rej)) &&
+        /SEARCH API key/.test(String(rej)) && /Part search API settings/.test(String(rej)));
       T.saveSearchOptions({digikey:true,mouser:true,currency:'USD'});
       T.msSaveConfig('test-key-123','test-key-123');
     }

@@ -3879,12 +3879,6 @@ function msSaveConfig(usdKey, eurKey){
     localStorage.setItem('mouser_api_key_eur', eurKey);
   } catch(e){ /* storage unavailable — config just won't persist */ }
 }
-// The key the configured currency calls for, falling back to the other one —
-// better an answer in the wrong currency, called out, than no answer at all.
-function msKeyFor(cur){
-  const k = msConfig();
-  return (cur==='USD' ? k.usd : k.eur) || (cur==='USD' ? k.eur : k.usd);
-}
 // Optional repo-side credential file (credential/mouser_credentials.json),
 // same one-click pickup as the DigiKey file. A legacy single api_key is read
 // as the EUR key — that is the account it belonged to.
@@ -3961,20 +3955,37 @@ function msNormalizeParts(json, cur){
   }).filter(x=>x.pn)
     .sort((a,b)=> b.stock - a.stock || a.pn.localeCompare(b.pn));
 }
-async function msSearch(keyword){
-  const cur = searchOptions().currency;
-  const key = msKeyFor(cur);
-  if (!key) throw new Error('No Mouser API key — open "Part search API settings" below');
-  // Mouser's Search API has NO currency parameter — search prices come in the
-  // currency of the ACCOUNT the key belongs to. Picking the key per currency
-  // above IS the currency selection; the request itself carries only the key.
-  // Should the answer still disagree with the configured currency (matching
-  // key missing → the other one answered), msCurrencyNote says so.
+// One Search API call signed with one specific key. Mouser's Search API has
+// NO currency parameter — search prices come in the currency of the ACCOUNT
+// the key belongs to, so WHICH key signs the call is the currency selection.
+async function msSearchWith(key, keyword, cur){
   const res = await fetch(msUrl('/api/v1/search/partnumber?apiKey='+encodeURIComponent(key)), { method:'POST',
     headers:{ 'Content-Type':'application/json' },
     body: JSON.stringify({ SearchByPartRequest: { mouserPartNumber: keyword, partSearchOptions: '' } }) });
   if (!res.ok) throw new Error('Mouser search failed (HTTP '+res.status+')');
   return msNormalizeParts(await res.json(), cur);
+}
+// "Invalid unique identifier" is Mouser's answer to a key that is not a valid
+// SEARCH API key (an Order/Cart API key, a typo, a not-yet-enabled account).
+const MS_KEY_REJECTED = /invalid\s*unique\s*identifier|invalid\s*api\s*key/i;
+async function msSearch(keyword){
+  const cur = searchOptions().currency;
+  const k = msConfig();
+  // The configured currency's key first, the other account's key as fallback —
+  // a rejected or missing key falls through to it (msCurrencyNote then tells
+  // the user the answer came from the other account).
+  const keys = [...new Set([cur==='USD'?k.usd:k.eur, cur==='USD'?k.eur:k.usd].filter(Boolean))];
+  if (!keys.length) throw new Error('No Mouser API key — open "Part search API settings" below');
+  let lastErr = null;
+  for (const key of keys){
+    try { return await msSearchWith(key, keyword, cur); }
+    catch(e){
+      lastErr = e;
+      if (!MS_KEY_REJECTED.test(String((e&&e.message)||e))) throw e;   // real failure — another key won't help
+    }
+  }
+  throw new Error(String((lastErr&&lastErr.message)||lastErr)
+    +' — Mouser rejected the key; check in "Part search API settings" that it is a SEARCH API key (not an Order API one)');
 }
 // '' when Mouser answered in the configured currency; otherwise a status note
 // naming the currency it DID answer in and the actual fix — the rows always
