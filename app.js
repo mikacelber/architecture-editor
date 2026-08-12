@@ -1113,6 +1113,16 @@ function shortDatasheetLabel(raw){
   return label.length > 46 ? label.slice(0,43)+'...' : label;
 }
 function nodeById(id){ return S.nodes.find(n=>n.id===id); }
+/* ---------- DigiKey part selection state ----------
+   Imported ICs are only PROPOSALS until the physical part (package, price,
+   stock) is picked on DigiKey. The pick lives in n.data.dk; until it exists
+   the IC block, its group block and the status bar all warn, so nobody ships
+   a drawing full of unselected parts by accident. */
+function icSelected(n){ return !!(n && n.data && n.data.dk && n.data.dk.pn); }
+function groupNeedsIcPick(gid){
+  const g = groupsWithUngrouped().find(x=>x.id===gid);
+  return !!g && g.members.some(id=>{ const m=nodeById(id); return m && m.kind==='ic' && !icSelected(m); });
+}
 function isHvNetType(n){ return /HIGH_VOLTAGE/i.test(n.type||''); }
 // EFFECTIVE insulation domain of a net: an explicit per-net flag (set from the
 // connection inspector) wins over what the TYPE implies. Needed because nets
@@ -2625,15 +2635,22 @@ function renderDrillDown(){
     }).join('');
     const dimN = trace && !tracedN && !selected ? ' dim' : '';
     if (n.kind==='ic'){
+      const needsPick = !icSelected(n);
+      const wtX = side==='lv' ? n.w-24 : n.w-48;   // clear of the HV corner tag
+      const warnTag = needsPick ? `<g style="pointer-events:none">
+        <path d="M ${wtX} 15 l6.5 -11 l6.5 11 Z" fill="var(--warn)"/>
+        <text x="${wtX+6.5}" y="13.6" text-anchor="middle" font-family="var(--mono)" font-size="8.5" font-weight="700" fill="var(--paper)">!</text>
+        <title>Part not selected on DigiKey yet — open this block and click "Select IC…"</title>
+      </g>` : '';
       return `<g class="node${dimN}" data-nid="${esc(n.id)}" transform="translate(${n.x},${n.y})" style="cursor:move">
         <rect x="-3" y="4" width="${n.w+6}" height="${n.h}" rx="5" fill="#00000018"/>
         <rect width="${n.w}" height="${n.h}" rx="5" fill="var(--epoxy)"
-          stroke="${(selected||tracedN)?'var(--probe)':(side==='lv'?'var(--epoxy-edge)':'var(--sig-hv)')}" stroke-width="${(selected||tracedN)?2.5:1.4}"/>
+          stroke="${(selected||tracedN)?'var(--probe)':needsPick?'var(--warn)':(side==='lv'?'var(--epoxy-edge)':'var(--sig-hv)')}" stroke-width="${(selected||tracedN)?2.5:needsPick?2:1.4}"/>
         ${hvOverlayMarkup(side, n.w, n.h, 5, 'hvclip-'+safeId(n.id), n.hvFlip)}
         <circle cx="13" cy="13" r="3.6" fill="var(--silk)"/>
         <text x="26" y="26" font-family="var(--mono)" font-size="13.5" font-weight="600" fill="var(--silk)">${esc(n.label)}</text>
         <text x="26" y="44" font-family="var(--sans)" font-size="10" fill="var(--ink-soft)">${esc((n.data.ic_type||'').slice(0,30))}</text>
-        ${hvSideTag(side, n.w, n.hvFlip)}
+        ${hvSideTag(side, n.w, n.hvFlip)}${warnTag}
         <line x1="10" y1="${sepY}" x2="${n.w-10}" y2="${sepY}" stroke="var(--silk)" stroke-width="1" opacity=".25"/>
         ${portRows}
       </g>`;
@@ -2824,6 +2841,15 @@ function renderTopLevel(){
     }).join('');
     const side = groupSide(g.id);
     const sepY = groupSeparatorY(g);
+    // ≥1 member IC without its DigiKey part picked → the whole group warns
+    const needsPick = groupNeedsIcPick(g.id);
+    const missing = needsPick ? g.members.filter(id=>{ const m=nodeById(id); return m&&m.kind==='ic'&&!icSelected(m); }).length : 0;
+    const wtX = side==='lv' ? W-26 : W-50;
+    const warnTag = needsPick ? `<g style="pointer-events:none">
+      <path d="M ${wtX} 16 l7 -12 l7 12 Z" fill="var(--warn)"/>
+      <text x="${wtX+7}" y="14.4" text-anchor="middle" font-family="var(--mono)" font-size="9" font-weight="700" fill="var(--paper)">!</text>
+      <title>${missing} IC${missing>1?'s':''} in this group still need${missing>1?'':'s'} the DigiKey part selected</title>
+    </g>` : '';
     // One row per connection: a lead-in tick from the block edge, the draggable
     // net-count badge (same number as the one on the wire's midpoint) and the
     // direction + neighbouring group in writing.
@@ -2847,7 +2873,7 @@ function renderTopLevel(){
     return `<g class="node${trace&&!tracedG&&!selected?' dim':''}" data-nid="${esc(g.id)}" transform="translate(${pos.x},${pos.y})" style="cursor:move">
       <rect x="-4" y="6" width="${W+8}" height="${h}" rx="6" fill="#00000018"/>
       <rect width="${W}" height="${h}" rx="6" fill="var(--vellum)"
-        stroke="${(selected||tracedG)?'var(--probe)':(side==='lv'?'var(--ink)':'var(--sig-hv)')}" stroke-width="${(selected||tracedG)?3:2}"/>
+        stroke="${(selected||tracedG)?'var(--probe)':needsPick?'var(--warn)':(side==='lv'?'var(--ink)':'var(--sig-hv)')}" stroke-width="${(selected||tracedG)?3:2}"/>${warnTag}
       ${hvOverlayMarkup(side, W, h, 6, 'hvclip-'+safeId(g.id), groupHvFlip(g.id))}
       <line x1="${GROUP_PAD_X}" y1="30" x2="${W-GROUP_PAD_X}" y2="30" stroke="var(--ink)" stroke-width="1" opacity=".18"/>
       <text x="${GROUP_PAD_X}" y="20" font-family="var(--mono)" font-size="9.5" letter-spacing=".1em" fill="var(--ink-soft)">${eyebrow}</text>
@@ -3112,7 +3138,21 @@ function renderInspector(){
         <button id="btnAddNetNode">Add net</button>
       </div>`;
     if (n.kind==='ic'){
+      // "Select IC" sits right under the block's name: picking the physical
+      // part on DigiKey is THE next action for an imported proposal. Once
+      // picked, the chosen part shows beneath it exactly like a search result.
+      const dk = n.data.dk;
+      const selectSection = `
+        <div class="btnrow" style="margin-top:0;margin-bottom:10px"><button id="btnSelectIC">Select IC…</button></div>
+        ${icSelected(n) ? `
+        <div class="dkchosen">
+          <span class="dkpn">${esc(dk.pn)}</span><span class="dkman">${esc(dk.man||'')}</span>
+          <span class="dkdesc">${esc(dk.desc||'')}</span>
+          <span class="dkstock">${dkFmtStock(dk.stock)} in stock</span><span class="dkprice">${dkFmtPrice(dk.price)}</span>
+        </div>` : `
+        <p class="icwarn">⚠ Part not selected yet — pick the physical part (package, price, stock) on DigiKey.</p>`}`;
       body.innerHTML = `
+        ${selectSection}
         <div class="kv"><label>Type</label><div class="val">${esc(n.data.ic_type||'')}</div></div>
         <div class="kv"><label>Manufacturer</label><div class="val">${esc(n.data.manufacturer||'—')}</div></div>
         <div class="kv"><label>Function</label><div class="val">${esc(n.data.description||'')}</div></div>
@@ -3124,7 +3164,7 @@ function renderInspector(){
         ${sideRow}
         ${portHint}
         ${addNetSection}
-        <div class="btnrow"><button id="btnReplaceIC">Replace IC…</button>${customPorts?'<button id="btnResetNodePorts">Reset port layout</button>':''}</div>
+        ${customPorts?'<div class="btnrow"><button id="btnResetNodePorts">Reset port layout</button></div>':''}
         <div class="btnrow"><button class="danger" id="btnDelNode">Delete IC and its connections</button></div>`;
     } else {
       body.innerHTML = `
@@ -3136,7 +3176,7 @@ function renderInspector(){
     }
     $('fSide').onchange=()=>{ n.hvSide = $('fSide').value || undefined; render(); };
     const ff=$('fFlip'); if (ff) ff.onchange=()=>{ commit(); n.hvFlip = ff.checked || undefined; render(); };
-    const rep=$('btnReplaceIC'); if (rep) rep.onclick=()=>openReplaceICModal(n);
+    const selIc=$('btnSelectIC'); if (selIc) selIc.onclick=()=>openReplaceICModal(n);
     const rp=$('btnResetNodePorts'); if (rp) rp.onclick=()=>{ commit(); resetGroupPortLayout(n.id); render(); };
     const del=$('btnDelNode'); if (del) del.onclick=()=>deleteNode(n.id);
     const anNet=$('anNet'), anGroup=$('anGroup');
@@ -3294,6 +3334,8 @@ function renderStatus(){
     : `<span class="chip ok"><span class="dot"></span>all blocks connected</span>`);
   if (emptyEdges.length) bits.push(`<span class="chip warn"><span class="dot"></span>${emptyEdges.length} connection${emptyEdges.length>1?'s':''} without nets</span>`);
   if (ungrouped && ungrouped.members.length) bits.push(`<span class="chip warn"><span class="dot"></span>${ungrouped.members.length} ungrouped block${ungrouped.members.length>1?'s':''}</span>`);
+  const unpicked = S.nodes.filter(n=>n.kind==='ic' && !icSelected(n)).length;
+  if (unpicked) bits.push(`<span class="chip warn"><span class="dot"></span>${unpicked} IC${unpicked>1?'s':''} without a selected part</span>`);
   $('statusBar').innerHTML = bits.join('');
   renderLegend();
 }
@@ -3797,6 +3839,10 @@ const dkFmtPrice = p => p==null ? '—' : '$'+(+p).toFixed(p<1?4:2);
 // Rows into #dkResults; clicking one autofills the identity fields (part
 // number, type, manufacturer, datasheet) and leaves "Function in this system"
 // and "Selection rationale" — the engineering judgement — to the user.
+// The row the user last clicked in the DigiKey results — THIS is what makes
+// an IC "selected". Cleared whenever an IC form opens; attached to the block
+// on OK only while the part number still matches the pick.
+let dkPicked = null;
 function dkRenderResults(list){
   const box = $('dkResults');
   if (!list.length){ box.innerHTML = '<p class="hint">No parts found.</p>'; return; }
@@ -3808,6 +3854,7 @@ function dkRenderResults(list){
     </button>`).join('');
   box.querySelectorAll('.dkrow').forEach(btn=>btn.onclick=()=>{
     const r = list[+btn.dataset.i];
+    dkPicked = r;
     $('fPN').value = r.pn;
     $('fType').value = r.desc;
     $('fMan').value = r.man.toUpperCase();
@@ -3856,6 +3903,7 @@ function icFormMarkup(v){
     <div class="kv"><label>Datasheet URL</label><input type="text" id="fUrl" placeholder="https://www.ti.com/lit/ds/symlink/....pdf" value="${esc(v.url||'')}"></div>`;
 }
 function wireIcFormHandlers(){
+  dkPicked = null;
   $('mCancel').onclick=closeModal;
   $('dkCfgToggle').onclick=()=>{ const p=$('dkCfgPane'); p.style.display = p.style.display==='none' ? 'block' : 'none'; };
   $('dkSave').onclick=()=>{
@@ -3933,6 +3981,9 @@ $('btnAddIC').onclick=()=>{
       data:{ ic_part_number:pn, ic_type:$('fType').value.trim(), manufacturer:$('fMan').value.trim(),
              description:$('fDesc').value.trim(), selection_rationale:$('fRat').value.trim(),
              DatasheetUrl:$('fUrl').value.trim() } };
+    // A part picked from the DigiKey results is born SELECTED (no warning);
+    // a hand-typed part number still needs its Select IC pass.
+    if (dkPicked && dkPicked.pn===pn) node.data.dk = { ...dkPicked };
     // Measure the block as it will ACTUALLY render (header texts + the empty
     // port zone make it larger than the nominal constants) — searching with
     // the nominal size used to let the grown block overlap its neighbours.
@@ -4171,7 +4222,7 @@ function renameNodeId(oldId, newId){
 // the old part (still editable) — only the identity really changes. Every
 // connection, port layout and route survives the swap.
 function openReplaceICModal(n){
-  openModal('Replace '+n.label, icFormMarkup({
+  openModal('Select IC — '+n.label, icFormMarkup({
     query: n.data.ic_part_number || n.id,
     pn: n.data.ic_part_number || n.id,
     type: n.data.ic_type || '',
@@ -4180,9 +4231,9 @@ function openReplaceICModal(n){
     rat: n.data.selection_rationale || '',
     url: n.data.DatasheetUrl || ''
   }) + `
-    <p class="hint">Replacing keeps every connection, port layout and route of "${esc(n.label)}".
-      The function and selection rationale above were carried over from the old part — edit them if the new part changes the story.</p>
-  `, `<button id="mCancel">Cancel</button><button class="primary" id="mOk">Replace IC</button>`);
+    <p class="hint">Selecting keeps every connection, port layout and route of "${esc(n.label)}".
+      The function and selection rationale above were carried over — edit them if the chosen part changes the story.</p>
+  `, `<button id="mCancel">Cancel</button><button class="primary" id="mOk">Select</button>`);
   wireIcFormHandlers();
   $('mOk').onclick=()=>{
     const pn=$('fPN').value.trim();
@@ -4191,11 +4242,17 @@ function openReplaceICModal(n){
     commit();
     renameNodeId(n.id, pn);
     n.label = pn;
+    // The pick from the results is the selection; keeping the same part
+    // number keeps an earlier pick; typing a DIFFERENT number by hand drops
+    // it — that part has not been selected on DigiKey.
+    const dk = (dkPicked && dkPicked.pn===pn) ? { ...dkPicked }
+             : (pn===(n.data.ic_part_number||n.id) ? n.data.dk : undefined);
     n.data = { ...n.data, ic_part_number:pn, ic_type:$('fType').value.trim(), manufacturer:$('fMan').value.trim(),
                description:$('fDesc').value.trim(), selection_rationale:$('fRat').value.trim(),
                DatasheetUrl:$('fUrl').value.trim() };
+    if (dk) n.data.dk = dk; else delete n.data.dk;
     closeModal(); S.sel={type:'node',id:pn}; render();
-    toast('Replaced — connections and routing kept');
+    toast(dk ? 'Part selected — connections and routing kept' : 'Updated — part still needs its DigiKey selection');
   };
 }
 
