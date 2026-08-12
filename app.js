@@ -3945,18 +3945,33 @@ function msNormalizeParts(json, cur){
   }).filter(x=>x.pn)
     .sort((a,b)=> b.stock - a.stock || a.pn.localeCompare(b.pn));
 }
+// The country each currency pins Mouser to, for accounts that honor it.
+const MS_COUNTRY = { USD:'US', EUR:'ES' };
 async function msSearch(keyword){
   const { key } = msConfig();
   const cur = searchOptions().currency;
   if (!key) throw new Error('No Mouser API key — open "Part search API settings" below');
-  // currencyCode makes Mouser answer in the configured currency instead of
-  // whatever the account's locale implies — the prices then parse AND read
-  // as what they claim to be.
-  const res = await fetch(msUrl('/api/v1/search/partnumber?apiKey='+encodeURIComponent(key)+'&currencyCode='+cur), { method:'POST',
+  // Mouser's Search API documents NO currency parameter — search prices come
+  // in the currency of the ACCOUNT the key belongs to (the site it was
+  // created on). currencyCode/countryCode are still sent because some
+  // accounts honor them; when the answer disagrees with the configured
+  // currency anyway, msCurrencyNote says so instead of pretending.
+  const res = await fetch(msUrl('/api/v1/search/partnumber?apiKey='+encodeURIComponent(key)
+      +'&currencyCode='+cur+'&countryCode='+(MS_COUNTRY[cur]||'US')), { method:'POST',
     headers:{ 'Content-Type':'application/json' },
     body: JSON.stringify({ SearchByPartRequest: { mouserPartNumber: keyword, partSearchOptions: '' } }) });
   if (!res.ok) throw new Error('Mouser search failed (HTTP '+res.status+')');
   return msNormalizeParts(await res.json(), cur);
+}
+// '' when Mouser answered in the configured currency; otherwise a status note
+// naming the currency it DID answer in and the actual fix — the rows always
+// wear their true symbol either way, so a price is never mislabeled.
+function msCurrencyNote(rows, cur){
+  const got = [...new Set((rows||[]).map(r=>r.currency).filter(Boolean))];
+  if (!got.length || (got.length===1 && got[0]===cur)) return '';
+  const site = cur==='USD' ? 'www.mouser.com' : 'eu.mouser.com';
+  return 'Mouser answered in '+got.join('/')+' — its Search API pegs prices to the key\'s account, so for '
+    +(CUR_SYMBOL[cur]||cur)+' prices use a key created on '+site;
 }
 // Both providers into ONE list: each row tagged with its house and currency,
 // the whole thing re-sorted by the same rule each provider already used —
@@ -4082,10 +4097,11 @@ function wireIcFormHandlers(){
       $('dkStatus').textContent = errs.join(' · ');
       return;
     }
-    const list = mergePartResults(dk.status==='fulfilled'?dk.value:null,
-                                  ms.status==='fulfilled'?ms.value:null, so.currency);
+    const msRows = ms.status==='fulfilled' ? ms.value : null;
+    const list = mergePartResults(dk.status==='fulfilled'?dk.value:null, msRows, so.currency);
     const count = list.length ? list.length+' part'+(list.length===1?'':'s')+' — highest stock first' : '';
-    $('dkStatus').textContent = count + (errs.length ? (count?' · ':'')+errs.join(' · ') : '');
+    const notes = [msCurrencyNote(msRows, so.currency), ...errs].filter(Boolean);
+    $('dkStatus').textContent = count + (notes.length ? (count?' · ':'')+notes.join(' · ') : '');
     dkRenderResults(list);
   };
   $('dkGo').onclick=runSearch;
@@ -4537,6 +4553,9 @@ function openProjectOptionsModal(tab){
       </div>
       <p class="hint">DigiKey: free credentials at developer.digikey.com (a "Product Information v4" app, client-credentials flow).
         Mouser: the app's own Search API key is filled in already — replace it only to search under another account.
+        DigiKey follows the currency chosen above; Mouser's Search API pegs prices to the account that owns the key
+        (the Mouser site it was created on), so if its answer disagrees with the choice here the search says so —
+        for $ prices use a key created on www.mouser.com, for € one from eu.mouser.com.
         Keys and these options are stored only in this browser (localStorage), never in the session or the export.
         If your browser blocks a request (CORS), route it through the proxy prefix — the full provider URL is appended to it,
         for both distributors.</p>
