@@ -243,7 +243,9 @@ label.switch .swlabel{font-family:var(--mono);font-size:11px;color:var(--ink-sof
 .dkchosen .x{position:absolute;top:4px;left:4px;width:17px;height:17px;padding:0;line-height:1;
   font-size:10px;border:1px solid var(--line);border-radius:3px;background:var(--panel);color:var(--ink-soft)}
 .dkchosen .x:hover{border-color:var(--hv);color:var(--hv);background:var(--danger-hover)}
-.icwarn{color:var(--warn);font-family:var(--mono);font-size:11px;line-height:1.5;margin:-2px 0 12px}
+/* Scoped to the panel: the generic "#inspector .body p" rule out-ranks a bare
+   .icwarn, which used to paint this warning the same grey as body copy. */
+#inspector .body p.icwarn,.icwarn{color:var(--warn);font-family:var(--mono);font-size:11px;line-height:1.5;margin:-2px 0 12px}
 /* A pending selection colors its own call to action — same amber as the
    block outline and the group tag, so the three read as one warning. */
 button.warn{border-color:var(--warn);color:var(--warn)}
