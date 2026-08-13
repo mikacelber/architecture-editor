@@ -2690,7 +2690,7 @@ function renderDrillDown(){
       const warnTag = needsPick ? `<g style="pointer-events:none">
         <path d="M ${wtX} 15 l6.5 -11 l6.5 11 Z" fill="var(--warn)"/>
         <text x="${wtX+6.5}" y="13.6" text-anchor="middle" font-family="var(--mono)" font-size="8.5" font-weight="700" fill="var(--paper)">!</text>
-        <title>Part not selected yet — open this block and click "Select IC…"</title>
+        <title>Part not selected yet — open this block and click "Edit IC…"</title>
       </g>` : '';
       return `<g class="node${dimN}" data-nid="${esc(n.id)}" transform="translate(${n.x},${n.y})" style="cursor:move">
         <rect x="-3" y="4" width="${n.w+6}" height="${n.h}" rx="5" fill="#00000018"/>
@@ -3257,7 +3257,7 @@ function renderInspector(){
       // "✕" that clears the pick and brings the warnings straight back.
       const selectSection = `
         <div class="btnrow" style="margin-top:0;margin-bottom:10px">
-          <button id="btnSelectIC"${picked?'':' class="warn"'}>${L('Select IC…','Seleccionar CI…')}</button></div>
+          <button id="btnSelectIC"${picked?'':' class="warn"'}>${L('Edit IC…','Editar CI…')}</button></div>
         ${picked ? `
         <div class="dkchosen">
           <button class="x" id="btnClearIC" title="${L('Remove this part — the block goes back to needing a selection','Quitar este componente — el bloque vuelve a necesitar una selección')}">✕</button>
@@ -4361,7 +4361,7 @@ $('btnAutoIC').onclick=()=>{
       ¿Estás seguro?</p>
     <p class="hint">La más barata por precio unitario entre las <b>5 primeras ofertas con stock</b> de cada búsqueda
       (el stock desempata) — nunca se elige un componente sin stock. Los nombres de los bloques no cambian — la oferta
-      elegida va a la tarjeta del componente, donde "✕" o Seleccionar CI… pueden reemplazarla. Toda la pasada es un
+      elegida va a la tarjeta del componente, donde "✕" o Editar CI… pueden reemplazarla. Toda la pasada es un
       único cambio deshacible (Ctrl+Z).</p>
   ` : `
     <p>This searches ${where} for each of the <b>${targets.length} IC${targets.length>1?'s':''}</b> without a
@@ -4369,7 +4369,7 @@ $('btnAutoIC').onclick=()=>{
       Are you sure?</p>
     <p class="hint">Cheapest by unit price among the <b>top 5 in-stock offers</b> of each search (stock as the
       tie-break) — an out-of-stock part is never picked. Block names stay as they are — the chosen offer lands on
-      the part card, where "✕" or Select IC… can still replace it. The whole pass is one undoable edit (Ctrl+Z).</p>
+      the part card, where "✕" or Edit IC… can still replace it. The whole pass is one undoable edit (Ctrl+Z).</p>
   `, `<button id="mCancel">${L('Cancel','Cancelar')}</button><button class="primary" id="mOk">${L('Assign cheapest','Asignar más barata')}</button>`);
   $('mCancel').onclick=closeModal;
   $('mOk').onclick=()=>autoIcSelection();
@@ -4811,7 +4811,6 @@ function openProjectOptionsModal(tab){
         <div class="kv"><label>${L('Mouser API key — USD (www.mouser.com)','API key de Mouser — USD (www.mouser.com)')}</label><input type="text" id="msKeyUsd" value="${esc(ms.usd)}" autocomplete="off"></div>
         <div class="kv"><label>${L('Mouser API key — EUR (eu.mouser.com)','API key de Mouser — EUR (eu.mouser.com)')}</label><input type="text" id="msKeyEur" value="${esc(ms.eur)}" autocomplete="off"></div>
       </div>
-      <div class="kv"><label>${L('CORS proxy prefix (optional)','Prefijo de proxy CORS (opcional)')}</label><input type="text" id="dkProxy" value="${esc(dk.proxy)}" placeholder="https://corsproxy.io/?url="></div>
       <div class="btnrow" style="margin-top:0">
         <button id="dkLoadFile" title="${L('Read credential/digikey_credentials.json and credential/mouser_credentials.json from the app folder','Leer credential/digikey_credentials.json y credential/mouser_credentials.json de la carpeta de la app')}">${L('Load from credential/ files','Cargar de los ficheros credential/')}</button>
       </div>
@@ -4820,17 +4819,13 @@ function openProjectOptionsModal(tab){
         ONE key per currency: the USD key from a www.mouser.com account, the EUR key from a European site — the
         Currency choice picks which one is used — a missing or rejected key shows an error naming the fix.
         The app's own keys are filled in already; replace them only to search under another account.
-        Keys and these options are stored only in this browser (localStorage), never in the session or the export.
-        If your browser blocks a request (CORS), route it through the proxy prefix — the full provider URL is appended to it,
-        for both distributors.`,
+        Keys and these options are stored only in this browser (localStorage), never in the session or the export.`,
         `DigiKey: credenciales gratuitas en developer.digikey.com (una app "Product Information v4", flujo client-credentials)
         — sigue directamente la moneda elegida arriba. Mouser fija los precios de búsqueda a la cuenta de la key, así que hay
         UNA key por moneda: la de USD de una cuenta de www.mouser.com, la de EUR de un sitio europeo — la moneda elegida
         decide cuál se usa; si falta o es rechazada, sale un error indicando el arreglo.
         Las keys propias de la app ya vienen rellenas; reemplázalas solo para buscar con otra cuenta.
-        Las keys y estas opciones se guardan solo en este navegador (localStorage), nunca en la sesión ni en la exportación.
-        Si tu navegador bloquea una petición (CORS), pásala por el prefijo de proxy — la URL completa del proveedor se añade
-        detrás, para ambos distribuidores.`)}</p>
+        Las keys y estas opciones se guardan solo en este navegador (localStorage), nunca en la sesión ni en la exportación.`)}</p>
     </div>
   `, `<button id="mCancel">${L('Cancel','Cancelar')}</button><button class="primary" id="mOk">${L('Save','Guardar')}</button>`);
   const KEYS=['General','Params','Pdf','Search'];
@@ -4843,10 +4838,11 @@ function openProjectOptionsModal(tab){
   // away (a missing file is reported without blocking the other one).
   $('dkLoadFile').onclick=async()=>{
     const got=[], errs=[];
+    let fileProxy = null;
     try {
       const c = await dkLoadCredentialFile();
       $('dkId').value=c.id; $('dkSecret').value=c.secret;
-      if (c.proxy) $('dkProxy').value=c.proxy;
+      if (c.proxy) fileProxy = c.proxy;
       got.push('DigiKey');
     } catch(err){ errs.push(String(err.message||err)); }
     try {
@@ -4856,7 +4852,9 @@ function openProjectOptionsModal(tab){
       got.push('Mouser');
     } catch(err){ errs.push(String(err.message||err)); }
     if (got.length){
-      dkSaveConfig($('dkId').value.trim(), $('dkSecret').value.trim(), $('dkProxy').value.trim());
+      // The CORS proxy has no UI any more — keep whatever is stored unless the
+      // credential file explicitly carries one.
+      dkSaveConfig($('dkId').value.trim(), $('dkSecret').value.trim(), fileProxy ?? dkConfig().proxy);
       msSaveConfig($('msKeyUsd').value.trim(), $('msKeyEur').value.trim());
     }
     toast(got.length ? got.join(' + ')+L(' credentials loaded from file',' credenciales cargadas del fichero') : errs.join(' · '));
@@ -4867,7 +4865,7 @@ function openProjectOptionsModal(tab){
     S.project = { client:$('poClient').value.trim(), designer:$('poDesigner').value.trim(),
       date:$('poDate').value.trim(), initials:$('poInitials').value.trim(),
       pageSize:$('poSize').value, orientation:$('poOrient').value };
-    dkSaveConfig($('dkId').value.trim(), $('dkSecret').value.trim(), $('dkProxy').value.trim());
+    dkSaveConfig($('dkId').value.trim(), $('dkSecret').value.trim(), dkConfig().proxy);
     msSaveConfig($('msKeyUsd').value.trim(), $('msKeyEur').value.trim());
     saveSearchOptions({ digikey:$('psUseDk').checked, mouser:$('psUseMs').checked, currency:$('psCur').value });
     saveUiLang($('poLang').value);
