@@ -73,8 +73,8 @@ check('the legend speaks Spanish', /Potencia/.test(doc.getElementById('legend').
   const ic=S.nodes.find(n=>n.kind==='ic');
   S.sel={type:'node',id:ic.id}; T.render();
   const b=doc.getElementById('insBody').innerHTML;
-  check('the IC inspector speaks Spanish (Select IC, warning, labels)',
-    doc.getElementById('btnSelectIC').textContent==='Seleccionar CI…' &&
+  check('the IC inspector speaks Spanish (Edit IC, warning, labels)',
+    doc.getElementById('btnSelectIC').textContent==='Editar CI…' &&
     /Componente aún sin seleccionar/.test(b) && /Fabricante/.test(b) && /Añadir red/.test(b));
   S.sel=null; T.render();
 }

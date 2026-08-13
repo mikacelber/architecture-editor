@@ -66,7 +66,7 @@ check('the PDF engine is vendored and loaded before app.js',
   doc.getElementById('poTabSearch').onclick();
   check('the "PN search options" sub-window holds distributors, currency and the API keys',
     doc.getElementById('poPaneSearch').style.display!=='none' &&
-    ['psUseDk','psUseMs','psCur','dkId','dkSecret','msKeyUsd','msKeyEur','dkProxy','dkLoadFile'].every(id=>
+    ['psUseDk','psUseMs','psCur','dkId','dkSecret','msKeyUsd','msKeyEur','dkLoadFile'].every(id=>
       !!doc.getElementById(id) && !!doc.getElementById(id).closest('#poPaneSearch')));
   doc.getElementById('poTabParams').onclick();
   check('tabs switch back and forth', doc.getElementById('poPaneParams').style.display!=='none' &&

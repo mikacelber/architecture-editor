@@ -248,6 +248,7 @@ const EUROFIX={Errors:[],SearchResults:{NumberOfResult:1,Parts:[
       doc.getElementById('msKeyEur').value===MCRED.api_key_eur &&
       doc.getElementById('msKeyUsd').value===(MCRED.api_key_usd||''));
     check('…and offers loading the credential/ files', !!doc.getElementById('dkLoadFile'));
+    check('the CORS proxy field is gone from the pane', !doc.getElementById('dkProxy'));
     await doc.getElementById('dkLoadFile').onclick();
     check('loading the files fills and saves the DigiKey credentials',
       T.dkConfig().id===CREDFILE.client_id && T.dkConfig().secret===CREDFILE.client_secret);
@@ -445,9 +446,10 @@ const EUROFIX={Errors:[],SearchResults:{NumberOfResult:1,Parts:[
       // the inspector leads with Select IC (right under the name), Replace is gone
       S.sel={ type:'node', id:oldId }; T.render();
       const bodyHtml=doc.getElementById('insBody').innerHTML;
-      check('the inspector leads with "Select IC…" and the pending warning',
+      check('the inspector leads with "Edit IC…" and the pending warning',
         bodyHtml.indexOf('btnSelectIC')>=0 &&
         bodyHtml.indexOf('btnSelectIC')<bodyHtml.indexOf('Type') &&
+        doc.getElementById('btnSelectIC').textContent==='Edit IC…' &&
         /Part not selected yet/.test(bodyHtml));
       check('the redundant "Replace IC…" button is gone', !bodyHtml.includes('btnReplaceIC'));
       {
