@@ -3027,8 +3027,12 @@ function openIcCostModal(){
   $('mCancel').onclick = closeModal;
 }
 
+// The net card currently flipped into edit mode ({edgeId, idx}), if any —
+// cleared on save/discard and whenever the selection moves elsewhere.
+let _netEdit = null;
 function renderInspector(){
   inspOnRender();   // unpinned panel: show while something is selected, then fold away
+  if (_netEdit && (!S.sel || S.sel.type!=='edge' || S.sel.id!==_netEdit.edgeId)) _netEdit = null;
   const eye=$('insEyebrow'), title=$('insTitle'), body=$('insBody');
   if (!S.sel){
     eye.textContent=L('System','Sistema');
@@ -3374,13 +3378,23 @@ function renderInspector(){
   }).filter(Boolean);
   body.innerHTML = `
     ${e.nets.length?'':`<p style="color:var(--warn)">${L('This connection has no nets yet — add at least one, or it will be dropped on export.','Esta conexión aún no tiene redes — añade al menos una, o se descartará al exportar.')}</p>`}
-    ${shown.map(({n,i})=>`
+    ${shown.map(({n,i})=> (_netEdit && _netEdit.idx===i) ? `
+      <div class="netcard editing cat-${netCategory(n)}">
+        <div class="kv"><label>${L('Net name','Nombre de la red')}</label><input type="text" id="enName" value="${esc(n.name)}"></div>
+        <div class="kv"><label>${L('Description','Descripción')}</label><textarea id="enDesc">${esc(n.description||'')}</textarea></div>
+        <p class="hint">${L('Renaming applies everywhere this net appears — every connection that carries it follows.','Renombrar se aplica allá donde aparezca esta red — todas las conexiones que la llevan la siguen.')}</p>
+        <div class="btnrow" style="margin-top:4px">
+          <button class="primary" id="enSave">${L('Save','Guardar')}</button>
+          <button id="enCancel">${L('Discard','Descartar')}</button>
+        </div>
+      </div>` : `
       <div class="netcard traceable cat-${netCategory(n)}${S.traceNet===n.name?' on':''}" data-tracenet="${esc(n.name)}" title="${L('Click to trace this net end to end','Clic para trazar esta red de extremo a extremo')}">
         <div class="nettop">
           <span class="netname">${esc(n.name)}</span>
           <span class="nettype">${esc(n.type)}</span>
           <button class="netdom ${isHvNet(n)?'hv':'lv'}" data-domnet="${i}"
             title="${L('Insulation domain of this net — click to flip. Blocks re-classify automatically (unless their Voltage domain is set by hand).','Dominio de aislamiento de esta red — clic para cambiarlo. Los bloques se reclasifican automáticamente (salvo que su dominio esté fijado a mano).')}">${isHvNet(n)?'HV':'LV'}</button>
+          <button class="pen" data-editnet="${i}" title="${L('Edit this net — name and description','Editar esta red — nombre y descripción')}">✎</button>
           <button class="x" data-delnet="${i}" title="${L('Remove net','Quitar red')}">✕</button>
         </div>
         ${n.description?`<div class="netdesc">${esc(n.description)}</div>`:''}
@@ -3404,6 +3418,30 @@ function renderInspector(){
       <button class="danger" id="btnDelEdge">${L('Delete connection','Eliminar conexión')}</button>
     </div>`;
   body.querySelectorAll('[data-delnet]').forEach(b=>b.onclick=()=>{ commit(); e.nets.splice(+b.dataset.delnet,1); render(); });
+  // ✎ flips a card into edit mode; Save renames/re-describes EVERY copy of the
+  // net (one electrical net lives on many edges), Discard just puts the card back.
+  body.querySelectorAll('[data-editnet]').forEach(b=>b.onclick=()=>{ _netEdit={ edgeId:e.id, idx:+b.dataset.editnet }; renderInspector(); });
+  const enCancel=$('enCancel'); if (enCancel) enCancel.onclick=()=>{ _netEdit=null; renderInspector(); };
+  const enSave=$('enSave'); if (enSave) enSave.onclick=()=>{
+    const net = e.nets[_netEdit.idx];
+    const name = $('enName').value.trim().toUpperCase().replace(/[^A-Z0-9]+/g,'_').replace(/^_|_$/g,'');
+    const desc = $('enDesc').value.trim();
+    if (!name){ toast(L('Net name required','El nombre de la red es obligatorio')); return; }
+    if (name!==net.name && e.nets.some(x=>x!==net && x.name===name)){
+      toast(L('This connection already carries a net with that name','Esta conexión ya lleva una red con ese nombre')); return;
+    }
+    commit();
+    const old = net.name, touched = new Set();
+    for (const ed of S.edges){
+      let hit = false;
+      for (const x of ed.nets) if (x.name===old){ x.name=name; x.description=desc; hit=true; }
+      if (hit) touched.add(ed);
+    }
+    touched.forEach(ed=>ed.nets.sort((a,b)=>a.name.localeCompare(b.name)));
+    if (S.traceNet===old) S.traceNet=name;
+    _netEdit=null; render();
+    toast(L('Net updated','Red actualizada'));
+  };
   body.querySelectorAll('[data-domnet]').forEach(b=>b.onclick=()=>{
     commit();
     const net = e.nets[+b.dataset.domnet];
