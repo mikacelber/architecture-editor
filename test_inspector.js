@@ -11,7 +11,7 @@ window.SVGElement.prototype.getBoundingClientRect=()=>({left:0,top:0,width:1600,
 window.Element.prototype.setPointerCapture=()=>{};
 window.eval(fs.readFileSync('app.js','utf8')+`
 window.__T={get S(){return S;},loadFromContract,render,nodeById,insp,inspShow,inspHide,inspScheduleHide,inspSetWidth,
- inspFinishResize,INSP_HIDE_MS,INSP_MIN_W,INSP_COLLAPSE_W,INSP_TINY_W};`);
+ inspFinishResize,INSP_HIDE_MS,INSP_MIN_W,INSP_COLLAPSE_W,INSP_TINY_W,undo};`);
 const T=window.__T,S=T.S,doc=window.document;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -82,6 +82,58 @@ check('the handle brings it back at that width', !collapsed() && aside.style.wid
 T.inspSetWidth(300, true);
 T.inspFinishResize(420);
 check('dropping at a usable width just resizes, no fold', !collapsed() && T.insp.w===300);
+
+/* ---------- editing an existing net: the "✎" next to the "✕" ---------- */
+{
+  // pick a net that lives on MORE than one connection, so the rename's
+  // everywhere-propagation is actually exercised
+  const byName={};
+  S.edges.forEach(e=>e.nets.forEach(n=>{ byName[n.name]=(byName[n.name]||0)+1; }));
+  const shared=Object.keys(byName).find(k=>byName[k]>1);
+  const edge=S.edges.find(e=>e.nets.some(n=>n.name===shared));
+  S.sel={type:'edge',id:edge.id}; T.render();
+  const body=doc.getElementById('insBody');
+  const pen=body.querySelector('[data-editnet]');
+  check('every net card carries a pencil next to the red cross',
+    !!pen && body.querySelectorAll('[data-editnet]').length===body.querySelectorAll('[data-delnet]').length &&
+    pen.textContent==='✎');
+  const idx=edge.nets.findIndex(n=>n.name===shared);
+  const oldDesc=edge.nets[idx].description;
+  body.querySelector(`[data-editnet="${idx}"]`).onclick();
+  check('the pencil flips the card into editable text with Save / Discard',
+    doc.getElementById('enName') && doc.getElementById('enName').value===shared &&
+    !!doc.getElementById('enDesc') && !!doc.getElementById('enSave') && !!doc.getElementById('enCancel'));
+  doc.getElementById('enName').value='SHOULD_NOT_STICK';
+  doc.getElementById('enCancel').onclick();
+  check('Discard puts the card back untouched',
+    !doc.getElementById('enName') && edge.nets[idx].name===shared);
+  doc.getElementById('insBody').querySelector(`[data-editnet="${idx}"]`).onclick();
+  doc.getElementById('enName').value='renamed net 9';   // sloppy input on purpose
+  doc.getElementById('enDesc').value='fresh description';
+  doc.getElementById('enSave').onclick();
+  check('Save normalizes the name like every other net entry',
+    edge.nets.some(n=>n.name==='RENAMED_NET_9'));
+  const copies=S.edges.reduce((s,e)=>s+e.nets.filter(n=>n.name==='RENAMED_NET_9').length,0);
+  check('the rename lands on EVERY connection carrying the net',
+    copies===byName[shared] && !S.edges.some(e=>e.nets.some(n=>n.name===shared)));
+  check('…and the description follows on every copy',
+    S.edges.every(e=>e.nets.every(n=>n.name!=='RENAMED_NET_9' || n.description==='fresh description')));
+  check('the card is back in display mode', !doc.getElementById('enName'));
+  T.undo();
+  check('the whole edit is ONE undoable step',
+    S.edges.some(e=>e.nets.some(n=>n.name===shared && n.description===oldDesc)) &&
+    !S.edges.some(e=>e.nets.some(n=>n.name==='RENAMED_NET_9')));
+  // a rename that collides with a sibling net on the same connection is refused
+  const multi=S.edges.find(e=>e.nets.length>1);
+  if (multi){
+    S.sel={type:'edge',id:multi.id}; T.render();
+    doc.getElementById('insBody').querySelector('[data-editnet="0"]').onclick();
+    doc.getElementById('enName').value=multi.nets[1].name;
+    doc.getElementById('enSave').onclick();
+    check('a rename colliding with a sibling net on the same connection is refused',
+      multi.nets[0].name!==multi.nets[1].name && !!doc.getElementById('enName'));
+  }
+}
 
 console.log('\n'+pass+' passed, '+fail+' failed');
 process.exit(fail?1:0);
