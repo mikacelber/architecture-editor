@@ -569,15 +569,23 @@ const EUROFIX={Errors:[],SearchResults:{NumberOfResult:1,Parts:[
         S.nodes.filter(n=>n.kind==='ic' && !T.icSelected(n)).length===before);
       btn.onclick();
       const firstUnpicked=S.nodes.find(n=>n.kind==='ic' && !T.icSelected(n));
+      const edgesOfFirst=S.edges.filter(e=>e.source===firstUnpicked.id||e.target===firstUnpicked.id).length;
       await doc.getElementById('mOk').onclick();
       check('confirming fills every IC\'s part card', S.nodes.every(n=>n.kind!=='ic' || T.icSelected(n)));
       check('…with the cheapest offer of the merged search (MS-HI at $0.0821, Mouser)',
         firstUnpicked.data.dk.pn==='MS-HI' && firstUnpicked.data.dk.price===0.0821 &&
         firstUnpicked.data.dk.src==='Mouser');
-      check('the block keeps its own identity — the offer sits on the card only',
-        !!T.nodeById(firstUnpicked.id));
-      check('a Mouser winner still gets a datasheet (borrowed or its own)',
-        !!firstUnpicked.data.dk.datasheet);
+      check('the block BECOMES the chosen part — renamed to its part number',
+        firstUnpicked.id.startsWith('MS-HI') && firstUnpicked.label===firstUnpicked.id &&
+        firstUnpicked.data.ic_part_number==='MS-HI');
+      check('…and its connections follow the new name',
+        S.edges.filter(e=>e.source===firstUnpicked.id||e.target===firstUnpicked.id).length===edgesOfFirst);
+      check('part-number collisions between blocks get unique numeric suffixes',
+        new Set(S.nodes.map(n=>n.id)).size===S.nodes.length &&
+        S.nodes.some(n=>/^MS-HI_\d+$/.test(n.id)));
+      check('the datasheet is REPLACED by the chosen part\'s, never the old one kept',
+        firstUnpicked.data.DatasheetUrl==='https://m/hi.pdf' &&
+        S.nodes.filter(n=>n.kind==='ic').every(n=>n.data.DatasheetUrl==='https://m/hi.pdf'));
       T.render();
       check('the button drops the amber once every IC is selected', !btn.classList.contains('warn'));
 
