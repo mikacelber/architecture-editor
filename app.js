@@ -2576,7 +2576,7 @@ function renderDrillDown(){
     const mid = ptsBadgePos(pts);
     const w = selected ? EDGE_STROKE_W+1.6 : traced ? EDGE_STROKE_W+1.2 : EDGE_STROKE_W;
     const d = ptsPathD(pts);
-    return `<g class="edge${trace&&!traced&&!selected?' dim':''}" data-eid="${esc(e.id)}">
+    return `<g class="edge${(trace&&!traced&&!selected)||spotDimEdge(e.id)?' dim':''}" data-eid="${esc(e.id)}">
       <path d="${d}" fill="none" stroke="transparent" stroke-width="14" style="cursor:pointer"/>
       <path d="${d}" fill="none" stroke="${style.color}" stroke-width="${w}"
         stroke-dasharray="${selected?'none':(style.dash||'none')}"
@@ -2683,7 +2683,7 @@ function renderDrillDown(){
         <text x="${bx+bw/2}" y="${y+4}" text-anchor="middle" font-family="var(--mono)" font-size="10" font-weight="600" fill="var(--ink)">${r.nets}</text>
       </g>`;
     }).join('');
-    const dimN = trace && !tracedN && !selected ? ' dim' : '';
+    const dimN = (trace && !tracedN && !selected) || spotDimNode(n.id) ? ' dim' : '';
     if (n.kind==='ic'){
       const needsPick = !icSelected(n);
       const wtX = side==='lv' ? n.w-24 : n.w-48;   // clear of the HV corner tag
@@ -2859,7 +2859,7 @@ function renderTopLevel(){
     const w = selected ? GROUP_EDGE_STROKE_W+1.6 : traced ? GROUP_EDGE_STROKE_W+1.2 : GROUP_EDGE_STROKE_W;
     const segAttrs = ` data-src="${esc(e.source)}" data-tgt="${esc(e.target)}" data-dom="${esc(e.dom||'')}"`;
     const d = ptsPathD(pts);
-    return `<g class="edge${trace&&!traced&&!selected?' dim':''}" data-eid="${esc(e.id)}">
+    return `<g class="edge${(trace&&!traced&&!selected)||spotDimEdge(e.id)?' dim':''}" data-eid="${esc(e.id)}">
       <path d="${d}" fill="none" stroke="transparent" stroke-width="16" style="cursor:pointer"/>
       <path d="${d}" fill="none" stroke="${style.color}" stroke-width="${w}"
         stroke-dasharray="${selected?'none':(style.dash||'none')}"
@@ -3027,6 +3027,34 @@ function openIcCostModal(){
   $('mCancel').onclick = closeModal;
 }
 
+/* ---------- issue spotlight + navigation ----------
+   Clicking an entry in the Issues panel jumps to the exact sheet, selects the
+   culprit and SPOTLIGHTS it: the target stays lit while everything else dims —
+   the same optics as tracing a net. The spotlight is transient: the next
+   click on the canvas clears it. */
+function spotDimNode(id){
+  const s = S.spotlight; if (!s) return false;
+  return s.type==='node' ? s.id!==id : !(s.ends||[]).includes(id);
+}
+function spotDimEdge(id){
+  const s = S.spotlight; if (!s) return false;
+  return !(s.type==='edge' && s.id===id);
+}
+function gotoNodeIssue(id){
+  const n = nodeById(id); if (!n) return;
+  S.openGroup = nodeGroupIndex().get(id) || UNGROUPED_ID;
+  S.sel = { type:'node', id };
+  S.spotlight = { type:'node', id };
+  render(); fitView();
+}
+function gotoEdgeIssue(eid){
+  const e = S.edges.find(x=>x.id===eid); if (!e) return;
+  S.openGroup = nodeGroupIndex().get(e.source) || nodeGroupIndex().get(e.target) || UNGROUPED_ID;
+  S.sel = { type:'edge', id:eid };
+  S.spotlight = { type:'edge', id:eid, ends:[e.source, e.target] };
+  render(); fitView();
+}
+
 // The net card currently flipped into edit mode ({edgeId, idx}), if any —
 // cleared on save/discard and whenever the selection moves elsewhere.
 let _netEdit = null;
@@ -3053,6 +3081,12 @@ function renderInspector(){
             'Vista de sistema — cada bloque es un grupo funcional, derivado automáticamente de las conexiones subyacentes. Selecciona un grupo o una conexión para inspeccionarlo, o haz doble clic en un grupo para abrirlo. Arrastra un grupo para recolocarlo.')
         : L('Select a block or a connection to inspect it. Press <b>Delete</b> to remove the selection. Click "System" above to return to the top level.',
             'Selecciona un bloque o una conexión para inspeccionarlo. Pulsa <b>Supr</b> para eliminar la selección. Pulsa "Sistema" arriba para volver al nivel superior.')}</p>`;
+    const issTotal = (i=>i.isolated.length+i.emptyEdges.length+i.ungrouped.length+i.unpicked.length)(collectIssues());
+    if (issTotal){
+      body.insertAdjacentHTML('afterbegin',
+        `<div class="btnrow" style="margin-top:0"><button class="warn" id="btnIssues">${issTotal} ${L('issues — see the list','avisos — ver la lista')}</button></div>`);
+      $('btnIssues').onclick=()=>{ S.sel={type:'issues'}; render(); };
+    }
     $('btnProjOpts').onclick = openProjectOptionsModal;
     $('btnIcCost').onclick = openIcCostModal;
     if (descTruncated) $('btnFullDesc').onclick = () => {
@@ -3061,6 +3095,30 @@ function renderInspector(){
         `<button class="primary" id="mCancel">Close</button>`);
       $('mCancel').onclick = closeModal;
     };
+    return;
+  }
+  if (S.sel.type==='issues'){
+    const iss = collectIssues();
+    const total = iss.isolated.length+iss.emptyEdges.length+iss.ungrouped.length+iss.unpicked.length;
+    eye.textContent = L('Issues','Avisos');
+    title.textContent = total ? total+' '+L('issues to resolve','avisos por resolver') : L('No issues','Sin avisos');
+    const section = (label, items) => items.length ? `
+      <div class="kv"><label>${label} (${items.length})</label></div>
+      ${items.join('')}` : '';
+    body.innerHTML = total ? `
+      <p class="hint" style="margin-top:0">${L('Click an entry to jump to the exact spot — the culprit stays lit while everything else dims. The next click on the canvas lifts the spotlight.',
+        'Pulsa una entrada para saltar al punto exacto — el culpable queda iluminado y todo lo demás se atenúa. El siguiente clic en el lienzo quita el foco.')}</p>
+      ${section(L('Unconnected blocks','Bloques sin conectar'), iss.isolated.map(n=>
+        `<button class="issue" data-iss-node="${esc(n.id)}"><b>${esc(n.label)}</b> — ${L('not connected to anything','sin conexión con nada')}</button>`))}
+      ${section(L('Connections without nets','Conexiones sin redes'), iss.emptyEdges.map(e=>
+        `<button class="issue" data-iss-edge="${esc(e.id)}"><b>${esc(nodeById(e.source)?.label||e.source)} → ${esc(nodeById(e.target)?.label||e.target)}</b> — ${L('carries no nets, dropped on export','no lleva redes, se descarta al exportar')}</button>`))}
+      ${section(L('Ungrouped blocks','Bloques sin grupo'), iss.ungrouped.map(n=>
+        `<button class="issue" data-iss-node="${esc(n.id)}"><b>${esc(n.label)}</b> — ${L('belongs to no functional group','no pertenece a ningún grupo funcional')}</button>`))}
+      ${section(L('ICs without a selected part','CIs sin componente seleccionado'), iss.unpicked.map(n=>
+        `<button class="issue" data-iss-node="${esc(n.id)}"><b>${esc(n.label)}</b> — ${L('no part card yet (Edit IC… or Auto IC Selection)','aún sin tarjeta de componente (Editar CI… o Selección auto)')}</button>`))}`
+      : `<p>${L('Everything is resolved — no warnings left on the status bar.','Todo resuelto — no quedan avisos en la barra de estado.')}</p>`;
+    body.querySelectorAll('[data-iss-node]').forEach(b=>b.onclick=()=>gotoNodeIssue(b.dataset.issNode));
+    body.querySelectorAll('[data-iss-edge]').forEach(b=>b.onclick=()=>gotoEdgeIssue(b.dataset.issEdge));
     return;
   }
   if (S.sel.type==='group'){
@@ -3478,28 +3536,45 @@ function deleteNode(id){
 /* ============================================================
    STATUS BAR (live validation)
    ============================================================ */
+// The problems the status bar warns about, in full: shared by the chips and
+// by the Issues panel that opens when a chip is clicked.
+function collectIssues(){
+  const drawn = diagramEdges(S.edges);
+  const ug = groupsWithUngrouped().find(g=>g.id===UNGROUPED_ID);
+  return {
+    isolated:  S.nodes.filter(n => !drawn.some(e=>e.source===n.id||e.target===n.id)),
+    emptyEdges: S.edges.filter(e=>e.nets.length===0),
+    ungrouped: (ug ? ug.members : []).map(id=>nodeById(id)).filter(Boolean),
+    unpicked:  S.nodes.filter(n=>n.kind==='ic' && !icSelected(n)),
+  };
+}
 function renderStatus(){
   // Counted on the drawable graph so the figures match what's on screen —
   // ground-only connections are invisible and mustn't mask an isolated block.
+  const iss = collectIssues();
   const drawn = diagramEdges(S.edges);
-  const isolated = S.nodes.filter(n => !drawn.some(e=>e.source===n.id||e.target===n.id));
-  const emptyEdges = S.edges.filter(e=>e.nets.length===0);
-  const ungrouped = groupsWithUngrouped().find(g=>g.id===UNGROUPED_ID);
+  const isolated = iss.isolated;
+  const emptyEdges = iss.emptyEdges;
+  const ungrouped = { members: iss.ungrouped };
   const bits = [];
   bits.push(`<span class="chip"><span class="dot" style="background:var(--copper)"></span>${S.nodes.length} ${L('blocks','bloques')} · ${drawn.length} ${L('connections','conexiones')}</span>`);
   // On an empty sheet there is nothing to vouch for — "all blocks connected"
   // would be a claim about nothing.
+  // Warning chips are BUTTONS: clicking one opens the Issues panel on the
+  // right, where every problem is listed and click-to-locate.
+  const warnChip = html => `<button class="chip warn" data-issues title="${L('Click to list every issue in the panel','Clic para listar todos los avisos en el panel')}"><span class="dot"></span>${html}</button>`;
   if (S.nodes.length) bits.push(isolated.length
-    ? `<span class="chip warn"><span class="dot"></span>${isolated.length} ${L('unconnected block','bloque')}${isolated.length>1?'s':''}${uiLang()==='es'?' sin conectar':''}: ${esc(isolated.slice(0,3).map(n=>n.label).join(', '))}${isolated.length>3?'…':''}</span>`
+    ? warnChip(`${isolated.length} ${L('unconnected block','bloque')}${isolated.length>1?'s':''}${uiLang()==='es'?' sin conectar':''}: ${esc(isolated.slice(0,3).map(n=>n.label).join(', '))}${isolated.length>3?'…':''}`)
     : `<span class="chip ok"><span class="dot"></span>${L('all blocks connected','todos los bloques conectados')}</span>`);
-  if (emptyEdges.length) bits.push(`<span class="chip warn"><span class="dot"></span>${emptyEdges.length} ${L('connection','conexión')}${emptyEdges.length>1?(uiLang()==='es'?'es':'s'):''} ${L('without nets','sin redes')}</span>`);
-  if (ungrouped && ungrouped.members.length) bits.push(`<span class="chip warn"><span class="dot"></span>${ungrouped.members.length} ${L('ungrouped block','bloque')}${ungrouped.members.length>1?'s':''}${uiLang()==='es'?' sin grupo':''}</span>`);
-  const unpicked = S.nodes.filter(n=>n.kind==='ic' && !icSelected(n)).length;
-  if (unpicked) bits.push(`<span class="chip warn"><span class="dot"></span>${unpicked} ${L('IC','CI')}${unpicked>1?'s':''} ${L('without a selected part','sin componente seleccionado')}</span>`);
+  if (emptyEdges.length) bits.push(warnChip(`${emptyEdges.length} ${L('connection','conexión')}${emptyEdges.length>1?(uiLang()==='es'?'es':'s'):''} ${L('without nets','sin redes')}`));
+  if (ungrouped && ungrouped.members.length) bits.push(warnChip(`${ungrouped.members.length} ${L('ungrouped block','bloque')}${ungrouped.members.length>1?'s':''}${uiLang()==='es'?' sin grupo':''}`));
+  const unpicked = iss.unpicked.length;
+  if (unpicked) bits.push(warnChip(`${unpicked} ${L('IC','CI')}${unpicked>1?'s':''} ${L('without a selected part','sin componente seleccionado')}`));
   // The header's Auto IC Selection wears the same amber while any IC still
   // lacks its part, and goes back to normal once every card is filled.
   const autoBtn = $('btnAutoIC'); if (autoBtn) autoBtn.classList.toggle('warn', unpicked>0);
   $('statusBar').innerHTML = bits.join('');
+  $('statusBar').querySelectorAll('[data-issues]').forEach(b=>b.onclick=()=>{ S.sel={type:'issues'}; render(); });
   renderLegend();
 }
 
@@ -3534,6 +3609,8 @@ function blockXY(id){
 }
 
 svg.addEventListener('pointerdown', ev=>{
+  // The issue spotlight is transient — any click on the canvas lifts it.
+  if (S.spotlight) S.spotlight = null;
   const segEl = ev.target.closest('.seg-v, .seg-h');
   const numEl = ev.target.closest('.portnum');
   const badgeEl = ev.target.closest('.netbadge');
@@ -4377,11 +4454,23 @@ async function autoIcSelection(){
     if (!n.data.dk.datasheet){
       const dkHit = rows.find(r=>r.src==='DigiKey' && r.pn===best.pn && r.datasheet)
                  || rows.find(r=>r.src==='DigiKey' && r.datasheet);
-      if (dkHit) n.data.dk.datasheet = dkHit.datasheet; else fillMissingDatasheet(n);
+      if (dkHit) n.data.dk.datasheet = dkHit.datasheet;
     }
-    if (!n.data.DatasheetUrl && n.data.dk.datasheet) n.data.DatasheetUrl = n.data.dk.datasheet;
+    // The block BECOMES the chosen part — identity, part number and datasheet
+    // all follow the pick, nothing of the old proposal lingers. Connections,
+    // groups and port layouts ride along via renameNodeId; a rare part-number
+    // collision between two blocks gets a numeric suffix to stay unique.
+    if (best.pn !== n.id){
+      let newId = best.pn, k = 2;
+      while (nodeById(newId) && nodeById(newId)!==n) newId = best.pn+'_'+(k++);
+      renameNodeId(n.id, newId);
+      n.label = newId;
+    }
+    n.data.ic_part_number = best.pn;
+    n.data.DatasheetUrl = n.data.dk.datasheet || '';
+    if (!n.data.DatasheetUrl) fillMissingDatasheet(n);   // async DigiKey borrow fills both slots
     done++;
-    line.textContent = pn+' — '+best.pn+' · '+dkFmtPrice(best.price, best.currency)+' · '+best.src;
+    line.textContent = pn+' → '+best.pn+' · '+dkFmtPrice(best.price, best.currency)+' · '+best.src;
   }
   closeModal(); render();
   toast(done+(uiLang()==='es' ? ' CI'+(done===1?'':'s')+' con la oferta más barata asignada' : ' IC'+(done===1?'':'s')+' assigned the cheapest offer')
@@ -4398,16 +4487,16 @@ $('btnAutoIC').onclick=()=>{
       seleccionado y asigna la <b>oferta con precio MÁS BARATA</b> encontrada — sin criterio de ingeniería.
       ¿Estás seguro?</p>
     <p class="hint">La más barata por precio unitario entre las <b>5 primeras ofertas con stock</b> de cada búsqueda
-      (el stock desempata) — nunca se elige un componente sin stock. Los nombres de los bloques no cambian — la oferta
-      elegida va a la tarjeta del componente, donde "✕" o Editar CI… pueden reemplazarla. Toda la pasada es un
-      único cambio deshacible (Ctrl+Z).</p>
+      (el stock desempata) — nunca se elige un componente sin stock. Cada bloque adopta el nombre y la hoja de datos
+      del componente elegido; "✕" o Editar CI… pueden reemplazarlo después. Toda la pasada es un único cambio
+      deshacible (Ctrl+Z).</p>
   ` : `
     <p>This searches ${where} for each of the <b>${targets.length} IC${targets.length>1?'s':''}</b> without a
       selected part and assigns the <b>CHEAPEST priced offer</b> found — no engineering judgement involved.
       Are you sure?</p>
     <p class="hint">Cheapest by unit price among the <b>top 5 in-stock offers</b> of each search (stock as the
-      tie-break) — an out-of-stock part is never picked. Block names stay as they are — the chosen offer lands on
-      the part card, where "✕" or Edit IC… can still replace it. The whole pass is one undoable edit (Ctrl+Z).</p>
+      tie-break) — an out-of-stock part is never picked. Each block takes the chosen part's NAME and DATASHEET;
+      "✕" or Edit IC… can still replace it afterwards. The whole pass is one undoable edit (Ctrl+Z).</p>
   `, `<button id="mCancel">${L('Cancel','Cancelar')}</button><button class="primary" id="mOk">${L('Assign cheapest','Asignar más barata')}</button>`);
   $('mCancel').onclick=closeModal;
   $('mOk').onclick=()=>autoIcSelection();

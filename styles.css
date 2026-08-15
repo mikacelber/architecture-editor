@@ -264,6 +264,16 @@ label.switch .swlabel{font-family:var(--mono);font-size:11px;color:var(--ink-sof
 button.warn{border-color:var(--warn);color:var(--warn)}
 button.warn:hover{background:var(--danger-hover);border-color:var(--warn)}
 
+/* Issues panel: warn chips in the status bar are clickable, and each listed
+   issue is a full-width button that jumps to (and spotlights) the culprit. */
+button.chip{cursor:pointer;font:inherit}
+button.chip.warn:hover{border-color:var(--warn);background:var(--danger-hover)}
+.issue{display:block;width:100%;text-align:left;font-size:11.5px;line-height:1.4;
+  border:1.5px solid var(--line);border-left:4px solid var(--warn);border-radius:3px;
+  background:var(--field-bg);padding:6px 9px;margin-bottom:6px;cursor:pointer}
+.issue:hover{border-color:var(--warn)}
+.issue b{font-family:var(--mono);font-size:11.5px}
+
 /* Auto IC Selection progress log inside the modal */
 .ailog{font-family:var(--mono);font-size:11px;line-height:1.8;max-height:300px;overflow-y:auto;color:var(--ink-soft)}
 

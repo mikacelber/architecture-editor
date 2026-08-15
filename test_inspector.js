@@ -135,5 +135,52 @@ check('dropping at a usable width just resizes, no fold', !collapsed() && T.insp
   }
 }
 
+/* ---------- clickable warnings → Issues panel → jump + spotlight ---------- */
+{
+  // manufacture an issue: strip the nets from a same-group connection (the
+  // fixture's ICs are unselected proposals already, so that chip exists too)
+  const inSame = e => S.groups.some(g=>g.members.includes(e.source)&&g.members.includes(e.target));
+  const victim = S.edges.find(e=>e.nets.length>0 && inSame(e));
+  victim.nets.length=0;
+  S.sel=null; S.openGroup=null; T.render();
+  const chips=[...doc.querySelectorAll('#statusBar [data-issues]')];
+  check('warning chips on the status bar are clickable buttons',
+    chips.length>=2 && chips.every(b=>b.tagName==='BUTTON'));
+  chips[0].onclick();
+  check('clicking a chip opens the Issues panel listing every problem in detail',
+    doc.getElementById('insEyebrow').textContent==='Issues' &&
+    doc.querySelectorAll('#insBody .issue').length>0 &&
+    /Connections without nets/.test(doc.getElementById('insBody').innerHTML) &&
+    /ICs without a selected part/.test(doc.getElementById('insBody').innerHTML));
+  const item=doc.querySelector(`#insBody [data-iss-edge="${victim.id}"]`);
+  check('the empty connection is listed with both endpoints named',
+    !!item && item.textContent.includes(T.nodeById(victim.source).label));
+  item.onclick();
+  check('clicking the entry jumps to the exact sheet and selects the culprit',
+    S.openGroup!==null && S.sel && S.sel.type==='edge' && S.sel.id===victim.id);
+  // a netless connection has no wire on the sheet (that IS the problem) — the
+  // spotlight lights its two endpoint blocks instead, everything else dims
+  check('…and spotlights it: the endpoint blocks stay lit while the rest dims',
+    S.spotlight && S.spotlight.id===victim.id &&
+    (()=>{ const g=[...doc.querySelectorAll('#nodesG g[data-nid]')];
+      const src=g.find(x=>x.dataset.nid===victim.source), tgt=g.find(x=>x.dataset.nid===victim.target);
+      return src && tgt && !src.classList.contains('dim') && !tgt.classList.contains('dim'); })() &&
+    doc.querySelectorAll('#nodesG g.dim').length>0);
+  // a block entry: an unpicked IC
+  S.sel={type:'issues'}; T.render();
+  const nodeItem=doc.querySelector('#insBody [data-iss-node]');
+  const nid=nodeItem.dataset.issNode;
+  nodeItem.onclick();
+  const nodeG=[...doc.querySelectorAll('#nodesG g[data-nid]')].find(x=>x.dataset.nid===nid);
+  check('a block entry opens its sheet, selects and spotlights the block',
+    S.sel.type==='node' && S.sel.id===nid && S.spotlight && S.spotlight.id===nid &&
+    !!nodeG && !nodeG.classList.contains('dim') &&
+    doc.querySelectorAll('#nodesG g.dim').length>0);
+  doc.getElementById('board').dispatchEvent(new window.MouseEvent('pointerdown',{bubbles:true}));
+  check('the next canvas click lifts the spotlight', !S.spotlight);
+  check('the System panel offers the same list when issues exist',
+    (S.sel=null, S.openGroup=null, T.render(), !!doc.getElementById('btnIssues')));
+}
+
 console.log('\n'+pass+' passed, '+fail+' failed');
 process.exit(fail?1:0);
