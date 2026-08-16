@@ -13,7 +13,8 @@ window.Element.prototype.setPointerCapture=()=>{};
 window.eval(fs.readFileSync('app.js','utf8')+`
 window.__T={get S(){return S;},loadFromContract,loadSession,buildSessionJSON,render,openGroupView,closeGroupView,
  drillSheet,groupsWithUngrouped,nodeById,setPortalOffset,movePortalSlotToRow,setGroupEdgeRoute,setGroupPortSide,
- moveNodePortToRow,computeGroupEdges,groupEdgeRouteKey,diagramEdges,resetPortalBase,fitView};`);
+ moveNodePortToRow,computeGroupEdges,groupEdgeRouteKey,diagramEdges,resetPortalBase,fitView,
+ icSelected,buildPipelineJSON};`);
 const T=window.__T,S=T.S,doc=window.document;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -134,6 +135,63 @@ for (const k of Object.keys(beforeB)) check('group B renders identically after t
   T.resetPortalBase(); T.render();
   check('Auto-layout re-anchors the columns to the current blocks',
     T.drillSheet().portals.map(p=>p.key+'@'+p.r.y).join('|')!==y0);
+}
+
+/* ---------- an imported block takes its NAME from its part card ---------- */
+{
+  T.loadFromContract(fx.input,fx.contract,fx.groups); T.render();
+  const ic = S.nodes.find(n=>n.kind==='ic' && S.edges.some(e=>e.source===n.id||e.target===n.id));
+  const oldId = ic.id, wires = S.edges.filter(e=>e.source===oldId||e.target===oldId).length;
+  const grp = S.groups.find(g=>g.members.includes(oldId));
+  // a session saved before the block was renamed to its pick: card says one
+  // part, the block still carries the old proposal's name
+  ic.data.dk = { pn:'CARD-PART-1', man:'TI', desc:'the physical part', stock:10,
+                 price:1.5, currency:'USD', src:'DigiKey', datasheet:'https://x/card.pdf' };
+  ic.data.DatasheetUrl = 'https://x/OLD-PROPOSAL.pdf';   // describes the wrong chip now
+  const stale = T.buildSessionJSON();
+  check('the stale session really does disagree with itself',
+    stale.nodes.find(n=>n.id===oldId).data.dk.pn==='CARD-PART-1');
+
+  T.loadSession(JSON.parse(JSON.stringify(stale)));
+  check('importing renames the block to the part on its card',
+    !!T.nodeById('CARD-PART-1') && !T.nodeById(oldId) &&
+    T.nodeById('CARD-PART-1').label==='CARD-PART-1');
+  check('…and the export field follows, so the next JSON is already right',
+    T.nodeById('CARD-PART-1').data.ic_part_number==='CARD-PART-1' &&
+    T.buildPipelineJSON().ic_components.some(c=>c.ic_part_number==='CARD-PART-1'));
+  check('…the card\'s datasheet replaces the old proposal\'s, which described another chip',
+    T.nodeById('CARD-PART-1').data.DatasheetUrl==='https://x/card.pdf');
+  {  // a card without a link leaves the block's own datasheet alone
+    T.loadFromContract(fx.input,fx.contract,fx.groups); T.render();
+    const b = S.nodes.find(n=>n.kind==='ic');
+    b.data.DatasheetUrl = 'https://x/keep-me.pdf';
+    b.data.dk = { pn:'NO-DS-PART', man:'TI', desc:'x', stock:1, price:1, currency:'USD', src:'Mouser', datasheet:'' };
+    T.loadSession(JSON.parse(JSON.stringify(T.buildSessionJSON())));
+    check('a card with no datasheet leaves the block\'s link untouched',
+      T.nodeById('NO-DS-PART').data.DatasheetUrl==='https://x/keep-me.pdf');
+    T.loadSession(JSON.parse(JSON.stringify(stale)));   // back to the main scenario
+  }
+  check('every connection follows the rename',
+    S.edges.filter(e=>e.source==='CARD-PART-1'||e.target==='CARD-PART-1').length===wires &&
+    !S.edges.some(e=>e.source===oldId||e.target===oldId));
+  check('group membership follows too',
+    S.groups.find(g=>g.id===grp.id).members.includes('CARD-PART-1'));
+  check('the block still counts as selected — the card is untouched',
+    T.icSelected(T.nodeById('CARD-PART-1')));
+
+  // two cards naming the same part stay distinct blocks
+  const another = S.nodes.find(n=>n.kind==='ic' && n.id!=='CARD-PART-1');
+  another.data.dk = { ...T.nodeById('CARD-PART-1').data.dk };
+  T.loadSession(JSON.parse(JSON.stringify(T.buildSessionJSON())));
+  check('two blocks whose cards name the same part get unique ids',
+    new Set(S.nodes.map(n=>n.id)).size===S.nodes.length &&
+    S.nodes.some(n=>n.id==='CARD-PART-1_2'));
+
+  // a block already named after its card is left exactly as it is
+  const before = T.buildSessionJSON();
+  T.loadSession(JSON.parse(JSON.stringify(before)));
+  check('re-importing an already-reconciled session changes nothing',
+    JSON.stringify(T.buildSessionJSON().nodes.map(n=>n.id))===JSON.stringify(before.nodes.map(n=>n.id)));
 }
 
 console.log('\n'+pass+' passed, '+fail+' failed');
