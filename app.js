@@ -3449,16 +3449,24 @@ function renderInspector(){
   }).filter(Boolean);
   body.innerHTML = `
     ${e.nets.length?'':`<p style="color:var(--warn)">${L('This connection has no nets yet — add at least one, or it will be dropped on export.','Esta conexión aún no tiene redes — añade al menos una, o se descartará al exportar.')}</p>`}
-    ${shown.map(({n,i})=> (_netEdit && _netEdit.idx===i) ? `
+    ${shown.map(({n,i})=> (_netEdit && _netEdit.idx===i) ? (()=>{
+      const blockOpts = sel => S.nodes.slice().sort((a,b)=>a.label.localeCompare(b.label))
+        .map(x=>`<option value="${esc(x.id)}" ${x.id===sel?'selected':''}>${esc(x.label)}</option>`).join('');
+      return `
       <div class="netcard editing cat-${netCategory(n)}">
         <div class="kv"><label>${L('Net name','Nombre de la red')}</label><input type="text" id="enName" value="${esc(n.name)}"></div>
         <div class="kv"><label>${L('Description','Descripción')}</label><textarea id="enDesc">${esc(n.description||'')}</textarea></div>
-        <p class="hint">${L('Renaming applies everywhere this net appears — every connection that carries it follows.','Renombrar se aplica allá donde aparezca esta red — todas las conexiones que la llevan la siguen.')}</p>
+        <div class="row">
+          <div class="kv"><label>${L('From (driver)','Desde (generador)')}</label><select id="enFrom">${blockOpts(e.source)}</select></div>
+          <div class="kv"><label>${L('To (consumer)','Hasta (consumidor)')}</label><select id="enTo">${blockOpts(e.target)}</select></div>
+        </div>
+        <p class="hint">${L('Renaming applies everywhere this net appears. Changing a block MOVES this leg of the net: the old block loses the connection and its port, the new pair gains it — no leftovers, no warnings.',
+                            'Renombrar se aplica allá donde aparezca esta red. Cambiar un bloque MUEVE este tramo de la red: el bloque anterior pierde la conexión y su puerto, la nueva pareja la gana — sin restos ni avisos.')}</p>
         <div class="btnrow" style="margin-top:4px">
           <button class="primary" id="enSave">${L('Save','Guardar')}</button>
           <button id="enCancel">${L('Discard','Descartar')}</button>
         </div>
-      </div>` : `
+      </div>`; })() : `
       <div class="netcard traceable cat-${netCategory(n)}${S.traceNet===n.name?' on':''}" data-tracenet="${esc(n.name)}" title="${L('Click to trace this net end to end','Clic para trazar esta red de extremo a extremo')}">
         <div class="nettop">
           <span class="netname">${esc(n.name)}</span>
@@ -3484,10 +3492,9 @@ function renderInspector(){
       <button id="btnAddNet">${L('Add net','Añadir red')}</button>
     </div>
     <p class="hint">${L('Drag the vertical segments sideways or the horizontal segments up/down to reroute — including the last segment where the wire enters the block. The arrow always enters the block perpendicular to its edge.','Arrastra los segmentos verticales lateralmente o los horizontales arriba/abajo para redirigir — incluido el último segmento donde el cable entra al bloque. La flecha siempre entra al bloque perpendicular a su borde.')}</p>
-    <div class="btnrow">
-      ${nodeEdgeRouteOf(e)?`<button id="btnResetRoute">${L('Reset routing','Restablecer ruta')}</button>`:''}
-      <button class="danger" id="btnDelEdge">${L('Delete connection','Eliminar conexión')}</button>
-    </div>`;
+    ${nodeEdgeRouteOf(e)?`<div class="btnrow"><button id="btnResetRoute">${L('Reset routing','Restablecer ruta')}</button></div>`:''}
+    <p class="hint">${L('To delete the connection, remove its nets with each card\'s "✕" — the wire goes away with its last net.',
+                        'Para eliminar la conexión, quita sus redes con la "✕" de cada ficha — el cable desaparece con su última red.')}</p>`;
   // Removing the LAST net takes the connection with it. A wire carrying nothing
   // draws nothing and exports as nothing — it only lingers as a warning — so
   // deleting the net a connection existed for deletes the connection too, in the
@@ -3512,7 +3519,9 @@ function renderInspector(){
     const net = e.nets[_netEdit.idx];
     const name = $('enName').value.trim().toUpperCase().replace(/[^A-Z0-9]+/g,'_').replace(/^_|_$/g,'');
     const desc = $('enDesc').value.trim();
+    const newSrc = $('enFrom').value, newTgt = $('enTo').value;
     if (!name){ toast(L('Net name required','El nombre de la red es obligatorio')); return; }
+    if (newSrc===newTgt){ toast(L('Source and target must be different blocks','Origen y destino deben ser bloques distintos')); return; }
     if (name!==net.name && e.nets.some(x=>x!==net && x.name===name)){
       toast(L('This connection already carries a net with that name','Esta conexión ya lleva una red con ese nombre')); return;
     }
@@ -3525,6 +3534,19 @@ function renderInspector(){
     }
     touched.forEach(ed=>ed.nets.sort((a,b)=>a.name.localeCompare(b.name)));
     if (S.traceNet===old) S.traceNet=name;
+    // Changing a block MOVES this leg of the net: the old connection loses it
+    // (and disappears if it carried nothing else — the old block's port derives
+    // from its connections, so it goes silently with it, never as a warning),
+    // and the new pair carries it on their existing wire or a fresh one.
+    if (newSrc!==e.source || newTgt!==e.target){
+      e.nets.splice(e.nets.indexOf(net),1);
+      if (!e.nets.length) S.edges = S.edges.filter(x=>x.id!==e.id);
+      let dst = S.edges.find(x=>x.source===newSrc && x.target===newTgt);
+      if (!dst){ dst = { id:'e'+(S.edgeSeq++), source:newSrc, target:newTgt, nets:[] }; S.edges.push(dst); }
+      if (!dst.nets.some(x=>x.name===net.name)) dst.nets.push(net);
+      dst.nets.sort((a,b)=>a.name.localeCompare(b.name));
+      S.sel = { type:'edge', id:dst.id };
+    }
     _netEdit=null; render();
     toast(L('Net updated','Red actualizada'));
   };
@@ -3547,7 +3569,6 @@ function renderInspector(){
     if (e.routes) delete e.routes[S.openGroup];
     if (e.route && e.route.sheet===S.openGroup) delete e.route;
     render(); };
-  $('btnDelEdge').onclick=()=>{ commit(); S.edges=S.edges.filter(x=>x.id!==e.id); S.sel=null; render(); };
   wireTraceCards(body);
 }
 

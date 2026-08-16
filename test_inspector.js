@@ -135,6 +135,43 @@ check('dropping at a usable width just resizes, no fold', !collapsed() && T.insp
   }
 }
 
+/* ---------- moving a net's leg to another block via the edit card ---------- */
+{
+  const solo = S.edges.find(e=>e.nets.length===1);
+  const soloId = solo.id, src = solo.source, oldTgt = solo.target, netName = solo.nets[0].name;
+  const newTgt = S.nodes.find(n=>n.id!==src && n.id!==oldTgt &&
+    !S.edges.some(e=>e.source===src && e.target===n.id && e.nets.some(x=>x.name===netName))).id;
+  S.sel={type:'edge',id:soloId}; T.render();
+  doc.querySelector('#insBody [data-editnet]').onclick();
+  check('the edit card offers the two endpoint blocks as selectors',
+    !!doc.getElementById('enFrom') && !!doc.getElementById('enTo') &&
+    doc.getElementById('enFrom').value===src && doc.getElementById('enTo').value===oldTgt);
+  check('there is no separate "Delete connection" button any more — the "✕" is the way',
+    !doc.getElementById('btnDelEdge'));
+  doc.getElementById('enTo').value=newTgt;
+  doc.getElementById('enSave').onclick();
+  const dst=S.edges.find(e=>e.source===src && e.target===newTgt && e.nets.some(x=>x.name===netName));
+  check('changing the block MOVES the leg: the new pair now carries the net', !!dst);
+  check('…the old block lost the connection entirely (it only carried this net)',
+    !S.edges.some(e=>e.id===soloId));
+  check('…with no empty-connection leftovers, hence no warning',
+    !S.edges.some(e=>e.nets.length===0) &&
+    !/without nets/.test(doc.getElementById('statusBar').textContent));
+  check('…and the selection follows the net to its new wire',
+    S.sel && S.sel.type==='edge' && S.sel.id===dst.id);
+  T.undo();
+  check('one undo puts the leg back where it was',
+    S.edges.some(e=>e.id===soloId && e.nets.some(x=>x.name===netName)) &&
+    !S.edges.some(e=>e.source===src && e.target===newTgt && e.nets.some(x=>x.name===netName)));
+  // same endpoints → a plain rename/description edit, no move
+  S.sel={type:'edge',id:soloId}; T.render();
+  doc.querySelector('#insBody [data-editnet]').onclick();
+  doc.getElementById('enSave').onclick();
+  check('saving with the endpoints untouched moves nothing',
+    S.edges.some(e=>e.id===soloId));
+  T.undo();
+}
+
 /* ---------- deleting the last net takes the connection with it ---------- */
 {
   // the real-world shape: a net whose consumers each hang off their OWN
