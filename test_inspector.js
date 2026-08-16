@@ -135,6 +135,34 @@ check('dropping at a usable width just resizes, no fold', !collapsed() && T.insp
   }
 }
 
+/* ---------- deleting the last net takes the connection with it ---------- */
+{
+  // the real-world shape: a net whose consumers each hang off their OWN
+  // connection, so that connection exists solely to carry it
+  const solo = S.edges.find(e=>e.nets.length===1);
+  const soloId = solo.id, soloNet = solo.nets[0].name;
+  S.sel={type:'edge',id:soloId}; T.render();
+  doc.querySelector('#insBody [data-delnet]').onclick();
+  check('removing the only net of a connection removes the connection too',
+    !S.edges.some(e=>e.id===soloId));
+  check('…so it never lingers as a "carries no nets" warning',
+    !S.edges.some(e=>e.nets.length===0));
+  check('…and the selection lets go of the deleted connection', !S.sel);
+  T.undo();
+  check('one undo brings back both the net and its connection',
+    S.edges.some(e=>e.id===soloId && e.nets.some(n=>n.name===soloNet)));
+  // a connection with several nets keeps living after one is dropped
+  const multi = S.edges.find(e=>e.nets.length>1);
+  if (multi){
+    const before = multi.nets.length;
+    S.sel={type:'edge',id:multi.id}; T.render();
+    doc.querySelector('#insBody [data-delnet]').onclick();
+    check('a connection carrying other nets survives losing one',
+      S.edges.some(e=>e.id===multi.id) && multi.nets.length===before-1);
+    T.undo();
+  }
+}
+
 /* ---------- clickable warnings → Issues panel → jump + spotlight ---------- */
 {
   // manufacture an issue: strip the nets from a same-group connection (the
@@ -178,6 +206,16 @@ check('dropping at a usable width just resizes, no fold', !collapsed() && T.insp
     doc.querySelectorAll('#nodesG g.dim').length>0);
   doc.getElementById('board').dispatchEvent(new window.MouseEvent('pointerdown',{bubbles:true}));
   check('the next canvas click lifts the spotlight', !S.spotlight);
+  // leftovers from before the auto-cleanup existed: swept in one click
+  S.sel={type:'issues'}; T.render();
+  const sweep=doc.getElementById('btnDropEmpty');
+  check('the panel offers a one-click sweep of the empty connections',
+    !!sweep && /1 empty connection/.test(sweep.textContent));
+  sweep.onclick();
+  check('…which drops them all and clears that warning',
+    !S.edges.some(e=>e.nets.length===0) &&
+    (S.sel=null, T.render(), !/without nets/.test(doc.getElementById('statusBar').textContent)));
+  T.undo();
   check('the System panel offers the same list when issues exist',
     (S.sel=null, S.openGroup=null, T.render(), !!doc.getElementById('btnIssues')));
 }
