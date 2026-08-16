@@ -146,6 +146,18 @@ check('dropping at a usable width just resizes, no fold', !collapsed() && T.insp
   check('the edit card offers the two endpoint blocks as selectors',
     !!doc.getElementById('enFrom') && !!doc.getElementById('enTo') &&
     doc.getElementById('enFrom').value===src && doc.getElementById('enTo').value===oldTgt);
+  {
+    const groupTitleOf = id => (S.groups.find(g=>g.members.includes(id)) || { title:'Ungrouped' }).title;
+    const firstOg = sel => doc.getElementById(sel).querySelector('optgroup');
+    check('the block lists are ordered by functional group (one optgroup each)',
+      doc.getElementById('enFrom').querySelectorAll('optgroup').length>1 &&
+      doc.getElementById('enTo').querySelectorAll('optgroup').length>1);
+    check('…and the current block\'s group always leads its own list',
+      firstOg('enFrom').label===groupTitleOf(src) &&
+      firstOg('enTo').label===groupTitleOf(oldTgt) &&
+      !!firstOg('enFrom').querySelector(`option[value="${src}"]`) &&
+      !!firstOg('enTo').querySelector(`option[value="${oldTgt}"]`));
+  }
   check('there is no separate "Delete connection" button any more — the "✕" is the way',
     !doc.getElementById('btnDelEdge'));
   doc.getElementById('enTo').value=newTgt;

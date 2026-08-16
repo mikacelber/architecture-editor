@@ -3450,8 +3450,19 @@ function renderInspector(){
   body.innerHTML = `
     ${e.nets.length?'':`<p style="color:var(--warn)">${L('This connection has no nets yet — add at least one, or it will be dropped on export.','Esta conexión aún no tiene redes — añade al menos una, o se descartará al exportar.')}</p>`}
     ${shown.map(({n,i})=> (_netEdit && _netEdit.idx===i) ? (()=>{
-      const blockOpts = sel => S.nodes.slice().sort((a,b)=>a.label.localeCompare(b.label))
-        .map(x=>`<option value="${esc(x.id)}" ${x.id===sel?'selected':''}>${esc(x.label)}</option>`).join('');
+      // Blocks listed by FUNCTIONAL GROUP (one optgroup per group), and the
+      // group holding the select's current block always leads the list.
+      const gidx = nodeGroupIndex();
+      const blockOpts = sel => {
+        const selGid = gidx.get(sel) || UNGROUPED_ID;
+        const groups = groupsWithUngrouped();
+        return [...groups.filter(g=>g.id===selGid), ...groups.filter(g=>g.id!==selGid)].map(g=>{
+          const members = g.members.map(id=>nodeById(id)).filter(Boolean)
+            .sort((a,b)=>a.label.localeCompare(b.label));
+          return members.length ? `<optgroup label="${esc(g.title)}">${members.map(x=>
+            `<option value="${esc(x.id)}" ${x.id===sel?'selected':''}>${esc(x.label)}</option>`).join('')}</optgroup>` : '';
+        }).join('');
+      };
       return `
       <div class="netcard editing cat-${netCategory(n)}">
         <div class="kv"><label>${L('Net name','Nombre de la red')}</label><input type="text" id="enName" value="${esc(n.name)}"></div>
