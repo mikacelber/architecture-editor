@@ -3112,6 +3112,9 @@ function renderInspector(){
         `<button class="issue" data-iss-node="${esc(n.id)}"><b>${esc(n.label)}</b> — ${L('not connected to anything','sin conexión con nada')}</button>`))}
       ${section(L('Connections without nets','Conexiones sin redes'), iss.emptyEdges.map(e=>
         `<button class="issue" data-iss-edge="${esc(e.id)}"><b>${esc(nodeById(e.source)?.label||e.source)} → ${esc(nodeById(e.target)?.label||e.target)}</b> — ${L('carries no nets, dropped on export','no lleva redes, se descarta al exportar')}</button>`))}
+      ${iss.emptyEdges.length ? `<div class="btnrow" style="margin-top:2px"><button id="btnDropEmpty">${
+        uiLang()==='es' ? `Eliminar ${iss.emptyEdges.length} conexión${iss.emptyEdges.length>1?'es':''} vacía${iss.emptyEdges.length>1?'s':''}`
+                        : `Delete ${iss.emptyEdges.length} empty connection${iss.emptyEdges.length>1?'s':''}`}</button></div>` : ''}
       ${section(L('Ungrouped blocks','Bloques sin grupo'), iss.ungrouped.map(n=>
         `<button class="issue" data-iss-node="${esc(n.id)}"><b>${esc(n.label)}</b> — ${L('belongs to no functional group','no pertenece a ningún grupo funcional')}</button>`))}
       ${section(L('ICs without a selected part','CIs sin componente seleccionado'), iss.unpicked.map(n=>
@@ -3119,6 +3122,16 @@ function renderInspector(){
       : `<p>${L('Everything is resolved — no warnings left on the status bar.','Todo resuelto — no quedan avisos en la barra de estado.')}</p>`;
     body.querySelectorAll('[data-iss-node]').forEach(b=>b.onclick=()=>gotoNodeIssue(b.dataset.issNode));
     body.querySelectorAll('[data-iss-edge]').forEach(b=>b.onclick=()=>gotoEdgeIssue(b.dataset.issEdge));
+    // Leftovers from before this cleaned up on its own: sweep them in one go.
+    const dropEmpty=$('btnDropEmpty'); if (dropEmpty) dropEmpty.onclick=()=>{
+      const gone = iss.emptyEdges.length;
+      commit();
+      const ids = new Set(iss.emptyEdges.map(e=>e.id));
+      S.edges = S.edges.filter(e=>!ids.has(e.id));
+      render();
+      toast(uiLang()==='es' ? gone+' conexión'+(gone>1?'es':'')+' vacía'+(gone>1?'s':'')+' eliminada'+(gone>1?'s':'')
+                            : gone+' empty connection'+(gone>1?'s':'')+' deleted');
+    };
     return;
   }
   if (S.sel.type==='group'){
@@ -3475,7 +3488,22 @@ function renderInspector(){
       ${nodeEdgeRouteOf(e)?`<button id="btnResetRoute">${L('Reset routing','Restablecer ruta')}</button>`:''}
       <button class="danger" id="btnDelEdge">${L('Delete connection','Eliminar conexión')}</button>
     </div>`;
-  body.querySelectorAll('[data-delnet]').forEach(b=>b.onclick=()=>{ commit(); e.nets.splice(+b.dataset.delnet,1); render(); });
+  // Removing the LAST net takes the connection with it. A wire carrying nothing
+  // draws nothing and exports as nothing — it only lingers as a warning — so
+  // deleting the net a connection existed for deletes the connection too, in the
+  // same undoable step. The hand-drawn empty link (draw the wire, add nets
+  // after) is untouched: that one never passes through here.
+  body.querySelectorAll('[data-delnet]').forEach(b=>b.onclick=()=>{
+    commit();
+    e.nets.splice(+b.dataset.delnet,1);
+    if (!e.nets.length){
+      S.edges = S.edges.filter(x=>x.id!==e.id);
+      S.sel = null;
+      toast(L('Last net removed — the empty connection went with it',
+              'Última red eliminada — la conexión vacía se ha ido con ella'));
+    }
+    render();
+  });
   // ✎ flips a card into edit mode; Save renames/re-describes EVERY copy of the
   // net (one electrical net lives on many edges), Discard just puts the card back.
   body.querySelectorAll('[data-editnet]').forEach(b=>b.onclick=()=>{ _netEdit={ edgeId:e.id, idx:+b.dataset.editnet }; renderInspector(); });
