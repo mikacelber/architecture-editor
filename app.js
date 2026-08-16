@@ -5579,6 +5579,30 @@ function migrateEdgeRoutes(){
     }
   }
 }
+/* An IC whose part card names a DIFFERENT part than the block itself is a
+   leftover: a session saved before the card existed, or a hand-edited JSON.
+   The CARD is the physical truth — the block adopts its part number (and its
+   datasheet, when the block has none), so the very next export carries the
+   real part instead of the old proposal, and this never needs doing twice.
+   Connections, group membership and port layouts ride along via renameNodeId;
+   two cards pointing at the same part get numeric suffixes to stay unique. */
+function reconcileIcNames(){
+  let fixed = 0;
+  for (const n of S.nodes.filter(x=>x.kind==='ic' && icSelected(x))){
+    const pn = n.data.dk.pn;
+    if (n.id === pn){ n.label = pn; continue; }
+    let id = pn, k = 2;
+    while (nodeById(id) && nodeById(id)!==n) id = pn+'_'+(k++);
+    renameNodeId(n.id, id);
+    n.label = id;
+    n.data.ic_part_number = pn;
+    // The old proposal's datasheet describes the wrong chip now, so the card's
+    // wins whenever it has one; a card without a link leaves the block's alone.
+    if (n.data.dk.datasheet) n.data.DatasheetUrl = n.data.dk.datasheet;
+    fixed++;
+  }
+  return fixed;
+}
 function loadSession(s){
   if (!s || !s.nodes || !s.edges) throw new Error('Not a session JSON (nodes/edges missing)');
   S.meta = s.meta || S.meta;
@@ -5596,6 +5620,7 @@ function loadSession(s){
   S.edgeSeq = Math.max(0, ...S.edges.map(e=>+String(e.id).replace(/^e/,'')||0)) + 1;
   // Nothing of the outgoing document may leak into the restored one.
   S.sel = null; S.traceNet = null; S.link = null;
+  reconcileIcNames();   // the part card names the block, not the other way round
   invalidateGroupPorts(); _routeCache.clear();
   autoLayoutGroups(true); // fill in positions only for groups the session didn't have (preserves dragged layout)
   if (!Object.keys(S.groupEdgeLanes).length) assignRouteLanes();
@@ -5613,6 +5638,7 @@ function loadFromContract(input, contract, groups){
   const g = buildGraph(input, contract||{}, groups||[]);
   S.nodes=g.nodes; S.edges=g.edges; S.groups=g.groups;
   S.groupPos={}; S.groupEdgeRoutes={}; S.groupPortSides={}; S.groupPortOrder={}; S.groupEdgeLanes={}; S.portalOffsets={}; S.portalOrder={}; S.portalSeq={}; S.portalAnchor={}; S.ungroupedHvFlip=undefined; S.project={}; S.openGroup=null; S.sel=null;
+  reconcileIcNames();   // a hand-made JSON can carry cards too — they name their blocks
   autoLayoutAllGroupMembers();
   autoLayoutGroups();
   assignRouteLanes();   // spread the wires apart before the first paint
