@@ -189,7 +189,13 @@ function buildGraph(input, contract, rawGroups){
     nodes.push(n); byId.set(n.id, n); extByName.set(key, n);
     return n;
   }
-  for (const eb of (contract.external_blocks||[])) extNode(eb.name, eb.description);
+  for (const eb of (contract.external_blocks||[])){
+    const n = extNode(eb.name, eb.description);
+    // Hand-entered identity (no distributor search behind these): optional
+    // part number and datasheet ride the contract both ways.
+    if (eb.part_number) n.data.part_number = String(eb.part_number);
+    if (eb.DatasheetUrl) n.data.DatasheetUrl = String(eb.DatasheetUrl);
+  }
 
   function resolveRef(ref){
     if (byId.has(ref)) return byId.get(ref);
@@ -3359,7 +3365,10 @@ function renderInspector(){
         <div class="btnrow"><button class="danger" id="btnDelNode">${L('Delete IC and its connections','Eliminar el CI y sus conexiones')}</button></div>`;
     } else {
       body.innerHTML = `
+        <div class="btnrow" style="margin-top:0;margin-bottom:10px"><button id="btnEditExt">${L('Edit External…','Editar externo…')}</button></div>
         <div class="kv"><label>${L('Description','Descripción')}</label><div class="val">${esc(n.data.description||'')}</div></div>
+        ${n.data.part_number?`<div class="kv"><label>${L('Part number','Número de componente')}</label><div class="val" style="font-family:var(--mono)">${esc(n.data.part_number)}</div></div>`:''}
+        ${n.data.DatasheetUrl?`<div class="kv"><label>${L('Datasheet','Hoja de datos')}</label><div class="val"><a href="${esc(n.data.DatasheetUrl)}" target="_blank" rel="noopener" title="${esc(n.data.DatasheetUrl)}">${esc(shortDatasheetLabel(n.data.DatasheetUrl))}</a></div></div>`:''}
         ${sideRow}
         ${portHint}
         ${addNetSection}
@@ -3368,6 +3377,7 @@ function renderInspector(){
     $('fSide').onchange=()=>{ n.hvSide = $('fSide').value || undefined; render(); };
     const ff=$('fFlip'); if (ff) ff.onchange=()=>{ commit(); n.hvFlip = ff.checked || undefined; render(); };
     const selIc=$('btnSelectIC'); if (selIc) selIc.onclick=()=>openReplaceICModal(n);
+    const edExt=$('btnEditExt'); if (edExt) edExt.onclick=()=>openEditExternalModal(n);
     const clrIc=$('btnClearIC'); if (clrIc) clrIc.onclick=()=>{
       commit(); delete n.data.dk; render(); toast(L('Part removed — this IC needs a selection again','Componente quitado — este CI vuelve a necesitar una selección')); };
     const rp=$('btnResetNodePorts'); if (rp) rp.onclick=()=>{ commit(); resetGroupPortLayout(n.id); render(); };
@@ -4854,6 +4864,42 @@ function openReplaceICModal(n){
   };
 }
 
+// The external-block twin of "Edit IC…": name and description are editable,
+// and an engineer who already KNOWS the part (an in-house piece, a chosen
+// connector) can type its part number and datasheet straight in — both
+// optional, and neither goes anywhere near DigiKey or Mouser.
+function openEditExternalModal(n){
+  openModal(L('Edit external block','Editar bloque externo')+' — '+n.label, `
+    <div class="kv"><label>${L('Name *','Nombre *')}</label><input type="text" id="xName" value="${esc(n.label)}"></div>
+    <div class="kv"><label>${L('Description','Descripción')}</label><textarea id="xDesc">${esc(n.data.description||'')}</textarea></div>
+    <div class="kv"><label>${L('Part number (optional)','Número de componente (opcional)')}</label>
+      <input type="text" id="xPN" value="${esc(n.data.part_number||'')}" placeholder="${L('e.g. an in-house or catalog PN','p. ej. un PN interno o de catálogo')}"></div>
+    <div class="kv"><label>${L('Datasheet URL (optional)','URL de la hoja de datos (opcional)')}</label>
+      <input type="text" id="xUrl" value="${esc(n.data.DatasheetUrl||'')}" placeholder="https://…"></div>
+    <p class="hint">${L('Externals are described by hand — the part number and datasheet are typed straight in, no distributor search involved. Renaming keeps every connection, port layout and route.',
+                        'Los externos se describen a mano — el número de componente y la hoja de datos se escriben directamente, sin búsqueda en distribuidores. Renombrar conserva conexiones, puertos y rutas.')}</p>
+  `, `<button id="mCancel">${L('Cancel','Cancelar')}</button><button class="primary" id="mOk">${L('Save','Guardar')}</button>`);
+  $('mCancel').onclick=closeModal;
+  $('mOk').onclick=()=>{
+    const name=$('xName').value.trim();
+    if (!name){ toast(L('A name is required','El nombre es obligatorio')); return; }
+    const newId='EXT:'+name;
+    if (newId!==n.id && (nodeById(newId) ||
+        S.nodes.some(x=>x!==n && x.kind==='external' && x.label.toLowerCase()===name.toLowerCase()))){
+      toast(L('An external block with this name already exists','Ya existe un bloque externo con ese nombre')); return;
+    }
+    commit();
+    if (newId!==n.id) renameNodeId(n.id, newId);
+    n.label=name;
+    n.data.description=$('xDesc').value.trim();
+    const pn=$('xPN').value.trim(), url=$('xUrl').value.trim();
+    if (pn) n.data.part_number=pn; else delete n.data.part_number;
+    if (url) n.data.DatasheetUrl=url; else delete n.data.DatasheetUrl;
+    closeModal(); S.sel={type:'node',id:n.id}; render();
+    toast(L('External block updated','Bloque externo actualizado'));
+  };
+}
+
 // Named so the empty-sheet "+" card can raise the very same dialog as the
 // header button — one import path, no duplicated modal.
 function openImportModal(){
@@ -5517,7 +5563,9 @@ function buildPipelineJSON(){
   global_nets.forEach(n=>n.consumers.sort());
   const external_blocks = S.nodes.filter(n=>n.kind==='external')
     .sort((a,b)=>a.label.localeCompare(b.label))
-    .map(n=>({ name:n.label, description:n.data.description||'' }));
+    .map(n=>({ name:n.label, description:n.data.description||'',
+      ...(n.data.part_number ? { part_number:n.data.part_number } : {}),
+      ...(n.data.DatasheetUrl ? { DatasheetUrl:n.data.DatasheetUrl } : {}) }));
 
   const groups = [...S.groups].sort((a,b)=>a.id.localeCompare(b.id)).map(g=>({
     id:g.id, title:g.title, description:g.description,

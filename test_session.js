@@ -194,5 +194,20 @@ for (const k of Object.keys(beforeB)) check('group B renders identically after t
     JSON.stringify(T.buildSessionJSON().nodes.map(n=>n.id))===JSON.stringify(before.nodes.map(n=>n.id)));
 }
 
+/* ---------- an external's hand-entered PN/datasheet ride both exports ---------- */
+{
+  T.loadFromContract(fx.input,fx.contract,fx.groups); T.render();
+  const ext=S.nodes.find(n=>n.kind==='external');
+  ext.data.part_number='ACME-77'; ext.data.DatasheetUrl='https://x/acme77.pdf';
+  const pipe=T.buildPipelineJSON();
+  const exported=JSON.parse(pipe.global_contract_override).external_blocks.find(b=>b.name===ext.label);
+  check('the pipeline contract carries the external\'s PN and datasheet',
+    exported.part_number==='ACME-77' && exported.DatasheetUrl==='https://x/acme77.pdf');
+  T.loadFromContract(pipe, JSON.parse(pipe.global_contract_override), pipe.groups); T.render();
+  const back=S.nodes.find(n=>n.kind==='external' && n.label===exported.name);
+  check('…and importing that contract restores them on the block',
+    back.data.part_number==='ACME-77' && back.data.DatasheetUrl==='https://x/acme77.pdf');
+}
+
 console.log('\n'+pass+' passed, '+fail+' failed');
 process.exit(fail?1:0);
