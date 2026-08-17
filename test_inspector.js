@@ -135,6 +135,56 @@ check('dropping at a usable width just resizes, no fold', !collapsed() && T.insp
   }
 }
 
+/* ---------- Edit External…: name, description, optional PN + datasheet ---------- */
+{
+  const ext = S.nodes.find(n=>n.kind==='external' && S.edges.some(e=>e.source===n.id||e.target===n.id));
+  const oldId = ext.id, wires = S.edges.filter(e=>e.source===oldId||e.target===oldId).length;
+  S.sel={type:'node',id:oldId}; T.render();
+  const btn=doc.getElementById('btnEditExt');
+  check('the external inspector leads with "Edit External…" like the IC one',
+    !!btn && !doc.getElementById('btnSelectIC'));
+  check('with no hand-entered identity there are no PN/datasheet rows',
+    !/Part number/.test(doc.getElementById('insBody').innerHTML));
+  btn.onclick();
+  check('the modal opens prefilled, with optional PN and datasheet fields',
+    doc.getElementById('xName').value===ext.label &&
+    !!doc.getElementById('xPN') && !!doc.getElementById('xUrl') &&
+    /no distributor search/.test(doc.getElementById('modalBody').innerHTML));
+  doc.getElementById('xName').value='Custom HV connector';
+  doc.getElementById('xDesc').value='hand-picked part';
+  doc.getElementById('xPN').value='MOLEX-1234-5678';
+  doc.getElementById('xUrl').value='https://x/molex.pdf';
+  doc.getElementById('mOk').onclick();
+  const renamed=T.nodeById('EXT:Custom HV connector');
+  check('Save renames the block and keeps every connection',
+    !!renamed && !T.nodeById(oldId) && renamed.label==='Custom HV connector' &&
+    S.edges.filter(e=>e.source===renamed.id||e.target===renamed.id).length===wires);
+  check('the hand-entered PN and datasheet land on the block',
+    renamed.data.part_number==='MOLEX-1234-5678' && renamed.data.DatasheetUrl==='https://x/molex.pdf');
+  T.render();
+  const b=doc.getElementById('insBody').innerHTML;
+  check('…and the inspector shows them: PN row and shortened datasheet link',
+    /MOLEX-1234-5678/.test(b) && /x\/molex\.pdf/.test(b));
+  // a collision with another external is refused
+  const other=S.nodes.find(n=>n.kind==='external' && n.id!==renamed.id);
+  doc.getElementById('btnEditExt').onclick();
+  doc.getElementById('xName').value=other.label;
+  doc.getElementById('mOk').onclick();
+  check('renaming onto another external\'s name is refused',
+    !!T.nodeById(renamed.id) && T.nodeById(renamed.id).label==='Custom HV connector');
+  doc.getElementById('modalClose').onclick();
+  // clearing the optional fields removes them
+  S.sel={type:'node',id:renamed.id}; T.render();
+  doc.getElementById('btnEditExt').onclick();
+  doc.getElementById('xPN').value=''; doc.getElementById('xUrl').value='';
+  doc.getElementById('mOk').onclick();
+  check('emptying the optional fields removes them cleanly',
+    !('part_number' in renamed.data) && !('DatasheetUrl' in renamed.data));
+  T.undo(); T.undo();
+  check('each edit is one undoable step — the original name is two undos back',
+    !!T.nodeById(oldId));
+}
+
 /* ---------- moving a net's leg to another block via the edit card ---------- */
 {
   const solo = S.edges.find(e=>e.nets.length===1);
