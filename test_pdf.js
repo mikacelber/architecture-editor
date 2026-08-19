@@ -27,6 +27,9 @@ const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
 T.loadFromContract(fx.input,fx.contract,fx.groups); T.render();
 
 /* ---------- vendored engine + wiring ---------- */
+check('the input arrowheads grew past the old 7px — screen markers and PDF in step',
+  (fs.readFileSync('index.html','utf8').match(/markerWidth="9\.5"/g)||[]).length===7 &&
+  /PDF_ARROW = \{ len:10, halfW:4\.6, pullback:8 \}/.test(appSrc));
 check('the PDF engine is vendored and loaded before app.js',
   fs.existsSync('lib/jspdf.umd.min.js') && fs.existsSync('lib/svg2pdf.umd.min.js') &&
   /lib\/jspdf\.umd\.min\.js[\s\S]*lib\/svg2pdf\.umd\.min\.js[\s\S]*app\.js/.test(fs.readFileSync('index.html','utf8')));
