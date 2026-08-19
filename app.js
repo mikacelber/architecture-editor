@@ -3799,8 +3799,23 @@ svg.addEventListener('dblclick', ev=>{
   openGroupView(nodeEl.dataset.nid);
 });
 
+// A gesture can lose its pointerup — pointercancel, the window losing focus,
+// an exception mid-release — and a surviving `drag` glues whatever was grabbed
+// to a button-less mouse. This ends the gesture without applying anything.
+function abortGesture(){
+  if (!drag) return;
+  if (drag.mode==='pan') svg.classList.remove('panning');
+  if (drag.mode==='link'){ S.link=null; svg.classList.remove('linking'); renderLink(); }
+  drag=null; linkSnap=null;
+}
+svg.addEventListener('pointercancel', abortGesture);
+window.addEventListener('blur', abortGesture);
+
 svg.addEventListener('pointermove', ev=>{
   if (!drag) return;
+  // No button held means the release was missed — end the leftover gesture
+  // instead of dragging the element around under a button-less pointer.
+  if (ev.buttons===0){ abortGesture(); return; }
   if (drag.mode==='pan'){
     const dx=ev.clientX-drag.sx, dy=ev.clientY-drag.sy;
     if (Math.abs(dx)+Math.abs(dy)>3) drag.moved=true;
@@ -3953,34 +3968,39 @@ svg.addEventListener('pointermove', ev=>{
 
 svg.addEventListener('pointerup', ev=>{
   if (!drag) return;
-  if (drag.mode==='pan'){
-    if (!drag.moved){ S.sel=null; render(); }
-    svg.classList.remove('panning');
-  }
-  if (drag.mode==='node' && !drag.moved){
-    S.sel={type: isTopLevel()?'group':'node', id:drag.id}; render();
-  }
-  if (drag.mode==='portalcol' && !drag.moved){
-    S.sel={type:'portal', id:drag.portalId}; render();
-  }
-  if (drag.mode==='link'){
-    const el = document.elementFromPoint(ev.clientX, ev.clientY);
-    const nodeEl = el && el.closest ? el.closest('.node') : null;
-    const toId = nodeEl ? nodeEl.dataset.nid : null;
-    const fromId = S.link.fromId;
-    S.link=null; svg.classList.remove('linking'); renderLink();
-    if (toId && toId!==fromId){
-      let e = S.edges.find(x=>x.source===fromId && x.target===toId);
-      if (!e){
-        if (linkSnap!=null) commit(linkSnap);
-        e = { id:'e'+(S.edgeSeq++), source:fromId, target:toId, nets:[] };
-        S.edges.push(e);
-      }
-      S.sel={type:'edge', id:e.id};
+  // The finally guarantees the gesture ENDS even if a render() below throws —
+  // a surviving drag is what glues a block to the released mouse.
+  try {
+    if (drag.mode==='pan'){
+      if (!drag.moved){ S.sel=null; render(); }
+      svg.classList.remove('panning');
     }
-    render();
+    if (drag.mode==='node' && !drag.moved){
+      S.sel={type: isTopLevel()?'group':'node', id:drag.id}; render();
+    }
+    if (drag.mode==='portalcol' && !drag.moved){
+      S.sel={type:'portal', id:drag.portalId}; render();
+    }
+    if (drag.mode==='link'){
+      const el = document.elementFromPoint(ev.clientX, ev.clientY);
+      const nodeEl = el && el.closest ? el.closest('.node') : null;
+      const toId = nodeEl ? nodeEl.dataset.nid : null;
+      const fromId = S.link.fromId;
+      S.link=null; svg.classList.remove('linking'); renderLink();
+      if (toId && toId!==fromId){
+        let e = S.edges.find(x=>x.source===fromId && x.target===toId);
+        if (!e){
+          if (linkSnap!=null) commit(linkSnap);
+          e = { id:'e'+(S.edgeSeq++), source:fromId, target:toId, nets:[] };
+          S.edges.push(e);
+        }
+        S.sel={type:'edge', id:e.id};
+      }
+      render();
+    }
+  } finally {
+    drag=null; linkSnap=null;
   }
-  drag=null; linkSnap=null;
 });
 
 // Zoom, in ONE place: the wheel and the on-canvas +/− buttons scale about a
@@ -5263,7 +5283,7 @@ function pdfDrawNetLegend(doc, W, H, rows){
 // arrowhead is baked in as a real filled triangle at the wire end, matching
 // the on-screen marker geometry (tip ON the endpoint, ~7.4 long, ~6.8 wide),
 // and the line is pulled back under the head so it can never poke through.
-const PDF_ARROW = { len:7.4, halfW:3.4, pullback:6 };
+const PDF_ARROW = { len:10, halfW:4.6, pullback:8 };   // scaled with the 9.5px screen markers
 function pdfBakeArrowheads(root){
   const NS='http://www.w3.org/2000/svg';
   for (const m of [...root.querySelectorAll('marker')]) m.remove();

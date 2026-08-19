@@ -7,7 +7,8 @@ window.Element.prototype.setPointerCapture=()=>{};
 window.eval(fs.readFileSync('app.js','utf8')+`
 window.__T={get S(){return S;},loadFromContract,render,computeGroupEdges,visibleGroups,groupBlockRect,
   groupPortAnchor,groupEdgeRouteKey,groupEdgeRouteOf,setGroupEdgeRoute,sidedGeometry,groupEdgePts,
-  snapPastVertical,snapPastHorizontal,padForRoute,vSegHitsRect,hSegHitsRect,groupPosOf,_routeCache};`);
+  snapPastVertical,snapPastHorizontal,padForRoute,vSegHitsRect,hSegHitsRect,groupPosOf,_routeCache,
+  get _drag(){return drag;},abortGesture};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -130,6 +131,27 @@ mv.x=ox; mv.y=oy; delete S.groupEdgeRoutes[key]; T._routeCache.clear(); T.render
     /translateWireSegment\(drag\.pts, drag\.segIdx, drag\.axis, raw, obstacles, dir\)/.test(src));
   check('the raw elbow patch \\{x,y,x2\\} is gone from the drag handler',
     !/drag\.mode==='routeE'/.test(src));
+}
+
+/* ---------- a lost pointerup never glues a block to the mouse ---------- */
+{
+  const doc=window.document, board=doc.getElementById('board');
+  const g=doc.querySelector('#nodesG g.node');
+  g.dispatchEvent(new window.MouseEvent('pointerdown',{bubbles:true}));
+  check('grabbing a block arms a gesture', !!T._drag && T._drag.mode==='node');
+  board.dispatchEvent(new window.Event('pointercancel'));
+  check('pointercancel ends the gesture instead of gluing it to the mouse', !T._drag);
+  g.dispatchEvent(new window.MouseEvent('pointerdown',{bubbles:true}));
+  const before=JSON.stringify(T.groupPosOf(g.dataset.nid));
+  board.dispatchEvent(new window.MouseEvent('pointermove',{bubbles:true,buttons:0,clientX:400,clientY:300}));
+  check('a button-less move kills a leftover gesture without moving anything',
+    !T._drag && JSON.stringify(T.groupPosOf(g.dataset.nid))===before);
+  g.dispatchEvent(new window.MouseEvent('pointerdown',{bubbles:true}));
+  window.dispatchEvent(new window.Event('blur'));
+  check('losing window focus ends the gesture too', !T._drag);
+  const src=fs.readFileSync('app.js','utf8');
+  check('the release handler cannot leave a gesture alive even if a render throws',
+    /finally \{\s*drag=null; linkSnap=null;\s*\}/.test(src));
 }
 
 console.log('\n'+pass+' passed, '+fail+' failed');
