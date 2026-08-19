@@ -264,6 +264,13 @@ label.switch .swlabel{font-family:var(--mono);font-size:11px;color:var(--ink-sof
 button.warn{border-color:var(--warn);color:var(--warn)}
 button.warn:hover{background:var(--danger-hover);border-color:var(--warn)}
 
+/* The "+" under each FROM/TO column: hidden until the column is hovered or
+   one of its boxes is selected. Alone in an EMPTY column it idles translucent
+   (the only hint the column exists) and solidifies on hover. */
+.pcol .portaladd{opacity:0;pointer-events:none;transition:opacity .15s}
+.pcol .portaladd.lone{opacity:.35;pointer-events:auto}
+.pcol:hover .portaladd,.pcol.selon .portaladd{opacity:1;pointer-events:auto}
+
 /* Issues panel: warn chips in the status bar are clickable, and each listed
    issue is a full-width button that jumps to (and spotlights) the culprit. */
 button.chip{cursor:pointer;font:inherit}
