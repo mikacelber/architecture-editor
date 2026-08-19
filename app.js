@@ -2605,7 +2605,7 @@ function renderDrillDown(){
   // on the member block moves like any other port. Each wire keeps its own
   // category color, dash and net-count badge, and its arrow lands ON the member
   // block it feeds.
-  const portalMarkup = portals.map(p=>{
+  const portalBoxMarkup = p=>{
     const selected = S.sel && S.sel.type==='portal' && S.sel.id===p.key;
     const tracedBox = trace && p.unders.some(e=>trace.edgeIds.has(e.id));
     const boxDim = trace && !tracedBox && !selected;
@@ -2646,20 +2646,26 @@ function renderDrillDown(){
       </g>${wireDim?'</g>':''}`;
     }).join('');
     return portalMarkupFor(p, selected, wires, tracedBox, boxDim);
-  }).join('');
+  };
 
-  // The "+" buttons under the FROM and TO columns — create a new boundary
-  // connection (openAddPortalModal picks the far group, the blocks and a net).
-  const addBtnMarkup = ['in','out'].map(dir=>{
+  // One <g class="pcol"> per FROM/TO column: its boxes plus its "+" button.
+  // The "+" only SHOWS while the column is hovered or one of its boxes is
+  // selected (see the .pcol CSS) — except in an EMPTY column, where it idles
+  // translucent as the only hint the column exists, and solidifies on hover.
+  const colMarkup = ['in','out'].map(dir=>{
+    const boxes = portals.filter(p=>p.dir===dir).map(portalBoxMarkup).join('');
+    const lone = !portals.some(p=>p.dir===dir);
+    const selInCol = S.sel && S.sel.type==='portal' && String(S.sel.id).startsWith(dir+':');
     const s = sheet.portalAdd[dir];
-    return `<g class="portaladd${trace?' dim':''}" data-dir="${dir}" style="cursor:pointer">
+    const add = `<g class="portaladd${trace?' dim':''}${lone?' lone':''}" data-dir="${dir}" style="cursor:pointer">
       <circle cx="${s.cx}" cy="${s.cy}" r="12" fill="var(--vellum)" stroke="var(--ink-soft)" stroke-width="1.5" stroke-dasharray="4 3"/>
       <text x="${s.cx}" y="${s.cy+4.5}" text-anchor="middle" font-family="var(--mono)" font-size="15" font-weight="600" fill="var(--ink-soft)" style="pointer-events:none">+</text>
-      <title>${dir==='in'?'Add a FROM connection (incoming)':'Add a TO connection (outgoing)'}</title>
+      <title>${dir==='in'?L('Add a FROM connection (incoming)','Añadir una conexión FROM (entrante)'):L('Add a TO connection (outgoing)','Añadir una conexión TO (saliente)')}</title>
     </g>`;
+    return `<g class="pcol${selInCol?' selon':''}" data-dir="${dir}">${boxes}${add}</g>`;
   }).join('');
 
-  edgesG.innerHTML = edgeMarkup + portalMarkup + addBtnMarkup;
+  edgesG.innerHTML = edgeMarkup + colMarkup;
 
   // Per-edge category for the port-row tick/badge colors, over ALL drawn wires.
   const catOf = new Map(specs.map(s=>[s.e.id, edgeCategory(s.e)]));
@@ -3681,7 +3687,7 @@ function blockXY(id){
 svg.addEventListener('pointerdown', ev=>{
   // The issue spotlight is transient — any click on the canvas lifts it.
   if (S.spotlight) S.spotlight = null;
-  const segEl = ev.target.closest('.seg-v, .seg-h');
+  let segEl = ev.target.closest('.seg-v, .seg-h');
   const numEl = ev.target.closest('.portnum');
   const badgeEl = ev.target.closest('.netbadge');
   const addEl = ev.target.closest('.portaladd');
@@ -3690,6 +3696,16 @@ svg.addEventListener('pointerdown', ev=>{
   const portalEl = ev.target.closest('.portal');
   const nodeEl = ev.target.closest('.node');
   const edgeEl = ev.target.closest('.edge');
+  // A wire segment hugging a block's border renders UNDER the block (#nodesG
+  // paints last), so the block swallows the press and the segment cannot be
+  // dragged aside. Wires never cross a block's interior, so when the press
+  // landed on a node, any segment corridor found in the stacking order below
+  // it can only be that edge-hugging run — grab IT so it stays movable.
+  if (!segEl && nodeEl && !numEl && !port && document.elementsFromPoint){
+    const under = document.elementsFromPoint(ev.clientX, ev.clientY)
+      .find(el=>el.classList && (el.classList.contains('seg-v') || el.classList.contains('seg-h')));
+    if (under) segEl = under;
+  }
   svg.setPointerCapture(ev.pointerId);
 
   // The mid-wire net-count badge selects ITS connection — checked before the

@@ -1276,5 +1276,32 @@ check('every in-group connection carries a routing lane',
 }
 
 T.closeGroupView();
+
+/* ---------- contextual "+" columns + the edge-hugging segment grab ---------- */
+{
+  const appSrc=fs.readFileSync('app.js','utf8'), css=fs.readFileSync('styles.css','utf8');
+  T.openGroupView('CONTROL_AND_SUPERVISION'); T.render();
+  const cols=[...doc.querySelectorAll('#edgesG g.pcol')];
+  check('each portal column wraps its boxes and its "+" in one group',
+    cols.length===2 && cols.every(c=>!!c.querySelector('.portaladd')));
+  const withBoxes=cols.find(c=>c.querySelector('.portal'));
+  check('a populated column\'s "+" hides until the column is hovered or selected',
+    !!withBoxes && !withBoxes.querySelector('.portaladd').classList.contains('lone') &&
+    /\.pcol \.portaladd\{opacity:0;pointer-events:none/.test(css) &&
+    /\.pcol:hover \.portaladd,\.pcol\.selon \.portaladd\{opacity:1;pointer-events:auto\}/.test(css));
+  const pk=doc.querySelector('#edgesG g.portal').dataset.portal;
+  S.sel={type:'portal', id:pk}; T.render();
+  check('selecting a FROM/TO box solidifies its own column\'s "+"',
+    doc.querySelector(`#edgesG g.pcol[data-dir="${pk.split(':')[0]}"]`).classList.contains('selon'));
+  S.sel=null; T.render();
+  check('an EMPTY column\'s "+" idles translucent instead of vanishing',
+    /\.pcol \.portaladd\.lone\{opacity:\.35;pointer-events:auto\}/.test(css) &&
+    /const lone = !portals\.some\(p=>p\.dir===dir\);/.test(appSrc));
+  check('a wire segment hugging a block border is grabbed through the stacking order',
+    /elementsFromPoint/.test(appSrc) &&
+    /contains\('seg-v'\) \|\| el\.classList\.contains\('seg-h'\)/.test(appSrc));
+  T.closeGroupView();
+}
+
 console.log('\n'+pass+' passed, '+fail+' failed');
 process.exit(fail?1:0);
