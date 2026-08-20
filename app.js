@@ -176,8 +176,15 @@ function buildGraph(input, contract, rawGroups){
   const byId = new Map();
 
   for (const ic of (input.ic_components||[])){
-    const n = { id: ic.ic_part_number, kind:'ic', label: ic.ic_part_number,
+    // The same part number on several blocks is normal (a simpler BOM) —
+    // instance_id preserves each block's exported identity across the round
+    // trip, and a bare duplicate still gets a unique numeric suffix.
+    const base = ic.instance_id || ic.ic_part_number;
+    let id = base, k = 2;
+    while (byId.has(id)) id = base+'_'+(k++);
+    const n = { id, kind:'ic', label: id,
       x:0, y:0, w:NODE_W_IC, h:NODE_H_IC, data: { ...ic } };
+    delete n.data.instance_id;
     nodes.push(n); byId.set(n.id, n);
   }
   const extByName = new Map();
@@ -4620,8 +4627,12 @@ $('btnAddIC').onclick=()=>{
   $('mOk').onclick=()=>{
     const pn=$('fPN').value.trim();
     if (!pn || !$('fType').value.trim() || !$('fDesc').value.trim()){ toast(L('Part number, type and function are required','Número de componente, tipo y función son obligatorios')); return; }
-    if (nodeById(pn)){ toast(L('A block with this part number already exists','Ya existe un bloque con ese número de componente')); return; }
-    const node = { id:pn, kind:'ic', label:pn, x:0, y:0, w:NODE_W_IC, h:NODE_H_IC,
+    // The same part on several blocks is NORMAL — reusing a part number keeps
+    // the BOM simple. Block ids stay unique via a numeric suffix; the real
+    // part number lives in ic_part_number either way.
+    let id = pn, k = 2;
+    while (nodeById(id)) id = pn+'_'+(k++);
+    const node = { id, kind:'ic', label:id, x:0, y:0, w:NODE_W_IC, h:NODE_H_IC,
       data:{ ic_part_number:pn, ic_type:$('fType').value.trim(), manufacturer:$('fMan').value.trim(),
              description:$('fDesc').value.trim(), selection_rationale:$('fRat').value.trim(),
              DatasheetUrl:$('fUrl').value.trim() } };
@@ -4649,8 +4660,8 @@ $('btnAddIC').onclick=()=>{
     const spot=findFreeSpot(cx, cy, node.w, node.h, obstacles);
     node.x=spot.x; node.y=spot.y;
     S.nodes.push(node);
-    if (openGroup){ openGroup.members.push(pn); openGroup.members.sort(); }
-    closeModal(); S.sel={type:'node',id:pn}; render();
+    if (openGroup){ openGroup.members.push(node.id); openGroup.members.sort(); }
+    closeModal(); S.sel={type:'node',id:node.id}; render();
   };
 };
 
@@ -4882,10 +4893,13 @@ function openReplaceICModal(n){
   $('mOk').onclick=()=>{
     const pn=$('fPN').value.trim();
     if (!pn || !$('fType').value.trim() || !$('fDesc').value.trim()){ toast(L('Part number, type and function are required','Número de componente, tipo y función son obligatorios')); return; }
-    if (pn!==n.id && nodeById(pn)){ toast(L('A block with this part number already exists','Ya existe un bloque con ese número de componente')); return; }
+    // The same part on several blocks is NORMAL (a simpler BOM): a taken id
+    // just gets a numeric suffix; ic_part_number carries the real part.
+    let newId = pn, k = 2;
+    while (newId!==n.id && nodeById(newId)) newId = pn+'_'+(k++);
     commit();
-    renameNodeId(n.id, pn);
-    n.label = pn;
+    renameNodeId(n.id, newId);
+    n.label = newId;
     // The pick from the results is the selection; keeping the same part
     // number keeps an earlier pick; typing a DIFFERENT number by hand drops
     // it — that part has not been selected on a distributor.
@@ -4895,7 +4909,7 @@ function openReplaceICModal(n){
                description:$('fDesc').value.trim(), selection_rationale:$('fRat').value.trim(),
                DatasheetUrl:$('fUrl').value.trim() };
     if (dk){ n.data.dk = dk; fillMissingDatasheet(n); } else delete n.data.dk;
-    closeModal(); S.sel={type:'node',id:pn}; render();
+    closeModal(); S.sel={type:'node',id:n.id}; render();
     toast(dk ? L('Part selected — connections and routing kept','Componente seleccionado — conexiones y rutas conservadas') : L('Updated — part still needs to be selected','Actualizado — el componente aún necesita ser seleccionado'));
   };
 }
@@ -5577,7 +5591,10 @@ function buildPipelineJSON(){
     .sort((a,b)=>a.id.localeCompare(b.id))
     .map(n=>({ ic_type:n.data.ic_type||'', description:n.data.description||'',
       manufacturer:n.data.manufacturer||'', ic_part_number:n.data.ic_part_number||n.id,
-      DatasheetUrl:n.data.DatasheetUrl||'', selection_rationale:n.data.selection_rationale||'' }));
+      DatasheetUrl:n.data.DatasheetUrl||'', selection_rationale:n.data.selection_rationale||'',
+      // Only when the block id differs from the part (a duplicated part got a
+      // suffix): lets the contract's net refs resolve back to THIS instance.
+      ...(n.id!==(n.data.ic_part_number||n.id) ? { instance_id:n.id } : {}) }));
 
   const refOf = n => n.kind==='external' ? 'external block: '+n.label : n.id;
   const netMap = new Map();

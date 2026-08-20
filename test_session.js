@@ -209,5 +209,30 @@ for (const k of Object.keys(beforeB)) check('group B renders identically after t
     back.data.part_number==='ACME-77' && back.data.DatasheetUrl==='https://x/acme77.pdf');
 }
 
+/* ---------- duplicated part numbers survive the pipeline round trip ---------- */
+{
+  T.loadFromContract(fx.input,fx.contract,fx.groups); T.render();
+  const src=S.nodes.find(n=>n.kind==='ic');
+  const twin={ ...JSON.parse(JSON.stringify(src)), id:src.id+'_2', label:src.id+'_2', x:src.x+400 };
+  S.nodes.push(twin);
+  const peer=S.nodes.find(n=>n.id!==twin.id && n.id!==src.id);
+  S.edges.push({ id:'e'+(S.edgeSeq++), source:twin.id, target:peer.id,
+    nets:[{ name:'TWIN_NET', type:'DIGITAL_LOGIC', description:'' }] });
+  const pipe=T.buildPipelineJSON();
+  const dup=pipe.ic_components.filter(c=>c.ic_part_number===src.data.ic_part_number);
+  check('the BOM lists one line per block, both under the SAME real part number',
+    dup.length===2 && dup.some(c=>c.instance_id===src.id+'_2') && dup.some(c=>!c.instance_id));
+  T.loadFromContract(pipe, JSON.parse(pipe.global_contract_override), pipe.groups); T.render();
+  check('re-importing keeps both instances and their wiring',
+    !!T.nodeById(src.id) && !!T.nodeById(src.id+'_2') &&
+    S.edges.some(e=>e.source===src.id+'_2' && e.nets.some(x=>x.name==='TWIN_NET')));
+  check('a legacy input with a bare duplicated part number still yields two blocks',
+    (()=>{ const inp=JSON.parse(JSON.stringify(fx.input));
+      inp.ic_components.push({ ...inp.ic_components[0] });
+      T.loadFromContract(inp, fx.contract, fx.groups);
+      const pn=inp.ic_components[0].ic_part_number;
+      return !!T.nodeById(pn) && !!T.nodeById(pn+'_2'); })());
+}
+
 console.log('\n'+pass+' passed, '+fail+' failed');
 process.exit(fail?1:0);
