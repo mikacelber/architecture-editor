@@ -610,6 +610,34 @@ const EUROFIX={Errors:[],SearchResults:{NumberOfResult:1,Parts:[
       check('…and the amber returns with it', doc.getElementById('btnAutoIC').classList.contains('warn'));
     }
 
+    /* ---- the same part on several blocks: suffixed ids, real PN kept ---- */
+    {
+      doc.getElementById('btnAddIC').onclick();
+      doc.getElementById('fPN').value='SHARED-PN';
+      doc.getElementById('fType').value='LDO';
+      doc.getElementById('fDesc').value='rail A';
+      doc.getElementById('mOk').onclick();
+      doc.getElementById('btnAddIC').onclick();
+      doc.getElementById('fPN').value='SHARED-PN';
+      doc.getElementById('fType').value='LDO';
+      doc.getElementById('fDesc').value='rail B';
+      doc.getElementById('mOk').onclick();
+      check('adding the same part twice creates TWO blocks instead of refusing',
+        !!T.nodeById('SHARED-PN') && !!T.nodeById('SHARED-PN_2') &&
+        T.nodeById('SHARED-PN_2').data.ic_part_number==='SHARED-PN' &&
+        T.nodeById('SHARED-PN_2').data.description==='rail B');
+      const other=S.nodes.find(n=>n.kind==='ic' && n.data.ic_part_number!=='SHARED-PN');
+      T.openReplaceICModal(other);
+      doc.getElementById('fPN').value='SHARED-PN';
+      doc.getElementById('fType').value='LDO';
+      doc.getElementById('fDesc').value='rail C';
+      doc.getElementById('mOk').onclick();
+      check('Edit IC onto an already-used part number suffixes instead of refusing',
+        !!T.nodeById('SHARED-PN_3') && T.nodeById('SHARED-PN_3').data.ic_part_number==='SHARED-PN');
+      check('block ids stay unique across the sheet',
+        new Set(S.nodes.map(n=>n.id)).size===S.nodes.length);
+    }
+
     /* ---- every message is provider-neutral now, the DK API untouched ---- */
     {
       const src=fs.readFileSync('app.js','utf8');
