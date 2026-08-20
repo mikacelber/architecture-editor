@@ -299,11 +299,13 @@ function computeGroupEdges(){
   for (const e of diagramEdges(S.edges)){
     const gs = idx.get(e.source), gt = idx.get(e.target);
     if (!gs || !gt || gs===gt) continue;
-    // A bus never mixes insulation domains: HV-domain nets travel in their
-    // OWN group connection (drawn red), so each pair of groups derives up to
-    // TWO edges — one per domain (e.dom: '' = LV, 'hv' = HV).
+    // A bus never mixes isolation AREAS: connections living in the HV area
+    // travel in their own group connection, so each pair of groups derives up
+    // to TWO edges — one per area (e.dom: '' = LV area, 'hv' = HV area).
+    // The area comes from the TOPOLOGY (edgeArea), so re-levelling a net
+    // never moves it to a different TO/FROM box.
+    const dom = edgeArea(e)==='hv' ? 'hv' : '';
     for (const net of e.nets){
-      const dom = isHvNet(net) ? 'hv' : '';
       const key = gs+'→'+gt+(dom ? '#hv' : '');
       if (!map.has(key)) map.set(key, { source:gs, target:gt, dom, nets:[] });
       map.get(key).nets.push(net);
@@ -1244,9 +1246,131 @@ function inferNodeSide(nodeId){
   const hv = nets.some(isHvNet), lv = nets.some(n=>!isHvNet(n));
   return hv && lv ? 'barrier' : hv ? 'hv' : 'lv';
 }
+/* ---------- ISOLATION AREAS (color) vs VOLTAGE LEVEL (tag) ----------
+   The COLOR of a block says which side of the isolation barrier it lives on —
+   its AREA — and that is a property of the TOPOLOGY, not of any single net:
+   once a barrier block (transformer, opto) crosses from LV to HV, everything
+   connected on its HV side is in the HV area, chains included, whatever the
+   voltage level of the nets that join them. A block in the HV area can still
+   be LOW voltage with respect to GND_HV — that is its LEVEL, worn as the
+   LV/HV corner tag, independent of the color.
+
+   The area map is a flood fill: seeds are the net-level inference (barrier
+   blocks and all-HV blocks), then the HV area spreads across EVERY edge —
+   never THROUGH a barrier — so an LV-colored block connected into the HV
+   side cannot exist. Explicit n.hvSide overrides stay sacred.
+
+   A mixed-level block is only a barrier CANDIDATE, because a chain like
+   LV → [barrier] → HV → … looks the same from both ends: the block past the
+   crossing also touches an HV net and an LV-level net, yet it lives fully
+   inside the HV area. What tells them apart is whether the candidate still
+   BRIDGES into the LV domain: it does when the LV domain drives it (it
+   consumes an lv-level net from an LV-area block — an opto's LED, a
+   transformer's primary), or when its lv-level edges reach a shared LV
+   region that other barriers also touch (an isolated amp's sense line). A
+   candidate whose lv-level side is nothing but its own private fan-out is
+   not a crossing — it collapses into the HV area and the flood carries on
+   through it (the chain rule). Collapsing can strand another candidate's
+   anchor, so this iterates to a fixed point (collapse is monotone). */
+let _areaCache = null;
+function invalidateAreas(){ _areaCache = null; }
+function computeAreas(){
+  const m = new Map();                       // 'hv' | 'lv' | 'barrier' | null (= lv unless flooded)
+  const cand = new Set();                    // inferred barriers, still revisable
+  for (const n of S.nodes){
+    if (n.hvSide){ m.set(n.id, n.hvSide); continue; }
+    const inf = inferNodeSide(n.id);
+    if (inf==='barrier'){ m.set(n.id,'barrier'); cand.add(n.id); }
+    else m.set(n.id, inf==='hv' ? 'hv' : null);
+  }
+  const isLv = id => { const v = m.get(id); return v===null || v==='lv'; };
+  const flood = () => {
+    const queue = [];
+    for (const [id,a] of m) if (a==='hv') queue.push(id);
+    // a barrier's HV-LEVEL connections push their far end into the HV area
+    for (const e of S.edges){
+      if (!e.nets.some(isHvNet)) continue;
+      for (const [b,o] of [[e.source,e.target],[e.target,e.source]]){
+        if (m.get(b)!=='barrier' || m.get(o)) continue;
+        const on = nodeById(o);
+        if (on && on.hvSide) continue;
+        m.set(o,'hv'); queue.push(o);
+      }
+    }
+    while (queue.length){
+      const id = queue.pop();
+      for (const e of S.edges){
+        const o = e.source===id ? e.target : e.target===id ? e.source : null;
+        if (!o || m.get(o)) continue;          // decided (or barrier/hv) already
+        const on = nodeById(o);
+        if (on && on.hvSide) continue;         // explicit override wins
+        m.set(o,'hv'); queue.push(o);
+      }
+    }
+  };
+  let changed = true;
+  while (changed){
+    flood();
+    changed = false;
+    // LV components with every candidate cut out, so a shared LV domain
+    // (touching several barriers, or holding an explicit-LV block) can be
+    // told from one candidate's private fan-out.
+    const comp = new Map(); let nc = 0;
+    for (const n of S.nodes){
+      if (!isLv(n.id) || comp.has(n.id)) continue;
+      const c = nc++, st = [n.id]; comp.set(n.id, c);
+      while (st.length){
+        const id = st.pop();
+        for (const e of S.edges){
+          const o = e.source===id ? e.target : e.target===id ? e.source : null;
+          if (o && isLv(o) && !comp.has(o)){ comp.set(o, c); st.push(o); }
+        }
+      }
+    }
+    const touch = new Map(), anchored = new Set();
+    for (const n of S.nodes) if (comp.has(n.id) && n.hvSide==='lv') anchored.add(comp.get(n.id));
+    for (const e of S.edges)
+      for (const [a,b] of [[e.source,e.target],[e.target,e.source]])
+        if (m.get(a)==='barrier' && comp.has(b)){
+          if (!touch.has(comp.get(b))) touch.set(comp.get(b), new Set());
+          touch.get(comp.get(b)).add(a);
+        }
+    for (const x of [...cand]){
+      let bridge = false;
+      for (const e of S.edges){
+        if (e.nets.some(isHvNet)) continue;    // the LV-facing (lv-level) edges only
+        const o = e.source===x ? e.target : e.target===x ? e.source : null;
+        if (!o || !isLv(o)) continue;
+        if (e.target===x){ bridge = true; break; }               // the LV domain drives it
+        const c = comp.get(o);
+        if (anchored.has(c) || (touch.get(c) && [...touch.get(c)].some(y=>y!==x))){ bridge = true; break; }
+      }
+      if (!bridge){ m.set(x,'hv'); cand.delete(x); changed = true; }
+    }
+  }
+  for (const [k,v] of m) if (!v) m.set(k,'lv');
+  return m;
+}
+function nodeArea(nodeId){
+  if (!_areaCache) _areaCache = computeAreas();
+  return _areaCache.get(nodeId) || 'lv';
+}
+// The LEVEL a block actually swings at, relative to ITS OWN area's ground:
+// worn as the corner tag, never as the color.
+function nodeLevel(nodeId){
+  return nodeTouchingNets(nodeId).some(isHvNet) ? 'hv' : 'lv';
+}
+// The area a whole connection lives in — this is what splits group buses and
+// pins ports to a barrier's halves, so re-levelling a net never spawns a new
+// TO/FROM box (its blocks are still in the same area).
+function edgeArea(e){
+  const sa = nodeArea(e.source), ta = nodeArea(e.target);
+  if (sa==='hv' || ta==='hv') return 'hv';
+  if (sa==='barrier' && ta==='barrier') return e.nets.some(isHvNet) ? 'hv' : 'lv';
+  return 'lv';
+}
 function nodeSide(nodeId){
-  const n = nodeById(nodeId);
-  return (n && n.hvSide) || inferNodeSide(nodeId);
+  return nodeArea(nodeId);
 }
 // A group is 'hv'/'lv' only if every member agrees; any mix (including a
 // group that itself contains a barrier member) reads as a barrier group.
@@ -1257,24 +1381,46 @@ function groupSide(groupId){
   return sides.size===1 ? [...sides][0] : 'barrier';
 }
 function safeId(s){ return String(s).replace(/[^A-Za-z0-9_-]/g,'_'); }
+/* ---------- area colors (Isolation Barrier settings) ----------
+   Each area of the project (LV, HV) can wear a custom color; empty means the
+   theme default. Stored in S.areas, applied as CSS custom properties so every
+   area visual (strokes, washes, tags, portal boxes) follows one knob. */
+function defaultAreas(){ return [ { id:'lv', name:'LV', color:'' }, { id:'hv', name:'HV', color:'' } ]; }
+function areaCustom(id){ const a=(S.areas||[]).find(x=>x.id===id); return (a && a.color) || ''; }
+function applyAreaColors(){
+  const r = document.documentElement.style;
+  const hv = areaCustom('hv'); if (hv) r.setProperty('--area-hv', hv); else r.removeProperty('--area-hv');
+  const lv = areaCustom('lv'); if (lv) r.setProperty('--area-lv', lv); else r.removeProperty('--area-lv');
+}
+// Stroke for a block in `area`: HV always speaks the HV area color; LV uses
+// the block kind's own default unless a custom LV color is set.
+function areaStroke(area, lvFallback){
+  return area==='hv' ? 'var(--area-hv)' : (areaCustom('lv') ? 'var(--area-lv)' : lvFallback);
+}
+// The corner tag now says the block's voltage LEVEL, independent of its area
+// color: a red (HV-area) block can be LV with respect to GND_HV, and an
+// LV-area block can carry true HV referenced to GND_LV.
+function levelTag(level, w){
+  return `<text x="${w-6}" y="11" text-anchor="end" font-family="var(--mono)" font-size="7.5" font-weight="700" letter-spacing=".04em" fill="${level==='hv'?'var(--sig-hv)':'var(--ink-soft)'}" style="pointer-events:none">${level==='hv'?'HV':'LV'}</text>`;
+}
 // A translucent red wash over whatever fill the block already has — works
 // the same for IC/external/group styling without needing a bespoke "HV
 // variant" of every block's color. 'barrier' clips the wash to ONE half
 // (right by default, left when flipped), so the other half keeps showing
 // the block's original color.
 function hvOverlayMarkup(side, w, h, rx, clipId, flip){
-  if (side==='hv') return `<rect width="${w}" height="${h}" rx="${rx}" fill="var(--sig-hv)" opacity=".24" style="pointer-events:none"/>`;
+  if (side==='hv') return `<rect width="${w}" height="${h}" rx="${rx}" fill="var(--area-hv)" opacity=".24" style="pointer-events:none"/>`;
   if (side==='barrier') return `
       <clipPath id="${clipId}"><rect width="${w}" height="${h}" rx="${rx}"/></clipPath>
-      <rect clip-path="url(#${clipId})" x="${flip?0:w/2}" y="0" width="${w/2}" height="${h}" fill="var(--sig-hv)" opacity=".3" style="pointer-events:none"/>
-      <line x1="${w/2}" y1="2" x2="${w/2}" y2="${h-2}" stroke="var(--sig-hv)" stroke-width="1.3" opacity=".8" style="pointer-events:none"/>`;
+      <rect clip-path="url(#${clipId})" x="${flip?0:w/2}" y="0" width="${w/2}" height="${h}" fill="var(--area-hv)" opacity=".3" style="pointer-events:none"/>
+      <line x1="${w/2}" y1="2" x2="${w/2}" y2="${h-2}" stroke="var(--area-hv)" stroke-width="1.3" opacity=".8" style="pointer-events:none"/>`;
   return '';
 }
 function hvSideTag(side, w, flip){
-  if (side==='hv') return `<text x="${w-6}" y="11" text-anchor="end" font-family="var(--mono)" font-size="7.5" font-weight="700" letter-spacing=".04em" fill="var(--sig-hv)" style="pointer-events:none">HV</text>`;
+  if (side==='hv') return `<text x="${w-6}" y="11" text-anchor="end" font-family="var(--mono)" font-size="7.5" font-weight="700" letter-spacing=".04em" fill="var(--area-hv)" style="pointer-events:none">HV</text>`;
   if (side!=='barrier') return '';
   const hvX = flip ? 6 : w-6, lvX = flip ? w-6 : 6;
-  return `<text x="${hvX}" y="11" ${flip?'':'text-anchor="end" '}font-family="var(--mono)" font-size="7.5" font-weight="700" letter-spacing=".04em" fill="var(--sig-hv)" style="pointer-events:none">HV</text>
+  return `<text x="${hvX}" y="11" ${flip?'':'text-anchor="end" '}font-family="var(--mono)" font-size="7.5" font-weight="700" letter-spacing=".04em" fill="var(--area-hv)" style="pointer-events:none">HV</text>
       <text x="${lvX}" y="11" ${flip?'text-anchor="end" ':''}font-family="var(--mono)" font-size="7.5" font-weight="700" letter-spacing=".04em" fill="var(--ink-soft)" style="pointer-events:none">LV</text>`;
 }
 // Which half is HV on a barrier block: right by default, left when the user
@@ -2008,6 +2154,8 @@ function restoreState(json){
   S.portalAnchor = s.portalAnchor || {};
   S.ungroupedHvFlip = s.ungroupedHvFlip || undefined;
   S.project = s.project || {};
+  S.areas = Array.isArray(s.areas) && s.areas.length ? s.areas : defaultAreas();
+  applyAreaColors();
   S.openGroup = s.openGroup ?? null;
   S.edgeSeq = Math.max(0, ...S.edges.map(e=>+String(e.id).replace(/^e/,'')||0)) + 1;
   S.sel = null; S.link = null; S.traceNet = null;
@@ -2089,6 +2237,7 @@ function wireTraceCards(container){
 function render(){
   // Block heights depend on the port index, so drop the memo before drawing:
   // render() runs after every state change, which keeps the cache honest.
+  invalidateAreas();
   invalidateGroupPorts();
   validateTrace();
   viewport.setAttribute('transform', `translate(${S.view.tx},${S.view.ty}) scale(${S.view.k})`);
@@ -2705,7 +2854,7 @@ function renderDrillDown(){
     const dimN = (trace && !tracedN && !selected) || spotDimNode(n.id) ? ' dim' : '';
     if (n.kind==='ic'){
       const needsPick = !icSelected(n);
-      const wtX = side==='lv' ? n.w-24 : n.w-48;   // clear of the HV corner tag
+      const wtX = n.w-48;   // clear of the LV/HV corner tag (every block wears one)
       const warnTag = needsPick ? `<g style="pointer-events:none">
         <path d="M ${wtX} 15 l6.5 -11 l6.5 11 Z" fill="var(--warn)"/>
         <text x="${wtX+6.5}" y="13.6" text-anchor="middle" font-family="var(--mono)" font-size="8.5" font-weight="700" fill="var(--paper)">!</text>
@@ -2714,25 +2863,25 @@ function renderDrillDown(){
       return `<g class="node${dimN}" data-nid="${esc(n.id)}" transform="translate(${n.x},${n.y})" style="cursor:move">
         <rect x="-3" y="4" width="${n.w+6}" height="${n.h}" rx="5" fill="#00000018"/>
         <rect width="${n.w}" height="${n.h}" rx="5" fill="var(--epoxy)"
-          stroke="${(selected||tracedN)?'var(--probe)':needsPick?'var(--warn)':(side==='lv'?'var(--epoxy-edge)':'var(--sig-hv)')}" stroke-width="${(selected||tracedN)?2.5:needsPick?2:1.4}"/>
+          stroke="${(selected||tracedN)?'var(--probe)':needsPick?'var(--warn)':(side==='barrier'?areaStroke('lv','var(--epoxy-edge)'):areaStroke(side,'var(--epoxy-edge)'))}" stroke-width="${(selected||tracedN)?2.5:needsPick?2:1.4}"/>
         ${hvOverlayMarkup(side, n.w, n.h, 5, 'hvclip-'+safeId(n.id), n.hvFlip)}
         <circle cx="13" cy="13" r="3.6" fill="var(--silk)"/>
         <text x="26" y="26" font-family="var(--mono)" font-size="13.5" font-weight="600" fill="var(--silk)">${esc(n.label)}</text>
         <text x="26" y="44" font-family="var(--sans)" font-size="10" fill="var(--ink-soft)">${esc((n.data.ic_type||'').slice(0,30))}</text>
         <text class="refdes" x="${n.w-10}" y="44" text-anchor="end" font-family="var(--mono)" font-size="10" font-weight="600" fill="var(--ink-soft)">${esc(n.ref||'')}</text>
-        ${hvSideTag(side, n.w, n.hvFlip)}${warnTag}
+        ${side==='barrier' ? hvSideTag(side, n.w, n.hvFlip) : levelTag(nodeLevel(n.id), n.w)}${warnTag}
         <line x1="10" y1="${sepY}" x2="${n.w-10}" y2="${sepY}" stroke="var(--silk)" stroke-width="1" opacity=".25"/>
         ${portRows}
       </g>`;
     }
     return `<g class="node${dimN}" data-nid="${esc(n.id)}" transform="translate(${n.x},${n.y})" style="cursor:move">
       <rect width="${n.w}" height="${n.h}" rx="4" fill="var(--paper)"
-        stroke="${(selected||tracedN)?'var(--probe)':(side==='lv'?'var(--ink-soft)':'var(--sig-hv)')}" stroke-width="${(selected||tracedN)?2.5:1.4}" stroke-dasharray="${selected?'none':'5 4'}"/>
+        stroke="${(selected||tracedN)?'var(--probe)':(side==='barrier'?areaStroke('lv','var(--ink-soft)'):areaStroke(side,'var(--ink-soft)'))}" stroke-width="${(selected||tracedN)?2.5:1.4}" stroke-dasharray="${selected?'none':'5 4'}"/>
       ${hvOverlayMarkup(side, n.w, n.h, 4, 'hvclip-'+safeId(n.id), n.hvFlip)}
       <text x="12" y="20" font-family="var(--mono)" font-size="10" letter-spacing=".08em" fill="var(--ink-soft)">EXTERNAL</text>
-      <text class="refdes" x="${side==='lv'?n.w-12:n.w-48}" y="20" text-anchor="end" font-family="var(--mono)" font-size="10" font-weight="600" fill="var(--ink-soft)">${esc(n.ref||'')}</text>
+      <text class="refdes" x="${n.w-12}" y="20" text-anchor="end" font-family="var(--mono)" font-size="10" font-weight="600" fill="var(--ink-soft)">${esc(n.ref||'')}</text>
       <text x="12" y="36" font-family="var(--sans)" font-size="11.5" font-weight="500" fill="var(--ink)">${esc(n.label)}</text>
-      ${hvSideTag(side, n.w, n.hvFlip)}
+      ${side==='barrier' ? hvSideTag(side, n.w, n.hvFlip) : levelTag(nodeLevel(n.id), n.w)}
       <line x1="10" y1="${sepY}" x2="${n.w-10}" y2="${sepY}" stroke="var(--ink)" stroke-width="1" opacity=".25"/>
       ${portRows}
     </g>`;
@@ -2776,8 +2925,8 @@ function portalMarkupFor(p, selected, wires, traced, dim){
   return `<g class="portal${dim?' dim':''}" data-portal="${esc(p.key)}" data-x="${r.x}" data-y="${r.y}" data-w="${r.w}" data-h="${r.h}" style="cursor:move">
     ${wires}
     <path d="${boxD}" fill="var(--vellum)"
-      stroke="${(selected||traced)?'var(--probe)':(hvDom?'var(--sig-hv)':'var(--ink-soft)')}" stroke-width="${(selected||traced)?2.5:1.5}" stroke-dasharray="4 3"/>
-    <text x="${tx}" y="${cy-8}" font-family="var(--mono)" font-size="9" letter-spacing=".08em" fill="${hvDom?'var(--sig-hv)':'var(--ink-soft)'}">${dir==='in'?'FROM':'TO'}${hvDom?' · HV':''}</text>
+      stroke="${(selected||traced)?'var(--probe)':(hvDom?'var(--area-hv)':'var(--ink-soft)')}" stroke-width="${(selected||traced)?2.5:1.5}" stroke-dasharray="4 3"/>
+    <text x="${tx}" y="${cy-8}" font-family="var(--mono)" font-size="9" letter-spacing=".08em" fill="${hvDom?'var(--area-hv)':'var(--ink-soft)'}">${dir==='in'?'FROM':'TO'}${hvDom?' · HV':''}</text>
     <text x="${tx}" y="${cy+10}" font-family="var(--mono)" font-size="12" font-weight="600" fill="var(--ink)">${esc(label)}</text>
     <circle cx="${bcx}" cy="${cy}" r="9" fill="var(--paper)" stroke="${style.color}" stroke-width="1.2"/>
     <text x="${bcx}" y="${cy+3.5}" text-anchor="middle" font-family="var(--mono)" font-size="9.5" fill="var(--ink)">${item.nets.length}</text>
@@ -2860,7 +3009,9 @@ function renderTopLevel(){
   renderGrid(true);
   // An HV-domain connection is ALWAYS drawn in the HV red, whatever signal
   // types it carries — the split guarantees it holds nothing but HV nets.
-  const catOfEdge = e => e.dom==='hv' ? 'hv' : edgeCategory(e);
+  // Color says what the nets ARE (their level/category); the AREA the bus
+  // lives in shows on the blocks, not on the wire.
+  const catOfEdge = e => edgeCategory(e);
   const catOf = new Map(gEdges.map(e=>[e.id, catOfEdge(e)]));
   // Forget routes for connections that no longer exist (regrouping, deletions).
   // 'n|'-prefixed entries belong to the drill-down views and are pruned there.
@@ -2915,7 +3066,7 @@ function renderTopLevel(){
     // ≥1 member IC without its physical part picked → the whole group warns
     const needsPick = groupNeedsIcPick(g.id);
     const missing = needsPick ? g.members.filter(id=>{ const m=nodeById(id); return m&&m.kind==='ic'&&!icSelected(m); }).length : 0;
-    const wtX = side==='lv' ? W-26 : W-50;
+    const wtX = W-50;   // clear of the corner tag
     const warnTag = needsPick ? `<g style="pointer-events:none">
       <path d="M ${wtX} 16 l7 -12 l7 12 Z" fill="var(--warn)"/>
       <text x="${wtX+7}" y="14.4" text-anchor="middle" font-family="var(--mono)" font-size="9" font-weight="700" fill="var(--paper)">!</text>
@@ -2944,7 +3095,7 @@ function renderTopLevel(){
     return `<g class="node${trace&&!tracedG&&!selected?' dim':''}" data-nid="${esc(g.id)}" transform="translate(${pos.x},${pos.y})" style="cursor:move">
       <rect x="-4" y="6" width="${W+8}" height="${h}" rx="6" fill="#00000018"/>
       <rect width="${W}" height="${h}" rx="6" fill="var(--vellum)"
-        stroke="${(selected||tracedG)?'var(--probe)':needsPick?'var(--warn)':(side==='lv'?'var(--ink)':'var(--sig-hv)')}" stroke-width="${(selected||tracedG)?3:2}"/>${warnTag}
+        stroke="${(selected||tracedG)?'var(--probe)':needsPick?'var(--warn)':(side==='barrier'?areaStroke('lv','var(--ink)'):areaStroke(side,'var(--ink)'))}" stroke-width="${(selected||tracedG)?3:2}"/>${warnTag}
       ${hvOverlayMarkup(side, W, h, 6, 'hvclip-'+safeId(g.id), groupHvFlip(g.id))}
       <line x1="${GROUP_PAD_X}" y1="30" x2="${W-GROUP_PAD_X}" y2="30" stroke="var(--ink)" stroke-width="1" opacity=".18"/>
       <text x="${GROUP_PAD_X}" y="20" font-family="var(--mono)" font-size="9.5" letter-spacing=".1em" fill="var(--ink-soft)">${eyebrow}</text>
@@ -3096,7 +3247,8 @@ function renderInspector(){
         <button class="linklike" id="btnIcCost" title="${L('Click for the full list of ICs with their prices','Clic para ver la lista completa de CIs con sus precios')}">${esc(fmtCostTotal(icCostTotal()))}</button></div></div>
       <div class="kv"><label>${L('Connections','Conexiones')}</label><div class="val">${S.edges.length} ${L('edges','conexiones')} · ${S.edges.reduce((s,e)=>s+e.nets.length,0)} ${L('nets','redes')}</div></div>
       <div class="kv"><label>${L('Groups','Grupos')}</label><div class="val">${groups.length} ${L('shown','mostrados')}${ungrouped&&ungrouped.members.length?` · ${ungrouped.members.length} ${L('ungrouped','sin grupo')}`:''}</div></div>
-      <div class="btnrow"><button id="btnProjOpts">${L('Project Options','Opciones de proyecto')}</button></div>
+      <div class="btnrow"><button id="btnProjOpts">${L('Project Options','Opciones de proyecto')}</button>
+        <button id="btnIsoBar">${L('Isolation Barrier','Barrera de aislamiento')}</button></div>
       <p style="margin-top:14px">${isTopLevel()
         ? L('System-level view — each block is a functional group, derived automatically from the underlying connections. Select a group or a connection to inspect it, or double-click a group to open it. Drag a group to reposition it.',
             'Vista de sistema — cada bloque es un grupo funcional, derivado automáticamente de las conexiones subyacentes. Selecciona un grupo o una conexión para inspeccionarlo, o haz doble clic en un grupo para abrirlo. Arrastra un grupo para recolocarlo.')
@@ -3109,6 +3261,7 @@ function renderInspector(){
       $('btnIssues').onclick=()=>{ S.sel={type:'issues'}; render(); };
     }
     $('btnProjOpts').onclick = openProjectOptionsModal;
+    $('btnIsoBar').onclick = openIsolationModal;
     $('btnIcCost').onclick = openIcCostModal;
     if (descTruncated) $('btnFullDesc').onclick = () => {
       openModal(S.meta.title||'System description',
@@ -3301,7 +3454,7 @@ function renderInspector(){
     const sideRow = `
       <div class="kv"><label>${L('Voltage domain','Dominio de tensión')}</label>
         <select id="fSide">
-          <option value="" ${!n.hvSide?'selected':''}>Auto (${inferNodeSide(n.id)})</option>
+          <option value="" ${!n.hvSide?'selected':''}>Auto (${nodeArea(n.id)})</option>
           <option value="lv" ${n.hvSide==='lv'?'selected':''}>${L('Low voltage','Baja tensión')}</option>
           <option value="barrier" ${n.hvSide==='barrier'?'selected':''}>${L('Isolation barrier (half/half)','Barrera de aislamiento (mitad/mitad)')}</option>
           <option value="hv" ${n.hvSide==='hv'?'selected':''}>${L('High voltage','Alta tensión')}</option>
@@ -3509,7 +3662,7 @@ function renderInspector(){
           <span class="netname">${esc(n.name)}</span>
           <span class="nettype">${esc(n.type)}</span>
           <button class="netdom ${isHvNet(n)?'hv':'lv'}" data-domnet="${i}"
-            title="${L('Insulation domain of this net — click to flip. Blocks re-classify automatically (unless their Voltage domain is set by hand).','Dominio de aislamiento de esta red — clic para cambiarlo. Los bloques se reclasifican automáticamente (salvo que su dominio esté fijado a mano).')}">${isHvNet(n)?'HV':'LV'}</button>
+            title="${L('Voltage LEVEL of this net — click to flip. Block colors follow the isolation topology (their AREA), so re-levelling a net moves no block and spawns no TO/FROM.','NIVEL de tensión de esta red — clic para cambiarlo. El color de los bloques sigue la topología de aislamiento (su ÁREA), así que cambiar el nivel no mueve bloques ni crea TO/FROM.')}">${isHvNet(n)?'HV':'LV'}</button>
           <button class="pen" data-editnet="${i}" title="${L('Edit this net — name and description','Editar esta red — nombre y descripción')}">✎</button>
           <button class="x" data-delnet="${i}" title="${L('Remove net','Quitar red')}">✕</button>
         </div>
@@ -5022,6 +5175,51 @@ function projectOf(){
            pageSize: p.pageSize==='A4' ? 'A4' : 'A3',
            orientation: p.orientation==='portrait' ? 'portrait' : 'landscape' };
 }
+/* The project's isolation AREAS — LV and HV to begin with — listed with
+   their colors. A color edit repaints every area visual (block strokes,
+   washes, tags, portal boxes); empty = the theme default. */
+function openIsolationModal(){
+  const areas = S.areas && S.areas.length ? S.areas : (S.areas = defaultAreas());
+  const cs = getComputedStyle(document.documentElement);
+  const toHex = c => {
+    const m = String(c).trim().match(/^rgba?\((\d+)[, ]+(\d+)[, ]+(\d+)/);
+    if (m) return '#'+[m[1],m[2],m[3]].map(v=>(+v).toString(16).padStart(2,'0')).join('');
+    return /^#([0-9a-f]{6})$/i.test(String(c).trim()) ? String(c).trim() : '#888888';
+  };
+  const themeDefault = a => a.id==='hv' ? toHex(cs.getPropertyValue('--sig-hv'))
+                                        : toHex(cs.getPropertyValue('--epoxy-edge')||cs.getPropertyValue('--ink-soft'));
+  openModal(L('Isolation Barrier','Barrera de aislamiento'), `
+    <p class="hint" style="margin-top:0">${L('The areas of this project, split by its isolation barriers. A block\'s COLOR says which area it lives in (topology); its LV/HV tag says its voltage level relative to that area\'s own ground.',
+      'Las áreas de este proyecto, separadas por sus barreras de aislamiento. El COLOR de un bloque dice en qué área vive (topología); su etiqueta LV/HV dice su nivel de tensión respecto a la masa de esa área.')}</p>
+    ${areas.map((a,i)=>`
+      <div class="row" style="align-items:center;margin-bottom:8px">
+        <div class="kv" style="flex:1"><label>${L('Area','Área')}</label>
+          <div class="val" style="font-family:var(--mono);font-weight:600">${esc(a.name)}</div></div>
+        <div class="kv"><label>${L('Color','Color')}</label>
+          <input type="color" data-area-color="${i}" value="${esc(a.color || themeDefault(a))}"></div>
+        <button data-area-reset="${i}" title="${L('Back to the theme default','Volver al color por defecto del tema')}" style="align-self:flex-end">${L('Default','Por defecto')}</button>
+      </div>`).join('')}
+    <p class="hint">${L('Colors are saved with the session and repaint every area visual — block outlines, HV washes, tags and FROM/TO boxes. Net colors keep meaning the signal category/level.',
+      'Los colores se guardan con la sesión y repintan todos los visuales de área — contornos, lavados HV, etiquetas y cajas FROM/TO. Los colores de las redes siguen significando la categoría/nivel de la señal.')}</p>
+  `, `<button id="mCancel">${L('Cancel','Cancelar')}</button><button class="primary" id="mOk">${L('Save','Guardar')}</button>`);
+  $('mCancel').onclick=closeModal;
+  document.querySelectorAll('[data-area-reset]').forEach(b=>b.onclick=()=>{
+    const a=areas[+b.dataset.areaReset];
+    const inp=document.querySelector(`[data-area-color="${b.dataset.areaReset}"]`);
+    inp.value=themeDefault(a); inp.dataset.cleared='1';
+  });
+  $('mOk').onclick=()=>{
+    commit();
+    document.querySelectorAll('[data-area-color]').forEach(inp=>{
+      const a=areas[+inp.dataset.areaColor];
+      a.color = inp.dataset.cleared==='1' && inp.value===themeDefault(a) ? '' : inp.value;
+    });
+    applyAreaColors();
+    closeModal(); render();
+    toast(L('Area colors saved','Colores de área guardados'));
+  };
+}
+
 // Three sub-windows behind tabs: the title-block data ("Project parameters"),
 // the page setup ("PDF export options") and the distributor search setup
 // ("PN search options" — which houses, currency, API keys). The IC form's
@@ -5654,6 +5852,7 @@ function buildSessionJSON(){
     portalAnchor:JSON.parse(JSON.stringify(S.portalAnchor)),
     ungroupedHvFlip:S.ungroupedHvFlip,
     project:{ ...S.project },
+    areas:JSON.parse(JSON.stringify(S.areas||defaultAreas())),
     openGroup:S.openGroup,
     // Pan/zoom rides along so a re-imported session opens on the exact same
     // framing. Deliberately NOT read back by restoreState: undoing an edit
@@ -5743,6 +5942,8 @@ function loadSession(s){
   S.edgeSeq = Math.max(0, ...S.edges.map(e=>+String(e.id).replace(/^e/,'')||0)) + 1;
   // Nothing of the outgoing document may leak into the restored one.
   S.sel = null; S.traceNet = null; S.link = null;
+  S.areas = Array.isArray(s.areas) && s.areas.length ? s.areas : defaultAreas();
+  applyAreaColors();
   assignRefDes();       // legacy sessions get their U#/EXT# designators here
   reconcileIcNames();   // the part card names the block, not the other way round
   invalidateGroupPorts(); _routeCache.clear();
@@ -5762,6 +5963,8 @@ function loadFromContract(input, contract, groups){
   const g = buildGraph(input, contract||{}, groups||[]);
   S.nodes=g.nodes; S.edges=g.edges; S.groups=g.groups;
   S.groupPos={}; S.groupEdgeRoutes={}; S.groupPortSides={}; S.groupPortOrder={}; S.groupEdgeLanes={}; S.portalOffsets={}; S.portalOrder={}; S.portalSeq={}; S.portalAnchor={}; S.ungroupedHvFlip=undefined; S.project={}; S.openGroup=null; S.sel=null;
+  S.areas = defaultAreas();
+  applyAreaColors();
   assignRefDes();
   reconcileIcNames();   // a hand-made JSON can carry cards too — they name their blocks
   autoLayoutAllGroupMembers();
