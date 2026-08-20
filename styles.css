@@ -1,4 +1,4 @@
-:root{
+:root{--area-hv:var(--sig-hv); 
   --paper:#F7F5F0; --ink:#1B2A41; --ink-soft:#4A5A72;
   /* IC bodies share the external blocks' surface — same fill, readable ink,
      no dark chip. Defined ONCE against --paper/--ink, so they follow whichever

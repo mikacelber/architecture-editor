@@ -9,7 +9,8 @@ window.__T={get S(){return S;},get HIST(){return HIST;},loadFromContract,render,
  groupBlockRect,groupPortAnchor,groupEdgeRouteKey,groupEdgePts,laneOf,setGroupEdgeRoute,groupEdgeRouteOf,
  pointOutOfBlocks,groupPortRowsFor,groupsWithUngrouped,groupSide,groupPortOf,setGroupPortSide,
  moveGroupPortToRow,commit,commitGesture,undo,redo,resetGroupPortLayout,snapshotState,buildSessionJSON,groupPosOf,_routeCache,nodeById,
- openGroupView,closeGroupView};`);
+ openGroupView,closeGroupView,nodeArea,nodeLevel,edgeArea,nodeSide,isHvNet,defaultAreas,areaCustom,applyAreaColors,
+ loadSession};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -201,6 +202,80 @@ const key=e=>T.groupEdgeRouteKey(e.source,e.target);
   T.openGroupView('CONTROL_AND_SUPERVISION');
   check('legend still populated in the drill-down', legend.querySelectorAll('.litem').length===7);
   T.closeGroupView();
+}
+
+/* ============ AREAS (color) vs LEVEL (tag): the isolation topology ============ */
+{
+  const doc=window.document;
+  // A purpose-built chain: LVSRC → BARRIER → HVA (hv net) → HVB (lv-level net!)
+  T.loadFromContract(
+    { id:'iso', title:'iso', description:'', ic_components:[
+      { ic_part_number:'LVSRC', ic_type:'a', description:'', manufacturer:'', DatasheetUrl:'', selection_rationale:'' },
+      { ic_part_number:'BARRIER', ic_type:'b', description:'', manufacturer:'', DatasheetUrl:'', selection_rationale:'' },
+      { ic_part_number:'HVA', ic_type:'c', description:'', manufacturer:'', DatasheetUrl:'', selection_rationale:'' },
+      { ic_part_number:'HVB', ic_type:'d', description:'', manufacturer:'', DatasheetUrl:'', selection_rationale:'' }] },
+    { global_nets:[
+      { name:'DRIVE', type:'CONTROL_SIGNAL', source:'LVSRC', consumers:['BARRIER'], description:'' },
+      { name:'HV_OUT', type:'HIGH_VOLTAGE_PATH', source:'BARRIER', consumers:['HVA'], description:'' },
+      { name:'HV_LOCAL_CTL', type:'CONTROL_SIGNAL', source:'HVA', consumers:['HVB'], description:'' }],
+      external_blocks:[] },
+    []);
+  check('the barrier block straddles: it touches both levels',
+    T.nodeArea('BARRIER')==='barrier');
+  check('the block fed over the HV net is in the HV area', T.nodeArea('HVA')==='hv');
+  check('THE CHAIN RULE: a block reached only over an LV-LEVEL net from the HV side is STILL HV area (color)',
+    T.nodeArea('HVB')==='hv');
+  check('…but its LEVEL tag says LV — low voltage with respect to GND_HV',
+    T.nodeLevel('HVB')==='lv' && T.nodeLevel('HVA')==='hv');
+  check('the LV side stays LV in area and level',
+    T.nodeArea('LVSRC')==='lv' && T.nodeLevel('LVSRC')==='lv');
+  check('the LV-level net between two HV-area blocks lives in the HV area (no new TO/FROM material)',
+    T.edgeArea(S.edges.find(e=>e.source==='HVA'&&e.target==='HVB'))==='hv');
+  // the rendered block: red (area) with an LV tag (level). No groups in this
+  // contract, so the blocks live in the implicit UNGROUPED drill view.
+  T.openGroupView('UNGROUPED');
+  const el=[...doc.querySelectorAll('#nodesG g[data-nid]')].find(x=>x.dataset.nid==='HVB');
+  check('the sheet draws HVB with the HV-area stroke and an LV corner tag',
+    el.innerHTML.includes('var(--area-hv)') && />LV</.test(el.innerHTML) && !/>HV</.test(el.innerHTML));
+  const ela=[...doc.querySelectorAll('#nodesG g[data-nid]')].find(x=>x.dataset.nid==='HVA');
+  check('…and HVA with the HV-area stroke and an HV tag (true HV level)',
+    ela.innerHTML.includes('var(--area-hv)') && />HV</.test(ela.innerHTML));
+  // re-levelling HV_LOCAL_CTL up and down never changes anyone's color
+  const e=S.edges.find(x=>x.source==='HVA'&&x.target==='HVB');
+  e.nets[0].hv=true; T.render();
+  check('raising a net\'s level never changes any block\'s area', T.nodeArea('HVB')==='hv');
+  e.nets[0].hv=false; T.render();
+  check('…nor does lowering it back', T.nodeArea('HVB')==='hv' && T.nodeLevel('HVB')==='lv');
+  T.closeGroupView();
+}
+
+/* ============ Isolation Barrier settings: areas + editable colors ============ */
+{
+  const doc=window.document;
+  check('the project starts with the two default areas, LV and HV',
+    S.areas.map(a=>a.id).join(',')==='lv,hv' && S.areas.every(a=>a.color===''));
+  S.sel=null; T.render();
+  const btn=doc.getElementById('btnIsoBar');
+  check('an "Isolation Barrier" button sits next to Project Options', !!btn &&
+    !!doc.getElementById('btnProjOpts'));
+  btn.onclick();
+  check('the popup lists every area with an editable color',
+    doc.getElementById('modalTitle').textContent==='Isolation Barrier' &&
+    doc.querySelectorAll('[data-area-color]').length===2);
+  const hvInput=doc.querySelector('[data-area-color="1"]');
+  hvInput.value='#123456';
+  doc.getElementById('mOk').onclick();
+  check('a saved color lands on the HV area and repaints via the CSS variable',
+    S.areas[1].color==='#123456' &&
+    doc.documentElement.style.getPropertyValue('--area-hv')==='#123456');
+  check('custom area colors ride the session',
+    (()=>{ const sess=JSON.parse(JSON.stringify(T.buildSessionJSON()));
+      return sess.areas && sess.areas[1].color==='#123456'; })());
+  T.loadSession(JSON.parse(JSON.stringify(T.buildSessionJSON())));
+  check('…and come back on import', S.areas[1].color==='#123456' &&
+    doc.documentElement.style.getPropertyValue('--area-hv')==='#123456');
+  T.undo();
+  check('the color edit is one undoable step', S.areas[1].color==='');
 }
 
 console.log('\n'+pass+' passed, '+fail+' failed');

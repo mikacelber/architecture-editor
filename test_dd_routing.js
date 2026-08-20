@@ -875,8 +875,10 @@ check('every in-group connection carries a routing lane',
     inSpecs.every(s=>{ const e=S.edges.find(x=>x.id===s.e.id); return e && !T.nodeEdgeRouteOf(e); }));
 }
 
-/* ---- rule 20: a group connection never mixes insulation domains — HV nets
-   get their own red connection, and the FROM/TO portals split in two ---- */
+/* ---- rule 20: a group connection never mixes isolation AREAS — an edge in
+   the HV area travels whole in its own connection (LV-level nets included),
+   and the FROM/TO portals split in two. Wire COLOR stays the nets' own
+   category — the area shows on the blocks, not on the bus. ---- */
 {
   T.closeGroupView(); T.render();
   // find (or force) a group pair whose nets span both domains
@@ -891,16 +893,21 @@ check('every in-group connection carries a routing lane',
   T.render();
   const gs=idx.get(pairEdge.source), gt=idx.get(pairEdge.target);
   const splits=T.computeGroupEdges().filter(e=>e.source===gs&&e.target===gt);
-  check('a mixed pair derives TWO group connections, one per domain',
+  check('a mixed pair derives TWO group connections, one per AREA',
     splits.length===2 && splits.some(e=>e.dom==='hv') && splits.some(e=>e.dom===''));
   const hvE=splits.find(e=>e.dom==='hv'), lvE=splits.find(e=>e.dom==='');
-  check('the HV connection carries ONLY HV-domain nets', hvE.nets.every(n=>T.isHvNet(n)));
-  check('the LV connection carries NO HV-domain net', lvE.nets.every(n=>!T.isHvNet(n)));
+  check('the HV-area connection carries its WHOLE bus — the re-levelled LV net rides along, no new TO/FROM',
+    [realEdge.nets[0].name, realEdge.nets[1].name].every(nm=>hvE.nets.some(n=>n.name===nm)) &&
+    hvE.nets.some(n=>!T.isHvNet(n)));
+  check('the LV-area connection is the other edges\' bus — nothing of the flipped edge leaks into it',
+    !lvE.nets.some(n=>n.name===realEdge.nets[0].name) && !lvE.nets.some(n=>n.name===realEdge.nets[1].name));
   check('the two connections are separately selectable (distinct ids)', hvE.id!==lvE.id);
-  const hvPath=doc.querySelector(`#edgesG .edge[data-eid="${hvE.id}"] path[stroke="var(--sig-hv)"]`);
-  check('the HV group connection is drawn in the HV red', !!hvPath);
+  const hvCat=T.edgeCategory ? null : null;
+  const hvPathRed=doc.querySelector(`#edgesG .edge[data-eid="${hvE.id}"] path[stroke="var(--sig-hv)"]`);
+  check('the HV-area bus is drawn in its nets\' category color (red only because it carries a true-HV net)',
+    !!hvPathRed);
   const lvPath=doc.querySelector(`#edgesG .edge[data-eid="${lvE.id}"] path[stroke="var(--sig-hv)"]`);
-  check('the LV group connection keeps its normal colour', !lvPath);
+  check('the LV-area connection keeps its normal colour', !lvPath);
   // each domain has its own port row on both group blocks
   const rowsAt=gid=>T.groupPortRowsFor(gid).filter(r=>r.src===gs&&r.tgt===gt);
   check('each domain gets its own port row on the blocks',
