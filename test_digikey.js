@@ -576,7 +576,7 @@ const EUROFIX={Errors:[],SearchResults:{NumberOfResult:1,Parts:[
         firstUnpicked.data.dk.pn==='MS-HI' && firstUnpicked.data.dk.price===0.0821 &&
         firstUnpicked.data.dk.src==='Mouser');
       check('the block BECOMES the chosen part — renamed to its part number',
-        firstUnpicked.id.startsWith('MS-HI') && firstUnpicked.label===firstUnpicked.id &&
+        firstUnpicked.id.startsWith('MS-HI') && firstUnpicked.label==='MS-HI' &&
         firstUnpicked.data.ic_part_number==='MS-HI');
       check('…and its connections follow the new name',
         S.edges.filter(e=>e.source===firstUnpicked.id||e.target===firstUnpicked.id).length===edgesOfFirst);
@@ -636,6 +636,23 @@ const EUROFIX={Errors:[],SearchResults:{NumberOfResult:1,Parts:[
         !!T.nodeById('SHARED-PN_3') && T.nodeById('SHARED-PN_3').data.ic_part_number==='SHARED-PN');
       check('block ids stay unique across the sheet',
         new Set(S.nodes.map(n=>n.id)).size===S.nodes.length);
+      check('both instances DISPLAY the same plain part number — no _2 in sight',
+        T.nodeById('SHARED-PN').label==='SHARED-PN' && T.nodeById('SHARED-PN_2').label==='SHARED-PN');
+      check('what tells them apart is the designator, unique per block',
+        /^U\d+$/.test(T.nodeById('SHARED-PN').ref) && /^U\d+$/.test(T.nodeById('SHARED-PN_2').ref) &&
+        T.nodeById('SHARED-PN').ref!==T.nodeById('SHARED-PN_2').ref);
+    }
+
+    /* ---- the designator is drawn on the block itself ---- */
+    {
+      const ic=S.nodes.find(n=>n.kind==='ic' && S.groups.some(g=>g.members.includes(n.id)));
+      const grp=S.groups.find(g=>g.members.includes(ic.id));
+      S.openGroup=grp.id; T.render();
+      const el=[...doc.querySelectorAll('#nodesG g[data-nid]')].find(x=>x.dataset.nid===ic.id);
+      check('the designator is drawn on the block, right-aligned at the type line',
+        el.innerHTML.includes('class="refdes"') && el.innerHTML.includes('>'+ic.ref+'<') &&
+        /refdes[^>]*text-anchor="end"/.test(el.innerHTML));
+      S.openGroup=null; T.render();
     }
 
     /* ---- every message is provider-neutral now, the DK API untouched ---- */

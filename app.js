@@ -182,7 +182,7 @@ function buildGraph(input, contract, rawGroups){
     const base = ic.instance_id || ic.ic_part_number;
     let id = base, k = 2;
     while (byId.has(id)) id = base+'_'+(k++);
-    const n = { id, kind:'ic', label: id,
+    const n = { id, kind:'ic', label: ic.ic_part_number,
       x:0, y:0, w:NODE_W_IC, h:NODE_H_IC, data: { ...ic } };
     delete n.data.instance_id;
     nodes.push(n); byId.set(n.id, n);
@@ -2719,6 +2719,7 @@ function renderDrillDown(){
         <circle cx="13" cy="13" r="3.6" fill="var(--silk)"/>
         <text x="26" y="26" font-family="var(--mono)" font-size="13.5" font-weight="600" fill="var(--silk)">${esc(n.label)}</text>
         <text x="26" y="44" font-family="var(--sans)" font-size="10" fill="var(--ink-soft)">${esc((n.data.ic_type||'').slice(0,30))}</text>
+        <text class="refdes" x="${n.w-10}" y="44" text-anchor="end" font-family="var(--mono)" font-size="10" font-weight="600" fill="var(--ink-soft)">${esc(n.ref||'')}</text>
         ${hvSideTag(side, n.w, n.hvFlip)}${warnTag}
         <line x1="10" y1="${sepY}" x2="${n.w-10}" y2="${sepY}" stroke="var(--silk)" stroke-width="1" opacity=".25"/>
         ${portRows}
@@ -2729,6 +2730,7 @@ function renderDrillDown(){
         stroke="${(selected||tracedN)?'var(--probe)':(side==='lv'?'var(--ink-soft)':'var(--sig-hv)')}" stroke-width="${(selected||tracedN)?2.5:1.4}" stroke-dasharray="${selected?'none':'5 4'}"/>
       ${hvOverlayMarkup(side, n.w, n.h, 4, 'hvclip-'+safeId(n.id), n.hvFlip)}
       <text x="12" y="20" font-family="var(--mono)" font-size="10" letter-spacing=".08em" fill="var(--ink-soft)">EXTERNAL</text>
+      <text class="refdes" x="${side==='lv'?n.w-12:n.w-48}" y="20" text-anchor="end" font-family="var(--mono)" font-size="10" font-weight="600" fill="var(--ink-soft)">${esc(n.ref||'')}</text>
       <text x="12" y="36" font-family="var(--sans)" font-size="11.5" font-weight="500" fill="var(--ink)">${esc(n.label)}</text>
       ${hvSideTag(side, n.w, n.hvFlip)}
       <line x1="10" y1="${sepY}" x2="${n.w-10}" y2="${sepY}" stroke="var(--ink)" stroke-width="1" opacity=".25"/>
@@ -3009,7 +3011,7 @@ function allGroupsOptions(currentId){
    total is kept per currency and printed joined ("$12.34 + €0.62"). */
 function icCostRows(){
   return S.nodes.filter(n=>n.kind==='ic').map(n=>({
-    label: n.label,
+    label: n.label, ref: n.ref||'',
     pn: n.data.dk ? n.data.dk.pn : '',
     price: (n.data.dk && n.data.dk.price!=null) ? n.data.dk.price : null,
     currency: (n.data.dk && n.data.dk.currency) || 'USD',
@@ -3033,7 +3035,7 @@ function openIcCostModal(){
     <table class="costtbl">
       <thead><tr><th>${L('Block','Bloque')}</th><th>${L('Selected part','Componente elegido')}</th><th>${L('Source','Origen')}</th><th class="num">${L('Unit price','Precio unitario')}</th></tr></thead>
       <tbody>${rows.map(r=>`<tr${r.price==null?' class="dim"':''}>
-        <td>${esc(r.label)}</td>
+        <td>${r.ref?`<span style="font-family:var(--mono);color:var(--ink-soft)">${esc(r.ref)}</span> `:''}${esc(r.label)}</td>
         <td>${r.pn ? esc(r.pn) : `<i>${L('not selected','sin seleccionar')}</i>`}</td>
         <td>${esc(r.src||'—')}</td>
         <td class="num">${r.price!=null ? dkFmtPrice(r.price, r.currency) : '—'}</td></tr>`).join('')}
@@ -3128,7 +3130,7 @@ function renderInspector(){
       <p class="hint" style="margin-top:0">${L('Click an entry to jump to the exact spot — the culprit stays lit while everything else dims. The next click on the canvas lifts the spotlight.',
         'Pulsa una entrada para saltar al punto exacto — el culpable queda iluminado y todo lo demás se atenúa. El siguiente clic en el lienzo quita el foco.')}</p>
       ${section(L('Unconnected blocks','Bloques sin conectar'), iss.isolated.map(n=>
-        `<button class="issue" data-iss-node="${esc(n.id)}"><b>${esc(n.label)}</b> — ${L('not connected to anything','sin conexión con nada')}</button>`))}
+        `<button class="issue" data-iss-node="${esc(n.id)}"><b>${n.ref?esc(n.ref)+' · ':''}${esc(n.label)}</b> — ${L('not connected to anything','sin conexión con nada')}</button>`))}
       ${section(L('Connections without nets','Conexiones sin redes'), iss.emptyEdges.map(e=>
         `<button class="issue" data-iss-edge="${esc(e.id)}"><b>${esc(nodeById(e.source)?.label||e.source)} → ${esc(nodeById(e.target)?.label||e.target)}</b> — ${L('carries no nets, dropped on export','no lleva redes, se descarta al exportar')}</button>`))}
       ${iss.emptyEdges.length ? `<div class="btnrow" style="margin-top:2px"><button id="btnDropEmpty">${
@@ -3137,7 +3139,7 @@ function renderInspector(){
       ${section(L('Ungrouped blocks','Bloques sin grupo'), iss.ungrouped.map(n=>
         `<button class="issue" data-iss-node="${esc(n.id)}"><b>${esc(n.label)}</b> — ${L('belongs to no functional group','no pertenece a ningún grupo funcional')}</button>`))}
       ${section(L('ICs without a selected part','CIs sin componente seleccionado'), iss.unpicked.map(n=>
-        `<button class="issue" data-iss-node="${esc(n.id)}"><b>${esc(n.label)}</b> — ${L('no part card yet (Edit IC… or Auto IC Selection)','aún sin tarjeta de componente (Editar CI… o Selección auto)')}</button>`))}`
+        `<button class="issue" data-iss-node="${esc(n.id)}"><b>${n.ref?esc(n.ref)+' · ':''}${esc(n.label)}</b> — ${L('no part card yet (Edit IC… or Auto IC Selection)','aún sin tarjeta de componente (Editar CI… o Selección auto)')}</button>`))}`
       : `<p>${L('Everything is resolved — no warnings left on the status bar.','Todo resuelto — no quedan avisos en la barra de estado.')}</p>`;
     body.querySelectorAll('[data-iss-node]').forEach(b=>b.onclick=()=>gotoNodeIssue(b.dataset.issNode));
     body.querySelectorAll('[data-iss-edge]').forEach(b=>b.onclick=()=>gotoEdgeIssue(b.dataset.issEdge));
@@ -3163,7 +3165,7 @@ function renderInspector(){
     const memberRows = g.members.map(id=>{
       const n = nodeById(id);
       return `<div class="row" style="align-items:center;margin-bottom:6px">
-        <div style="font-family:var(--mono);font-size:12px;word-break:break-word">${esc(n?n.label:id)}</div>
+        <div style="font-family:var(--mono);font-size:12px;word-break:break-word">${n&&n.ref?`<span style="color:var(--ink-soft)">${esc(n.ref)}</span> `:''}${esc(n?n.label:id)}</div>
         <select data-move-member="${esc(id)}">${allGroupsOptions(g.id)}</select>
       </div>`;
     }).join('') || `<p style="color:var(--ink-soft)">${L('No members.','Sin miembros.')}</p>`;
@@ -3293,7 +3295,8 @@ function renderInspector(){
   if (S.sel.type==='node'){
     const n = nodeById(S.sel.id);
     if (!n){ S.sel=null; renderInspector(); return; }
-    eye.textContent = n.kind==='ic' ? L('Integrated circuit','Circuito integrado') : L('External block','Bloque externo');
+    eye.textContent = (n.kind==='ic' ? L('Integrated circuit','Circuito integrado') : L('External block','Bloque externo'))
+      + (n.ref ? ' · '+n.ref : '');
     title.textContent = n.label;
     const sideRow = `
       <div class="kv"><label>${L('Voltage domain','Dominio de tensión')}</label>
@@ -3483,7 +3486,7 @@ function renderInspector(){
           const members = g.members.map(id=>nodeById(id)).filter(Boolean)
             .sort((a,b)=>a.label.localeCompare(b.label));
           return members.length ? `<optgroup label="${esc(g.title)}">${members.map(x=>
-            `<option value="${esc(x.id)}" ${x.id===sel?'selected':''}>${esc(x.label)}</option>`).join('')}</optgroup>` : '';
+            `<option value="${esc(x.id)}" ${x.id===sel?'selected':''}>${x.ref?esc(x.ref)+' · ':''}${esc(x.label)}</option>`).join('')}</optgroup>` : '';
         }).join('');
       };
       return `
@@ -4577,8 +4580,8 @@ async function autoIcSelection(){
       let newId = best.pn, k = 2;
       while (nodeById(newId) && nodeById(newId)!==n) newId = best.pn+'_'+(k++);
       renameNodeId(n.id, newId);
-      n.label = newId;
     }
+    n.label = best.pn;   // the DESIGNATOR (U#) tells instances apart, not the name
     n.data.ic_part_number = best.pn;
     n.data.DatasheetUrl = n.data.dk.datasheet || '';
     if (!n.data.DatasheetUrl) fillMissingDatasheet(n);   // async DigiKey borrow fills both slots
@@ -4632,7 +4635,7 @@ $('btnAddIC').onclick=()=>{
     // part number lives in ic_part_number either way.
     let id = pn, k = 2;
     while (nodeById(id)) id = pn+'_'+(k++);
-    const node = { id, kind:'ic', label:id, x:0, y:0, w:NODE_W_IC, h:NODE_H_IC,
+    const node = { id, kind:'ic', label:pn, x:0, y:0, w:NODE_W_IC, h:NODE_H_IC,
       data:{ ic_part_number:pn, ic_type:$('fType').value.trim(), manufacturer:$('fMan').value.trim(),
              description:$('fDesc').value.trim(), selection_rationale:$('fRat').value.trim(),
              DatasheetUrl:$('fUrl').value.trim() } };
@@ -4660,6 +4663,7 @@ $('btnAddIC').onclick=()=>{
     const spot=findFreeSpot(cx, cy, node.w, node.h, obstacles);
     node.x=spot.x; node.y=spot.y;
     S.nodes.push(node);
+    assignRefDes();   // the new block takes the next free U#
     if (openGroup){ openGroup.members.push(node.id); openGroup.members.sort(); }
     closeModal(); S.sel={type:'node',id:node.id}; render();
   };
@@ -4700,6 +4704,7 @@ $('btnAddExt').onclick=()=>{
     node.x=spot.x; node.y=spot.y;
     commit();
     S.nodes.push(node);
+    assignRefDes();   // the new block takes the next free EXT#
     if (openGroup){ openGroup.members.push(node.id); openGroup.members.sort(); }
     closeModal(); S.sel={type:'node',id:node.id}; render();
   };
@@ -4899,7 +4904,7 @@ function openReplaceICModal(n){
     while (newId!==n.id && nodeById(newId)) newId = pn+'_'+(k++);
     commit();
     renameNodeId(n.id, newId);
-    n.label = newId;
+    n.label = pn;
     // The pick from the results is the selection; keeping the same part
     // number keeps an earlier pick; typing a DIFFERENT number by hand drops
     // it — that part has not been selected on a distributor.
@@ -5687,6 +5692,23 @@ function migrateEdgeRoutes(){
    real part instead of the old proposal, and this never needs doing twice.
    Connections, group membership and port layouts ride along via renameNodeId;
    two cards pointing at the same part get numeric suffixes to stay unique. */
+/* ---------- reference designators ----------
+   Every block carries an Altium-style designator — U1, U2… for ICs, EXT1,
+   EXT2… for externals — drawn on the block itself. THE DESIGNATOR is what
+   tells two instances of the same part apart, so labels can simply show the
+   real part number, duplicates included. Designators are assigned once
+   (import or creation), never reshuffled, and ride the session. */
+function assignRefDes(){
+  // labels show the REAL part number — never an id uniqueness suffix
+  for (const n of S.nodes)
+    if (n.kind==='ic' && n.data && n.data.ic_part_number) n.label = n.data.ic_part_number;
+  let u = 1 + Math.max(0, ...S.nodes.filter(n=>n.kind==='ic' && n.ref).map(n=>+String(n.ref).replace(/^U/,'')||0));
+  let x = 1 + Math.max(0, ...S.nodes.filter(n=>n.kind==='external' && n.ref).map(n=>+String(n.ref).replace(/^EXT/,'')||0));
+  for (const n of S.nodes){
+    if (n.ref) continue;
+    n.ref = n.kind==='ic' ? 'U'+(u++) : 'EXT'+(x++);
+  }
+}
 function reconcileIcNames(){
   let fixed = 0;
   for (const n of S.nodes.filter(x=>x.kind==='ic' && icSelected(x))){
@@ -5695,7 +5717,7 @@ function reconcileIcNames(){
     let id = pn, k = 2;
     while (nodeById(id) && nodeById(id)!==n) id = pn+'_'+(k++);
     renameNodeId(n.id, id);
-    n.label = id;
+    n.label = pn;
     n.data.ic_part_number = pn;
     // The old proposal's datasheet describes the wrong chip now, so the card's
     // wins whenever it has one; a card without a link leaves the block's alone.
@@ -5721,6 +5743,7 @@ function loadSession(s){
   S.edgeSeq = Math.max(0, ...S.edges.map(e=>+String(e.id).replace(/^e/,'')||0)) + 1;
   // Nothing of the outgoing document may leak into the restored one.
   S.sel = null; S.traceNet = null; S.link = null;
+  assignRefDes();       // legacy sessions get their U#/EXT# designators here
   reconcileIcNames();   // the part card names the block, not the other way round
   invalidateGroupPorts(); _routeCache.clear();
   autoLayoutGroups(true); // fill in positions only for groups the session didn't have (preserves dragged layout)
@@ -5739,6 +5762,7 @@ function loadFromContract(input, contract, groups){
   const g = buildGraph(input, contract||{}, groups||[]);
   S.nodes=g.nodes; S.edges=g.edges; S.groups=g.groups;
   S.groupPos={}; S.groupEdgeRoutes={}; S.groupPortSides={}; S.groupPortOrder={}; S.groupEdgeLanes={}; S.portalOffsets={}; S.portalOrder={}; S.portalSeq={}; S.portalAnchor={}; S.ungroupedHvFlip=undefined; S.project={}; S.openGroup=null; S.sel=null;
+  assignRefDes();
   reconcileIcNames();   // a hand-made JSON can carry cards too — they name their blocks
   autoLayoutAllGroupMembers();
   autoLayoutGroups();
