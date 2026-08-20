@@ -234,5 +234,23 @@ for (const k of Object.keys(beforeB)) check('group B renders identically after t
       return !!T.nodeById(pn) && !!T.nodeById(pn+'_2'); })());
 }
 
+/* ---------- reference designators: assigned once, ride the session ---------- */
+{
+  T.loadFromContract(fx.input,fx.contract,fx.groups); T.render();
+  check('every block gets an Altium-style designator on import',
+    S.nodes.filter(n=>n.kind==='ic').every(n=>/^U\d+$/.test(n.ref)) &&
+    S.nodes.filter(n=>n.kind==='external').every(n=>/^EXT\d+$/.test(n.ref)));
+  check('designators are unique across the sheet',
+    new Set(S.nodes.map(n=>n.ref)).size===S.nodes.length);
+  const ic=S.nodes.find(n=>n.kind==='ic'); const ref0=ic.ref, icId=ic.id;
+  T.loadSession(JSON.parse(JSON.stringify(T.buildSessionJSON())));
+  check('designators ride the session unchanged', T.nodeById(icId).ref===ref0);
+  const legacy=JSON.parse(JSON.stringify(T.buildSessionJSON()));
+  legacy.nodes.forEach(n=>{ delete n.ref; });
+  T.loadSession(legacy);
+  check('a legacy session without designators receives them on import',
+    S.nodes.every(n=>!!n.ref) && new Set(S.nodes.map(n=>n.ref)).size===S.nodes.length);
+}
+
 console.log('\n'+pass+' passed, '+fail+' failed');
 process.exit(fail?1:0);
