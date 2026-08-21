@@ -956,9 +956,11 @@ function optimizeMemberPorts(gid){
     if (!memberSet.has(e.source) || !memberSet.has(e.target)) continue;
     const a = nodeById(e.source), b = nodeById(e.target);
     if (!a || !b) continue;
-    if (b.x + b.w/2 < a.x)
+    // On a MIXED block the side IS the area assignment — geometry must never
+    // rewrite it, or an HV net gets silently re-parked on the LV half.
+    if (!nodeIsMixed(e.source) && b.x + b.w/2 < a.x)
       setGroupPortSide(e.source, e.source, e.target, 'left');       // output faces a block on its left
-    if (a.x + a.w/2 > b.x + b.w)
+    if (!nodeIsMixed(e.target) && a.x + a.w/2 > b.x + b.w)
       setGroupPortSide(e.target, e.source, e.target, 'right');      // input faces a block on its right
   }
   // row order, round 1: counterpart block centres (boundary rows stay neutral)
@@ -1282,6 +1284,29 @@ function edgeDomOf(e){
 // block that changes one area to the other. These connections draw in the
 // warning yellow and are listed in the Issues panel.
 function edgeCrossesAreas(e){ return edgeDomOf(e).indexOf('>') >= 0; }
+// A mixed block's port sides double as area assignments — but sides stored
+// for COSMETIC reasons (the auto-layout's geometric seeding, drags made
+// before the block was mixed) can strand a net on the wrong half and
+// fabricate a crossing that nobody asked for. Resolve every resolvable one:
+// when a connection CROSSES areas as stored and this block's OTHER half
+// agrees with the far end, move the port there. Runs at session load and
+// whenever a block's areas change — never mid-session on its own, so a
+// deliberately mis-parked net (the error you are trying to see) stays put.
+function healMixedPortSides(nid){
+  const n = nodeById(nid);
+  if (!n || !nodeIsMixed(nid)) return;
+  const [a1, a2] = nodeAreasOfNode(n);
+  for (const e of S.edges){
+    if (e.source !== nid && e.target !== nid) continue;
+    if (e.source === e.target) continue;
+    if (!edgeCrossesAreas(e)) continue;
+    const other = e.source === nid ? e.target : e.source;
+    const oa = edgeEndArea(e, other);
+    if (oa !== a1 && oa !== a2) continue;          // no half of this block can agree
+    setGroupPortSide(nid, e.source, e.target, (oa === a2) !== !!n.hvFlip ? 'right' : 'left');
+  }
+}
+function healAllMixedPortSides(){ for (const n of S.nodes) healMixedPortSides(n.id); }
 function crossAreaMsg(){
   return L('a net cannot connect two different isolation areas — to cross the barrier, first add a MIXED block (the "+" under "Isolation area" in a block\'s card) that changes one area to the other',
            'una red no puede conectar dos áreas de aislamiento distintas — para cruzar la barrera, añade primero un bloque MIXTO (el "+" bajo "Isolation area" en la ficha de un bloque) que cambie de un área a la otra');
@@ -1338,13 +1363,23 @@ function safeId(s){ return String(s).replace(/[^A-Za-z0-9_-]/g,'_'); }
    palette. Applied as CSS custom properties (--area-<id>) so every area
    visual (strokes, washes, tags, portal boxes) follows one knob. */
 function defaultAreas(){ return [ { id:'lv', name:'LV', color:'' }, { id:'hv', name:'HV', color:'' } ]; }
-const AREA_PALETTE = ['#a855f7','#0ea5e9','#f59e0b','#10b981','#ec4899','#14b8a6'];
+// ONE fixed chain of 20 default colors, by the area's POSITION in the list —
+// every project gets the same colors for the same areas, however many it
+// creates. Slot 0 is the LV default (no color: the ordinary block look) and
+// slot 1 the HV default (the HV signal red); the rest are mid-dark hues that
+// print well on a PDF — no yellow (that's the warning color), no black (too
+// much ink), nothing so pale it disappears on paper.
+const AREA_CHAIN = ['', 'var(--sig-hv)',
+  '#E07B39','#8B5CF6','#0E8F7E','#2A63C4','#C2418D','#7A4E2D','#4C7A1E','#0FA3C4',
+  '#364FC7','#2F9E44','#B03A48','#9775FA','#0B7285','#D6336C','#5F3DC4','#66A80F',
+  '#846358','#862E9C'];
 function areaCustom(id){ const a = areaById(id); return (a && a.color) || ''; }
 function areaDefaultColor(id){
   if (id==='lv') return '';
   if (id==='hv') return 'var(--sig-hv)';
-  const extras = areasOf().filter(a=>a.id!=='lv' && a.id!=='hv').map(a=>a.id);
-  return AREA_PALETTE[Math.max(0, extras.indexOf(id)) % AREA_PALETTE.length];
+  const i = areasOf().findIndex(a=>a.id===id);
+  const c = AREA_CHAIN[(i >= 0 ? i : 2) % AREA_CHAIN.length];
+  return /^#/.test(c) ? c : AREA_CHAIN[2];   // slots 0/1 belong to lv/hv
 }
 let _appliedAreaVars = [];
 function applyAreaColors(){
@@ -2941,7 +2976,7 @@ function portalMarkupFor(p, selected, wires, traced, dim){
       stroke="${(selected||traced)?'var(--probe)':(domPaint||'var(--ink-soft)')}" stroke-width="${(selected||traced)?2.5:1.5}" stroke-dasharray="4 3"/>
     <text x="${tx}" y="${cy-8}" font-family="var(--mono)" font-size="9" letter-spacing=".08em" fill="${domPaint||'var(--ink-soft)'}">${dir==='in'?'FROM':'TO'}${esc(domMarker(item.dom))}</text>
     <text x="${tx}" y="${cy+10}" font-family="var(--mono)" font-size="12" font-weight="600" fill="var(--ink)">${esc(label)}</text>
-    <circle cx="${bcx}" cy="${cy}" r="9" fill="var(--paper)" stroke="${style.color}" stroke-width="1.2"/>
+    <circle cx="${bcx}" cy="${cy}" r="9" fill="var(--paper)" stroke="${crossDom?'var(--warn)':style.color}" stroke-width="1.2"/>
     <text x="${bcx}" y="${cy+3.5}" text-anchor="middle" font-family="var(--mono)" font-size="9.5" fill="var(--ink)">${item.nets.length}</text>
   </g>`;
 }
@@ -3595,14 +3630,15 @@ function renderInspector(){
       commit();
       n.area = $('fSide').value==='lv' ? undefined : $('fSide').value;
       if (n.area2 === (n.area||'lv')) delete n.area2;   // the two areas can never coincide
+      healMixedPortSides(n.id);
       render();
     };
     const s2a=$('fSide2Add'); if (s2a) s2a.onclick=()=>{
       const other = areasOf().find(a=>a.id!==nodeArea(n.id));
       if (!other){ toast(L('Add another area in Isolation Barriers first','Añade otra área en Isolation Barriers primero')); return; }
-      commit(); n.area2 = other.id; render();
+      commit(); n.area2 = other.id; healMixedPortSides(n.id); render();
     };
-    const s2=$('fSide2'); if (s2) s2.onchange=()=>{ commit(); n.area2 = s2.value; render(); };
+    const s2=$('fSide2'); if (s2) s2.onchange=()=>{ commit(); n.area2 = s2.value; healMixedPortSides(n.id); render(); };
     const s2d=$('fSide2Del'); if (s2d) s2d.onclick=()=>{ commit(); delete n.area2; delete n.hvFlip; render(); };
     const ff=$('fFlip'); if (ff) ff.onchange=()=>{
       commit();
@@ -3727,7 +3763,7 @@ function renderInspector(){
           <button id="enCancel">${L('Discard','Descartar')}</button>
         </div>
       </div>`; })() : `
-      <div class="netcard traceable cat-${netCategory(n)}${S.traceNet===n.name?' on':''}" data-tracenet="${esc(n.name)}" title="${L('Click to trace this net end to end','Clic para trazar esta red de extremo a extremo')}">
+      <div class="netcard traceable cat-${netCategory(n)}${edgeCrossesAreas(e)?' err':''}${S.traceNet===n.name?' on':''}" data-tracenet="${esc(n.name)}" title="${L('Click to trace this net end to end','Clic para trazar esta red de extremo a extremo')}">
         <div class="nettop">
           <span class="netname">${esc(n.name)}</span>
           <span class="nettype">${esc(n.type)}</span>
@@ -5266,11 +5302,11 @@ function openIsolationModal(){
     return /^#([0-9a-f]{6})$/i.test(String(c).trim()) ? String(c).trim() : '#888888';
   };
   // The hex a row's color input shows when the area has no custom color.
-  const defHex = a => {
+  const defHex = (a, i) => {
     if (a.id==='hv') return toHex(cs.getPropertyValue('--sig-hv'));
     if (a.id==='lv') return toHex(cs.getPropertyValue('--epoxy-edge')||cs.getPropertyValue('--ink-soft'));
-    const extras = work.filter(x=>x.id!=='lv' && x.id!=='hv').map(x=>x.id);
-    return AREA_PALETTE[Math.max(0, extras.indexOf(a.id)) % AREA_PALETTE.length];
+    const c = AREA_CHAIN[i % AREA_CHAIN.length];
+    return /^#/.test(c) ? c : toHex(cs.getPropertyValue('--sig-hv'));
   };
   const blockCount = id => S.nodes.filter(n=>nodeAreas(n.id).includes(id)).length;
   openModal(L('Isolation Barriers','Barreras de aislamiento'), `
@@ -5287,7 +5323,7 @@ function openIsolationModal(){
         <div class="kv" style="flex:1"><label>${L('Area','Área')}${a.id==='lv'?' · '+L('default','por defecto'):''} — ${blockCount(a.id)} ${L('blocks','bloques')}</label>
           <input type="text" data-area-name="${i}" value="${esc(a.name)}"></div>
         <div class="kv"><label>${L('Color','Color')}</label>
-          <input type="color" data-area-color="${i}" value="${esc(a.color || defHex(a))}"></div>
+          <input type="color" data-area-color="${i}" value="${esc(a.color || defHex(a, i))}"></div>
         <button data-area-reset="${i}" title="${L('Back to the default color','Volver al color por defecto')}" style="align-self:flex-end">${L('Default','Por defecto')}</button>
         ${a.id==='lv' ? '' : `<button class="danger" data-area-del="${i}" style="align-self:flex-end" title="${L('Delete this area — its blocks go back to the default area','Eliminar esta área — sus bloques vuelven al área por defecto')}">✕</button>`}
       </div>`).join('');
@@ -6049,6 +6085,7 @@ function loadSession(s){
   S.sel = null; S.traceNet = null; S.link = null;
   S.areas = Array.isArray(s.areas) && s.areas.length ? s.areas : defaultAreas();
   migrateNodeAreas();   // pre-area sessions carried n.hvSide overrides instead
+  healAllMixedPortSides();   // stale cosmetic sides must not fabricate crossings
   applyAreaColors();
   assignRefDes();       // legacy sessions get their U#/EXT# designators here
   reconcileIcNames();   // the part card names the block, not the other way round
