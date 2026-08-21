@@ -26,6 +26,7 @@ const S = {
   portalSeq: {}, // {[gid]: {in:[portalKey,...], out:[portalKey,...]}} — vertical order of the FROM/TO boxes, written by auto-layout (barycentric)
   portalAnchor: {}, // {[gid]: {minY,maxY}} — vertical anchor the FROM/TO columns are centred on, frozen so block drags never tow them
   ungroupedHvFlip: undefined, // LV|HV flip of the implicit UNGROUPED block (real groups keep g.hvFlip on themselves)
+  areaOrderSet: true,  // whether this document has stated its isolation-area ORDER (asked once, on importing an older session)
   project: {}, // Project Options (PDF title block + page setup): {client, designer, date, initials, pageSize:'A3'|'A4', orientation:'landscape'|'portrait'}
   openGroup: null, // null = top-level view; groupId = drilled into that group (phase c)
   view: { tx:60, ty:40, k:1 },
@@ -1378,26 +1379,20 @@ function groupSide(groupId){
   const areas = new Set(g.members.flatMap(nodeAreas));   // a mixed member mixes its group
   return areas.size===1 ? [...areas][0] : 'barrier';
 }
-// The dominant area of a mixed group — its "home" half; ties break by the
-// area's position in S.areas, so the LV area wins them.
-function groupBaseArea(groupId){
+// The areas a group holds, in the PROJECT's own order — the same rule a mixed
+// block follows, so a group and its members always read the same way round
+// (and the half that gets the wash is never the colorless one).
+function groupAreasOf(groupId){
   const g = groupsWithUngrouped().find(x=>x.id===groupId);
-  if (!g || !g.members.length) return 'lv';
-  const count = new Map();
-  for (const m of g.members) for (const a of nodeAreas(m)) count.set(a, (count.get(a)||0)+1);
-  let best = null, bestN = -1;
-  for (const a of areasOf()) if (count.has(a.id) && count.get(a.id) > bestN){ best = a.id; bestN = count.get(a.id); }
-  return best || 'lv';
-}
-// The first non-base area present in a mixed group — colors its other half.
-function groupOtherArea(groupId){
-  const g = groupsWithUngrouped().find(x=>x.id===groupId);
-  const base = groupBaseArea(groupId);
-  if (!g) return base;
+  if (!g || !g.members.length) return ['lv'];
   const present = new Set(g.members.flatMap(nodeAreas));
-  for (const a of areasOf()) if (a.id!==base && present.has(a.id)) return a.id;
-  return base;
+  const ordered = areasOf().filter(a=>present.has(a.id)).map(a=>a.id);
+  return ordered.length ? ordered : ['lv'];
 }
+// A mixed group's home half: the earliest area it holds.
+function groupBaseArea(groupId){ return groupAreasOf(groupId)[0]; }
+// …and the next one, which colors the other half.
+function groupOtherArea(groupId){ const a = groupAreasOf(groupId); return a[1] || a[0]; }
 function safeId(s){ return String(s).replace(/[^A-Za-z0-9_-]/g,'_'); }
 /* ---------- area colors (Isolation Barriers settings) ----------
    Every area owns a color: a custom one from the settings, or a default —
@@ -5303,6 +5298,12 @@ function openImportModal(){
         loadFromContract(inp, con, groups);
       } else {
         loadSession(tolerantParse($('impSess').value));
+        if (needsAreaOrder()){
+          // straight from the import dialog into the one question the file
+          // cannot answer for itself
+          openAreaOrderModal(()=>toast(L('Imported','Importado')));
+          return;
+        }
       }
       closeModal(); toast(L('Imported','Importado'));
     }catch(err){ toast(L('Import failed: ','Fallo al importar: ')+err.message); }
@@ -5335,6 +5336,40 @@ function projectOf(){
            pageSize: p.pageSize==='A4' ? 'A4' : 'A3',
            orientation: p.orientation==='portrait' ? 'portrait' : 'landscape' };
 }
+/* Asked ONCE per document, right after importing a session that predates the
+   ordered areas: the order decides every area's color and which half of a
+   mixed block each one owns, so it must not be guessed. The answer rides the
+   session from then on (areaOrderSet), and no import ever asks again. */
+function openAreaOrderModal(after){
+  const work = areasOf().map(a=>({ id:a.id, name:a.name }));
+  const done = ()=>{ S.areas = work; S.areaOrderSet = true; normalizeAllNodeAreaOrders();
+    applyAreaColors(); closeModal(); render(); if (after) after(); };
+  openModal(L('Isolation area order','Orden de las áreas de aislamiento'), `
+    <p class="hint" style="margin-top:0">${L('This document does not say yet in which ORDER its isolation areas go. The position fixes each area\'s color and which half of a mixed block it owns, so put them in the order you think of them — normally LV first, HV second.',
+      'Este documento aún no dice en qué ORDEN van sus áreas de aislamiento. La posición fija el color de cada área y qué mitad de un bloque mixto le corresponde, así que ponlas en el orden en que las piensas — normalmente LV primero, HV segundo.')}</p>
+    <div id="aoRows"></div>
+    <p class="hint">${L('Saved with the document — you will not be asked again, here or on any later import.',
+      'Se guarda con el documento — no se te volverá a preguntar, ni aquí ni en importaciones posteriores.')}</p>
+  `, `<button class="primary" id="mOk">${L('Use this order','Usar este orden')}</button>`);
+  const rows = ()=>{
+    $('aoRows').innerHTML = work.map((a,i)=>`
+      <div class="row isoarea" style="align-items:center;margin-bottom:8px">
+        <span class="isoswatch" style="background:${AREA_CHAIN[i % AREA_CHAIN.length] || 'var(--epoxy-edge)'}"></span>
+        <div style="flex:1;font-family:var(--mono);font-size:12.5px">${i+1}. ${esc(a.name)}</div>
+        <button data-ao-up="${i}" ${i===0?'disabled':''} style="padding:5px 8px">▲</button>
+        <button data-ao-down="${i}" ${i===work.length-1?'disabled':''} style="padding:5px 8px">▼</button>
+      </div>`).join('');
+    const swap=(i,j)=>{ if (j<0||j>=work.length) return; const t=work[i]; work[i]=work[j]; work[j]=t; rows(); };
+    document.querySelectorAll('[data-ao-up]').forEach(b=>b.onclick=()=>swap(+b.dataset.aoUp, +b.dataset.aoUp-1));
+    document.querySelectorAll('[data-ao-down]').forEach(b=>b.onclick=()=>swap(+b.dataset.aoDown, +b.dataset.aoDown+1));
+  };
+  rows();
+  $('mOk').onclick = done;
+}
+// Only worth asking when there is a choice to make: two or more areas whose
+// order this document has never stated.
+function needsAreaOrder(){ return !S.areaOrderSet && areasOf().length > 1; }
+
 /* The project's isolation areas — create, rename, recolor, delete. The
    default LV area can never be deleted (a project always keeps at least one
    area); deleting any other area sends its blocks back to the default one.
@@ -5353,19 +5388,24 @@ function openIsolationModal(){
       'Las áreas de aislamiento de este proyecto. Cada bloque está asignado a exactamente un área (en su propia ficha); el color y la etiqueta del bloque siguen su área, y las conexiones entre bloques de áreas distintas cruzan una barrera de aislamiento — tienen sus propias cajas TO/FROM. Los niveles LV/HV de las redes son independientes de todo esto.')}</p>
     <div id="isoRows"></div>
     <div class="btnrow" style="margin-top:2px"><button id="isoAdd">+ ${L('Add area','Añadir área')}</button></div>
-    <p class="hint">${L('Names are saved with the session; colors are fixed by each area\'s position in the list, so the same areas always look the same across projects. The default area can be renamed but never deleted; deleting another area moves its blocks back to the default one.',
-      'Los nombres se guardan con la sesión; los colores son fijos según la posición de cada área en la lista, así que las mismas áreas se ven igual en todos los proyectos. El área por defecto se puede renombrar pero nunca eliminar; al eliminar otra área sus bloques vuelven al área por defecto.')}</p>
+    <p class="hint">${L('Order them with ▲▼: the position fixes the color — the first area is the plain one, the second the HV red, then the fixed chain. The first area can be renamed but never deleted; deleting another moves its blocks back to it.',
+      'Ordénalas con ▲▼: la posición fija el color — la primera área es la neutra, la segunda el rojo HV, y luego la cadena fija. La primera área se puede renombrar pero nunca eliminar; al eliminar otra sus bloques vuelven a ella.')}</p>
   `, `<button id="mCancel">${L('Cancel','Cancelar')}</button><button class="primary" id="mOk">${L('Save','Guardar')}</button>`);
   const renderRows = ()=>{
     $('isoRows').innerHTML = work.map((a,i)=>`
       <div class="row isoarea" style="align-items:flex-end;margin-bottom:8px">
-        <div class="kv" style="flex:1"><label>${L('Area','Área')}${a.id==='lv'?' · '+L('default','por defecto'):''} — ${blockCount(a.id)} ${L('blocks','bloques')}</label>
+        <div class="kv" style="flex:1"><label>${i+1}. ${L('Area','Área')}${i===0?' · '+L('default','por defecto'):''} — ${blockCount(a.id)} ${L('blocks','bloques')}</label>
           <input type="text" data-area-name="${i}" value="${esc(a.name)}"></div>
         <div class="kv"><label>${L('Color','Color')}</label>
           <span class="isoswatch" data-area-color="${i}" style="background:${swatch(i)}"
             title="${L('Fixed by the area\'s position — the same in every project','Fijo por la posición del área — el mismo en cualquier proyecto')}"></span></div>
-        ${a.id==='lv' ? '' : `<button class="danger" data-area-del="${i}" style="align-self:flex-end" title="${L('Delete this area — its blocks go back to the default area','Eliminar esta área — sus bloques vuelven al área por defecto')}">✕</button>`}
+        <button data-area-up="${i}" ${i===0?'disabled':''} style="align-self:flex-end;padding:5px 8px" title="${L('Move up — the order fixes each area\'s color','Subir — el orden fija el color de cada área')}">▲</button>
+        <button data-area-down="${i}" ${i===work.length-1?'disabled':''} style="align-self:flex-end;padding:5px 8px" title="${L('Move down — the order fixes each area\'s color','Bajar — el orden fija el color de cada área')}">▼</button>
+        ${i===0 ? '' : `<button class="danger" data-area-del="${i}" style="align-self:flex-end" title="${L('Delete this area — its blocks go back to the first area','Eliminar esta área — sus bloques vuelven a la primera área')}">✕</button>`}
       </div>`).join('');
+    const swap=(i,j)=>{ if (j<0||j>=work.length) return; const t=work[i]; work[i]=work[j]; work[j]=t; renderRows(); };
+    document.querySelectorAll('[data-area-up]').forEach(b=>b.onclick=()=>swap(+b.dataset.areaUp, +b.dataset.areaUp-1));
+    document.querySelectorAll('[data-area-down]').forEach(b=>b.onclick=()=>swap(+b.dataset.areaDown, +b.dataset.areaDown+1));
     document.querySelectorAll('[data-area-name]').forEach(inp=>inp.oninput=()=>{ work[+inp.dataset.areaName].name = inp.value; });
     document.querySelectorAll('[data-area-del]').forEach(b=>b.onclick=()=>{
       work.splice(+b.dataset.areaDel, 1);
@@ -5383,11 +5423,13 @@ function openIsolationModal(){
     commit();
     for (const w of work) w.name = (w.name||'').trim() || String(w.id).toUpperCase();
     const keep = new Set(work.map(a=>a.id));
+    const home = work[0].id;
     for (const n of S.nodes){
-      if (n.area && !keep.has(n.area)) delete n.area;          // deleted area → default
+      if (!keep.has(n.area || 'lv')) n.area = home==='lv' ? undefined : home;   // deleted area → the first one
       if (n.area2 && (!keep.has(n.area2) || n.area2 === (n.area||'lv'))){ delete n.area2; delete n.hvFlip; }
     }
     S.areas = work;
+    S.areaOrderSet = true;
     normalizeAllNodeAreaOrders();
     applyAreaColors();
     closeModal(); render();
@@ -6028,6 +6070,7 @@ function buildSessionJSON(){
     ungroupedHvFlip:S.ungroupedHvFlip,
     project:{ ...S.project },
     areas:JSON.parse(JSON.stringify(S.areas||defaultAreas())),
+    areaOrderSet:!!S.areaOrderSet,
     openGroup:S.openGroup,
     // Pan/zoom rides along so a re-imported session opens on the exact same
     // framing. Deliberately NOT read back by restoreState: undoing an edit
@@ -6118,6 +6161,7 @@ function loadSession(s){
   // Nothing of the outgoing document may leak into the restored one.
   S.sel = null; S.traceNet = null; S.link = null;
   S.areas = Array.isArray(s.areas) && s.areas.length ? s.areas : defaultAreas();
+  S.areaOrderSet = !!s.areaOrderSet;
   migrateNodeAreas();   // pre-area sessions carried n.hvSide overrides instead
   migrateAreaColors();  // …and a per-area custom color, derived from the chain now
   normalizeAllNodeAreaOrders();   // halves follow the project's area order
@@ -6143,6 +6187,7 @@ function loadFromContract(input, contract, groups){
   S.nodes=g.nodes; S.edges=g.edges; S.groups=g.groups;
   S.groupPos={}; S.groupEdgeRoutes={}; S.groupPortSides={}; S.groupPortOrder={}; S.groupEdgeLanes={}; S.portalOffsets={}; S.portalOrder={}; S.portalSeq={}; S.portalAnchor={}; S.ungroupedHvFlip=undefined; S.project={}; S.openGroup=null; S.sel=null;
   S.areas = defaultAreas();
+  S.areaOrderSet = true;   // LV first, HV second by construction — nothing to ask
   applyAreaColors();
   assignRefDes();
   reconcileIcNames();   // a hand-made JSON can carry cards too — they name their blocks
