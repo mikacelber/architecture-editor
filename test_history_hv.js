@@ -9,8 +9,8 @@ window.__T={get S(){return S;},get HIST(){return HIST;},loadFromContract,render,
  groupBlockRect,groupPortAnchor,groupEdgeRouteKey,groupEdgePts,laneOf,setGroupEdgeRoute,groupEdgeRouteOf,
  pointOutOfBlocks,groupPortRowsFor,groupsWithUngrouped,groupSide,groupPortOf,setGroupPortSide,
  moveGroupPortToRow,commit,commitGesture,undo,redo,resetGroupPortLayout,snapshotState,buildSessionJSON,groupPosOf,_routeCache,nodeById,
- openGroupView,closeGroupView,nodeArea,nodeLevel,edgeArea,nodeSide,isHvNet,defaultAreas,areaCustom,applyAreaColors,
- loadSession};`);
+ openGroupView,closeGroupView,nodeArea,edgeDomOf,domMarker,areaName,areasOf,isHvNet,defaultAreas,areaCustom,
+ applyAreaColors,loadSession,drillSheet,portRowLabel,groupsWithUngrouped,groupBaseArea,groupOtherArea};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -64,33 +64,44 @@ const key=e=>T.groupEdgeRouteKey(e.source,e.target);
   delete S.groupEdgeRoutes[key(e)]; T._routeCache.clear();
 }
 
-/* ============ 2. HV/LV port pinning on barrier blocks ============ */
+/* ============ 2. area port pinning on mixed groups ============ */
 {
+  // Areas are explicit per-block configuration now: put the fixture's HV-side
+  // blocks into the HV area, exactly as a user would from each block's card.
+  const hvIds = S.nodes.filter(n=>/^EXT:HV flyback transformer$/.test(n.id) ||
+    T.groupsWithUngrouped().find(g=>g.id==='HV_OUTPUT_STAGE').members.includes(n.id)).map(n=>n.id);
+  hvIds.forEach(id=>{ T.nodeById(id).area='hv'; });
+  T.render();
+  check('assigned areas read back', T.nodeArea('EXT:HV flyback transformer')==='hv' && T.nodeArea('MSPM0G3507')==='lv');
   const barrierGroups=T.visibleGroups().filter(g=>T.groupSide(g.id)==='barrier');
-  check('fixture has barrier groups to test ('+barrierGroups.map(g=>g.id).join(', ')+')', barrierGroups.length>0);
+  check('a group mixing areas reads as a mixed (barrier) group ('+barrierGroups.map(g=>g.id).join(', ')+')',
+    barrierGroups.some(g=>g.id==='ISOLATION_BARRIER'));
+  check('a uniform-HV group reads as an HV group', T.groupSide('HV_OUTPUT_STAGE')==='hv');
+  check('mixed groups know their halves: base LV, other HV',
+    T.groupBaseArea('ISOLATION_BARRIER')==='lv' && T.groupOtherArea('ISOLATION_BARRIER')==='hv');
   let sideOk=true, mixed=false;
   for(const g of barrierGroups){
     const rows=T.groupPortRowsFor(g.id);
-    if (rows.some(r=>r.hv) && rows.some(r=>!r.hv)) mixed=true;
+    if (rows.some(r=>r.xhalf) && rows.some(r=>!r.xhalf)) mixed=true;
     for(const r of rows){
-      if (r.hv && r.side!=='right') sideOk=false;
-      if (!r.hv && r.side!=='left') sideOk=false;
+      if (r.xhalf && r.side!=='right') sideOk=false;
+      if (!r.xhalf && r.side!=='left') sideOk=false;
       if (!r.pinned) sideOk=false;
     }
   }
-  check('a barrier group carries both HV and LV connections (test is meaningful)', mixed);
-  check('HV ports sit on the HV (right) half, LV ports on the LV (left) half, all pinned', sideOk);
+  check('a mixed group carries connections of both its areas (test is meaningful)', mixed);
+  check('other-area ports sit on the right half, base-area ports on the left, all pinned', sideOk);
 
-  // a stored override cannot cross the domain
-  const g=barrierGroups.find(x=>T.groupPortRowsFor(x.id).some(r=>r.hv));
-  const hvRow=T.groupPortRowsFor(g.id).find(r=>r.hv);
+  // a stored override cannot cross into the other area's half
+  const g=barrierGroups.find(x=>T.groupPortRowsFor(x.id).some(r=>r.xhalf));
+  const hvRow=T.groupPortRowsFor(g.id).find(r=>r.xhalf);
   T.setGroupPortSide(g.id, hvRow.src, hvRow.tgt, 'left', hvRow.dom);   // simulate a forbidden drag having been stored
   T.render();
   const after=T.groupPortOf(g.id, hvRow.src, hvRow.tgt, hvRow.dir, hvRow.dom);
-  check('even a stored override cannot move an HV port to the LV half', after.side==='right');
-  // vertical reordering still allowed on barrier blocks \u2014 within the port's
-  // own column (rows are per-side now). Search every barrier group for a
-  // column with 2+ ports; a 1-port column correctly has nothing to reorder.
+  check('even a stored override cannot move a port onto the wrong half', after.side==='right');
+  // vertical reordering still allowed on mixed blocks \u2014 within the port's
+  // own column (rows are per-side). Search every mixed group for a column
+  // with 2+ ports; a 1-port column correctly has nothing to reorder.
   let reorderTarget=null;
   for (const bg of barrierGroups){
     const rs=T.groupPortRowsFor(bg.id);
@@ -102,49 +113,61 @@ const key=e=>T.groupEdgeRouteKey(e.source,e.target);
   }
   if (reorderTarget){
     const mv=reorderTarget.col[reorderTarget.col.length-1];
-    check('vertical reordering still works on a barrier block (within its column)',
-      T.moveGroupPortToRow(reorderTarget.gid, mv.src+'\u2192'+mv.tgt, 0)===true &&
+    check('vertical reordering still works on a mixed block (within its column)',
+      T.moveGroupPortToRow(reorderTarget.gid, T.groupEdgeRouteKey(mv.src, mv.tgt, mv.dom), 0)===true &&
       (T.render(), (x=>!!x && x.src===mv.src && x.tgt===mv.tgt)(
         T.groupPortRowsFor(reorderTarget.gid).find(r=>r.side===mv.side && r.row===0))));
     T.resetGroupPortLayout(reorderTarget.gid); T.render();
   } else {
     const rows1=T.groupPortRowsFor(g.id);
     const solo=rows1[rows1.length-1];
-    check('a 1-port barrier column correctly has nothing to reorder',
-      T.moveGroupPortToRow(g.id, solo.src+'\u2192'+solo.tgt, 0)===false);
+    check('a 1-port column correctly has nothing to reorder',
+      T.moveGroupPortToRow(g.id, T.groupEdgeRouteKey(solo.src, solo.tgt, solo.dom), 0)===false);
   }
-  // non-barrier blocks still flip freely
+  // uniform-area blocks still flip freely (whatever their area)
   const lvG=T.visibleGroups().find(x=>T.groupSide(x.id)!=='barrier' && T.groupPortRowsFor(x.id).length);
   const r0=T.groupPortRowsFor(lvG.id)[0];
   const before=r0.side;
-  T.setGroupPortSide(lvG.id, r0.src, r0.tgt, before==='left'?'right':'left'); T.render();
-  check('non-barrier blocks still allow side flips',
-    T.groupPortOf(lvG.id, r0.src, r0.tgt, r0.dir).side!==before);
+  T.setGroupPortSide(lvG.id, r0.src, r0.tgt, before==='left'?'right':'left', r0.dom); T.render();
+  check('uniform-area blocks still allow side flips',
+    T.groupPortOf(lvG.id, r0.src, r0.tgt, r0.dir, r0.dom).side!==before);
   T.resetGroupPortLayout(lvG.id); T.resetGroupPortLayout(g.id); T.render();
 
-  // compactness: the two halves are parallel COLUMNS — rows numbered 0..n-1
-  // independently per side, so an LV and an HV port share the same line
+  // compactness: the two halves are parallel COLUMNS \u2014 rows numbered 0..n-1
+  // independently per side, so ports of both areas share the same line
   const rowsC=T.groupPortRowsFor(g.id);
   const lC=rowsC.filter(r=>r.side==='left'), rC=rowsC.filter(r=>r.side!=='left');
   const seq=a=>a.map(r=>r.row).sort((x,y)=>x-y).every((v,i)=>v===i);
-  check('barrier halves number their rows independently (parallel columns)', seq(lC)&&seq(rC));
-  check('an LV and an HV port share the first line (compact in Y)',
+  check('mixed halves number their rows independently (parallel columns)', seq(lC)&&seq(rC));
+  check('a base-area and an other-area port share the first line (compact in Y)',
     lC.some(r=>r.row===0) && rC.some(r=>r.row===0));
 
-  // the LV|HV flip swaps the halves: HV ports move to the LEFT, still pinned
+  // a crossing connection is labeled with BOTH area names, generically
+  check('cross-area port labels carry the area names',
+    rowsC.some(r=>/ · (LV → HV|HV → LV)$/.test(T.portRowLabel(r, new Map()))));
+
+  // the halves flip swaps the sides: other-area ports move LEFT, still pinned
   const grp=S.groups.find(x=>x.id===g.id);
   grp.hvFlip=true; T.render();
-  check('flipping the barrier moves HV ports to the left half (still pinned)',
-    T.groupPortRowsFor(g.id).every(r=>r.pinned && r.side===(r.hv?'left':'right')));
+  check('flipping a mixed block moves other-area ports to the left half (still pinned)',
+    T.groupPortRowsFor(g.id).every(r=>r.pinned && r.side===(r.xhalf?'left':'right')));
   const W=T.groupBlockRect(g.id).w;
-  check('the flipped HV wash paints the LEFT half',
+  check('the flipped wash paints the LEFT half',
     window.document.getElementById('nodesG').innerHTML.includes('x="0" y="0" width="'+(W/2)+'"'));
   S.sel={type:'group', id:g.id}; T.render();
-  check('the barrier group inspector offers the LV|HV flip switch', !!window.document.getElementById('gFlip'));
+  check('the mixed group inspector offers a GENERIC halves switch', !!window.document.getElementById('gFlip') &&
+    !window.document.getElementById('insBody').innerHTML.includes('LV | HV'));
   S.sel=null;
   delete grp.hvFlip; T.render();
-  check('unflipped default restored: HV ports back on the right half',
-    T.groupPortRowsFor(g.id).every(r=>r.side===(r.hv?'right':'left')));
+  check('unflipped default restored: other-area ports back on the right half',
+    T.groupPortRowsFor(g.id).every(r=>r.side===(r.xhalf?'right':'left')));
+  // both half tags show the AREA NAMES on the block itself
+  check('the mixed block wears both area names as its half tags',
+    (h=>/>HV</.test(h) && />LV</.test(h))([...window.document.querySelectorAll('#nodesG g[data-nid]')]
+      .find(x=>x.dataset.nid===g.id).innerHTML));
+  // reset for the sections below
+  hvIds.forEach(id=>{ delete T.nodeById(id).area; });
+  T.render();
 }
 
 /* ============ 3. undo / redo ============ */
@@ -204,10 +227,11 @@ const key=e=>T.groupEdgeRouteKey(e.source,e.target);
   T.closeGroupView();
 }
 
-/* ============ AREAS (color) vs LEVEL (tag): the isolation topology ============ */
+/* ============ AREAS are explicit per block; net LEVELS are independent ============ */
 {
   const doc=window.document;
-  // A purpose-built chain: LVSRC → BARRIER → HVA (hv net) → HVB (lv-level net!)
+  // Two groups: A (LV side) and B (the HV side once assigned) with a crossing
+  // in between — BARRIER drives HVA over an HV-level net.
   T.loadFromContract(
     { id:'iso', title:'iso', description:'', ic_components:[
       { ic_part_number:'LVSRC', ic_type:'a', description:'', manufacturer:'', DatasheetUrl:'', selection_rationale:'' },
@@ -219,63 +243,109 @@ const key=e=>T.groupEdgeRouteKey(e.source,e.target);
       { name:'HV_OUT', type:'HIGH_VOLTAGE_PATH', source:'BARRIER', consumers:['HVA'], description:'' },
       { name:'HV_LOCAL_CTL', type:'CONTROL_SIGNAL', source:'HVA', consumers:['HVB'], description:'' }],
       external_blocks:[] },
-    []);
-  check('the barrier block straddles: it touches both levels',
-    T.nodeArea('BARRIER')==='barrier');
-  check('the block fed over the HV net is in the HV area', T.nodeArea('HVA')==='hv');
-  check('THE CHAIN RULE: a block reached only over an LV-LEVEL net from the HV side is STILL HV area (color)',
-    T.nodeArea('HVB')==='hv');
-  check('…but its LEVEL tag says LV — low voltage with respect to GND_HV',
-    T.nodeLevel('HVB')==='lv' && T.nodeLevel('HVA')==='hv');
-  check('the LV side stays LV in area and level',
-    T.nodeArea('LVSRC')==='lv' && T.nodeLevel('LVSRC')==='lv');
-  check('the LV-level net between two HV-area blocks lives in the HV area (no new TO/FROM material)',
-    T.edgeArea(S.edges.find(e=>e.source==='HVA'&&e.target==='HVB'))==='hv');
-  // the rendered block: red (area) with an LV tag (level). No groups in this
-  // contract, so the blocks live in the implicit UNGROUPED drill view.
-  T.openGroupView('UNGROUPED');
-  const el=[...doc.querySelectorAll('#nodesG g[data-nid]')].find(x=>x.dataset.nid==='HVB');
-  check('the sheet draws HVB with the HV-area stroke and an LV corner tag',
-    el.innerHTML.includes('var(--area-hv)') && />LV</.test(el.innerHTML) && !/>HV</.test(el.innerHTML));
-  const ela=[...doc.querySelectorAll('#nodesG g[data-nid]')].find(x=>x.dataset.nid==='HVA');
-  check('…and HVA with the HV-area stroke and an HV tag (true HV level)',
-    ela.innerHTML.includes('var(--area-hv)') && />HV</.test(ela.innerHTML));
-  // re-levelling HV_LOCAL_CTL up and down never changes anyone's color
-  const e=S.edges.find(x=>x.source==='HVA'&&x.target==='HVB');
-  e.nets[0].hv=true; T.render();
-  check('raising a net\'s level never changes any block\'s area', T.nodeArea('HVB')==='hv');
-  e.nets[0].hv=false; T.render();
-  check('…nor does lowering it back', T.nodeArea('HVB')==='hv' && T.nodeLevel('HVB')==='lv');
+    [ { id:'A', title:'A', description:'', members:['LVSRC','BARRIER'] },
+      { id:'B', title:'B', description:'', members:['HVA','HVB'] } ]);
+  check('with nothing assigned every block sits in the default LV area',
+    ['LVSRC','BARRIER','HVA','HVB'].every(id=>T.nodeArea(id)==='lv'));
+  check('…even though an HV-LEVEL net runs between them (levels are independent)',
+    T.isHvNet(S.edges.find(e=>e.source==='BARRIER'&&e.target==='HVA').nets[0]));
+  // the user assigns the HV side explicitly, block by block
+  T.nodeById('HVA').area='hv'; T.nodeById('HVB').area='hv'; T.render();
+  check('assigned blocks read back their area', T.nodeArea('HVA')==='hv' && T.nodeArea('HVB')==='hv');
+  check('a crossing edge carries both areas as its dom',
+    T.edgeDomOf(S.edges.find(e=>e.source==='BARRIER'&&e.target==='HVA'))==='lv>hv');
+  check('a same-area edge inside the HV area carries that area',
+    T.edgeDomOf(S.edges.find(e=>e.source==='HVA'&&e.target==='HVB'))==='hv');
+  check('LV-side edges keep the plain dom (old sessions still match)',
+    T.edgeDomOf(S.edges.find(e=>e.source==='LVSRC'&&e.target==='BARRIER'))==='');
+  // the block visuals: wash + AREA NAME tag (no LV/HV level tags on blocks)
+  T.openGroupView('B');
+  const elA=[...doc.querySelectorAll('#nodesG g[data-nid]')].find(x=>x.dataset.nid==='HVA');
+  check('an HV-area block wears the area wash and its AREA NAME as the tag',
+    elA.innerHTML.includes('var(--area-hv)') && />HV</.test(elA.innerHTML));
+  // THE BUG: re-levelling a net that rides a FROM/TO on the HV side must not
+  // orphan it — portals split by DOM (areas), never by net level.
+  const inPortal=()=>T.drillSheet().portals.find(p=>p.dir==='in');
+  const p0=inPortal();
+  check('the crossing arrives through one FROM portal', !!p0 && p0.unders.length===1);
+  check('…whose label names both areas', T.domMarker(p0.item.dom)===' · LV → HV');
+  const hvNet=S.edges.find(e=>e.source==='BARRIER'&&e.target==='HVA').nets[0];
+  hvNet.hv=false; T.render();
+  check('lowering the net to LV keeps the wire in the same FROM portal (nothing goes gray or vanishes)',
+    inPortal().unders.length===1 && T.drillSheet().specs.some(s=>s.e.source==='BARRIER'&&s.e.target==='HVA'));
+  check('…and moves no block between areas', T.nodeArea('HVA')==='hv' && T.nodeArea('BARRIER')==='lv');
+  check('…and the group still derives exactly one connection for the crossing',
+    T.computeGroupEdges().filter(e=>e.source==='A'&&e.target==='B').length===1);
+  hvNet.hv=true; T.render();
+  check('raising it back is just as quiet', inPortal().unders.length===1);
   T.closeGroupView();
+  // group blocks speak their members' area
+  check('group B, uniform HV, reads as an HV group; A stays LV',
+    T.groupSide('B')==='hv' && T.groupSide('A')==='lv');
 }
 
-/* ============ Isolation Barrier settings: areas + editable colors ============ */
+/* ============ Isolation Barriers settings: create / rename / recolor / delete ============ */
 {
   const doc=window.document;
   check('the project starts with the two default areas, LV and HV',
     S.areas.map(a=>a.id).join(',')==='lv,hv' && S.areas.every(a=>a.color===''));
   S.sel=null; T.render();
   const btn=doc.getElementById('btnIsoBar');
-  check('an "Isolation Barrier" button sits next to Project Options', !!btn &&
-    !!doc.getElementById('btnProjOpts'));
+  check('an "Isolation Barriers" button sits next to Project Options', !!btn &&
+    !!doc.getElementById('btnProjOpts') && btn.textContent==='Isolation Barriers');
   btn.onclick();
-  check('the popup lists every area with an editable color',
-    doc.getElementById('modalTitle').textContent==='Isolation Barrier' &&
-    doc.querySelectorAll('[data-area-color]').length===2);
+  check('the popup lists every area with an editable name and color',
+    doc.getElementById('modalTitle').textContent==='Isolation Barriers' &&
+    doc.querySelectorAll('[data-area-color]').length===2 &&
+    doc.querySelectorAll('[data-area-name]').length===2);
+  check('the default LV area offers no delete button; the others do',
+    doc.querySelectorAll('[data-area-del]').length===1);
+  // rename HV and recolor it, then add a brand-new area — one Save
+  const nameInp=doc.querySelector('[data-area-name="1"]');
+  nameInp.value='HIGH SIDE'; nameInp.oninput();
   const hvInput=doc.querySelector('[data-area-color="1"]');
-  hvInput.value='#123456';
+  hvInput.value='#123456'; hvInput.oninput();
+  doc.getElementById('isoAdd').onclick();
+  check('adding an area appends an editable row', doc.querySelectorAll('[data-area-name]').length===3);
+  const newName=doc.querySelector('[data-area-name="2"]');
+  newName.value='BATTERY'; newName.oninput();
   doc.getElementById('mOk').onclick();
-  check('a saved color lands on the HV area and repaints via the CSS variable',
+  check('the save lands: renamed HV, new BATTERY area, custom color on the CSS variable',
+    S.areas.length===3 && S.areas[1].name==='HIGH SIDE' && S.areas[2].name==='BATTERY' &&
     S.areas[1].color==='#123456' &&
     doc.documentElement.style.getPropertyValue('--area-hv')==='#123456');
-  check('custom area colors ride the session',
-    (()=>{ const sess=JSON.parse(JSON.stringify(T.buildSessionJSON()));
-      return sess.areas && sess.areas[1].color==='#123456'; })());
+  check('areaName follows the rename everywhere', T.areaName('hv')==='HIGH SIDE');
+  // a block assigned to the new area wears its name and its palette color
+  T.nodeById('HVB').area=S.areas[2].id; T.render(); T.openGroupView('B');
+  const el=[...doc.querySelectorAll('#nodesG g[data-nid]')].find(x=>x.dataset.nid==='HVB');
+  check('a block in the new area wears its NAME as the corner tag',
+    />BATTERY</.test(el.innerHTML) && el.innerHTML.includes('var(--area-'+S.areas[2].id+')'));
+  check('the new area got a default palette color as a CSS variable',
+    !!doc.documentElement.style.getPropertyValue('--area-'+S.areas[2].id));
+  check('a renamed area names the block tag too',
+    (h=>/>HIGH SIDE</.test(h))([...doc.querySelectorAll('#nodesG g[data-nid]')]
+      .find(x=>x.dataset.nid==='HVA').innerHTML));
+  T.closeGroupView();
+  // everything rides the session
   T.loadSession(JSON.parse(JSON.stringify(T.buildSessionJSON())));
-  check('…and come back on import', S.areas[1].color==='#123456' &&
+  check('areas (names, colors) and block assignments come back on import',
+    S.areas.length===3 && S.areas[1].name==='HIGH SIDE' && S.areas[1].color==='#123456' &&
+    T.nodeArea('HVB')===S.areas[2].id &&
     doc.documentElement.style.getPropertyValue('--area-hv')==='#123456');
+  // deleting an area sends its blocks back to the default area
+  S.sel=null; T.render();
+  doc.getElementById('btnIsoBar').onclick();
+  const del=doc.querySelector('[data-area-del="2"]');
+  check('the added area can be deleted', !!del);
+  del.onclick();
+  doc.getElementById('mOk').onclick();
+  check('deleting the area reassigns its blocks to the default LV area',
+    S.areas.length===2 && T.nodeArea('HVB')==='lv');
   T.undo();
-  check('the color edit is one undoable step', S.areas[1].color==='');
+  check('the deletion is one undoable step', S.areas.length===3 && T.nodeArea('HVB')===S.areas[2].id);
+  T.undo();
+  check('…and the create/rename/recolor save is another', S.areas.length===2 && S.areas[1].name==='HV' &&
+    S.areas[1].color==='');
 }
 
 console.log('\n'+pass+' passed, '+fail+' failed');
