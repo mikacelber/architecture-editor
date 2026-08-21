@@ -1221,6 +1221,10 @@ function edgeCategory(e){
   return 'other';
 }
 const EDGE_STROKE_W = 2.2, GROUP_EDGE_STROKE_W = 2.6;
+// How a net IN ERROR draws, wherever it appears: warning yellow, noticeably
+// thicker than its neighbours and finely dotted, with the matching arrowhead.
+// It overrides the net's own category styling — an error outranks taxonomy.
+const WARN_DASH = '2 2.4', WARN_MARKER = 'arrowWarn', WARN_EXTRA_W = 1.6;
 
 /* ------------------------------------------------------------------
    ISOLATION AREAS — every block carries an explicit `n.area`, an id in
@@ -2723,10 +2727,10 @@ function renderDrillDown(){
     const d = ptsPathD(pts);
     return `<g class="edge${(trace&&!traced&&!selected)||spotDimEdge(e.id)?' dim':''}" data-eid="${esc(e.id)}">
       <path d="${d}" fill="none" stroke="transparent" stroke-width="14" style="cursor:pointer"/>
-      <path d="${d}" fill="none" stroke="${color}" stroke-width="${w}"
-        stroke-dasharray="${selected?'none':(style.dash||'none')}"
+      <path d="${d}" fill="none" stroke="${color}" stroke-width="${cross?w+WARN_EXTRA_W:w}"
+        stroke-dasharray="${cross?WARN_DASH:(selected?'none':(style.dash||'none'))}"
         ${(selected||traced)?'filter="drop-shadow(0 0 3px var(--probe))"':''}
-        marker-end="url(#${style.marker})" style="pointer-events:none"/>
+        marker-end="url(#${cross?WARN_MARKER:style.marker})" style="pointer-events:none"/>
       ${cross?`<title>${esc(crossAreaMsg())}</title>`:''}
       <circle cx="${s.pa.x}" cy="${s.pa.y}" r="4" fill="${color}" style="pointer-events:none"/>
       ${polyHandleMarkup(pts, e.id, '', 12)}
@@ -2772,10 +2776,10 @@ function renderDrillDown(){
       const sp = s.kind==='in' ? s.pa : s.pb;
       return `${wireDim?'<g class="dim">':''}
       <path d="${d}" fill="none" stroke="transparent" stroke-width="12"/>
-      <path d="${d}" fill="none" stroke="${color}" stroke-width="${w}"
-        stroke-dasharray="${selEdge?'none':(style.dash||'none')}"
+      <path d="${d}" fill="none" stroke="${color}" stroke-width="${cross?w+WARN_EXTRA_W:w}"
+        stroke-dasharray="${cross?WARN_DASH:(selEdge?'none':(style.dash||'none'))}"
         ${(selEdge||traced)?'filter="drop-shadow(0 0 3px var(--probe))"':''}
-        marker-end="url(#${style.marker})" style="pointer-events:none"/>
+        marker-end="url(#${cross?WARN_MARKER:style.marker})" style="pointer-events:none"/>
       ${cross?`<title>${esc(crossAreaMsg())}</title>`:''}
       <circle cx="${s.pa.x}" cy="${s.pa.y}" r="3.6" fill="${color}" style="pointer-events:none"/>
       ${polyHandleMarkup(pts, s.e.id, '', 12)}
@@ -2815,6 +2819,11 @@ function renderDrillDown(){
 
   // Per-edge category for the port-row tick/badge colors, over ALL drawn wires.
   const catOf = new Map(specs.map(s=>[s.e.id, edgeCategory(s.e)]));
+  // A net in error paints its ports yellow too, and outlines the blocks at
+  // BOTH of its ends — the problem belongs to the three of them together.
+  const crossIds = new Set(specs.filter(s=>edgeCrossesAreas(s.e)).map(s=>s.e.id));
+  const crossEnds = new Set();
+  for (const s of specs) if (edgeCrossesAreas(s.e)){ crossEnds.add(s.e.source); crossEnds.add(s.e.target); }
   nodesG.innerHTML = members.map(n=>{
     const selected = S.sel && S.sel.type==='node' && S.sel.id===n.id;
     const tracedN = trace && trace.nodes.has(n.id);
@@ -2824,7 +2833,7 @@ function renderDrillDown(){
     // the block edge, the draggable net-count badge (drag sideways to switch
     // edge, up/down to reorder) and the direction + other block in writing.
     const portRows = nodePortRowsFor(n.id).map(r=>{
-      const color = NET_CATEGORY_STYLE[catOf.get(r.eid) || 'other'].color;
+      const color = crossIds.has(r.eid) ? 'var(--warn)' : NET_CATEGORY_STYLE[catOf.get(r.eid) || 'other'].color;
       const y = nodePortRowY(n, r.row);
       const left = r.side==='left', bw = 26, bh = 16;
       const bx = left ? GROUP_PAD_X : n.w-GROUP_PAD_X-bw;
@@ -2846,18 +2855,22 @@ function renderDrillDown(){
     const mixed = nAreas.length>1;
     const areaMarkup = rx => mixed ? nodeHalvesMarkup(n, rx) : areaWashMarkup(side, n.w, n.h, rx);
     const tagMarkup = mixed ? '' : areaTag(side, n.w);   // halves carry their own name tags
+    const crossEnd = crossEnds.has(n.id);
     if (n.kind==='ic'){
-      const needsPick = !icSelected(n);
+      const warnBlock = !icSelected(n) || crossEnd;   // amber outline: unpicked part, or an end of a net in error
       const wtX = n.w - Math.max(...nAreas.map(areaTagW)) - 22;   // clear of the area corner tag (every block wears one)
-      const warnTag = needsPick ? `<g style="pointer-events:none">
+      const wBits = [];
+      if (!icSelected(n)) wBits.push('Part not selected yet — open this block and click "Edit IC…"');
+      if (crossEnd) wBits.push(crossAreaMsg());
+      const warnTag = wBits.length ? `<g style="pointer-events:none">
         <path d="M ${wtX} 15 l6.5 -11 l6.5 11 Z" fill="var(--warn)"/>
         <text x="${wtX+6.5}" y="13.6" text-anchor="middle" font-family="var(--mono)" font-size="8.5" font-weight="700" fill="var(--paper)">!</text>
-        <title>Part not selected yet — open this block and click "Edit IC…"</title>
+        <title>${esc(wBits.join('\n'))}</title>
       </g>` : '';
       return `<g class="node${dimN}" data-nid="${esc(n.id)}" transform="translate(${n.x},${n.y})" style="cursor:move">
         <rect x="-3" y="4" width="${n.w+6}" height="${n.h}" rx="5" fill="#00000018"/>
         <rect width="${n.w}" height="${n.h}" rx="5" fill="var(--epoxy)"
-          stroke="${(selected||tracedN)?'var(--probe)':needsPick?'var(--warn)':areaStroke(side,'var(--epoxy-edge)')}" stroke-width="${(selected||tracedN)?2.5:needsPick?2:1.4}"/>
+          stroke="${(selected||tracedN)?'var(--probe)':warnBlock?'var(--warn)':areaStroke(side,'var(--epoxy-edge)')}" stroke-width="${(selected||tracedN)?2.5:warnBlock?2:1.4}"/>
         ${areaMarkup(5)}
         <circle cx="13" cy="13" r="3.6" fill="var(--silk)"/>
         <text x="26" y="26" font-family="var(--mono)" font-size="13.5" font-weight="600" fill="var(--silk)">${esc(n.label)}</text>
@@ -2870,7 +2883,8 @@ function renderDrillDown(){
     }
     return `<g class="node${dimN}" data-nid="${esc(n.id)}" transform="translate(${n.x},${n.y})" style="cursor:move">
       <rect width="${n.w}" height="${n.h}" rx="4" fill="var(--paper)"
-        stroke="${(selected||tracedN)?'var(--probe)':areaStroke(side,'var(--ink-soft)')}" stroke-width="${(selected||tracedN)?2.5:1.4}" stroke-dasharray="${selected?'none':'5 4'}"/>
+        stroke="${(selected||tracedN)?'var(--probe)':crossEnd?'var(--warn)':areaStroke(side,'var(--ink-soft)')}" stroke-width="${(selected||tracedN)?2.5:crossEnd?2:1.4}" stroke-dasharray="${selected?'none':'5 4'}"/>
+      ${crossEnd?`<title>${esc(crossAreaMsg())}</title>`:''}
       ${areaMarkup(4)}
       <circle cx="13" cy="13" r="3.6" fill="var(--silk)"/>
       <text x="26" y="26" font-family="var(--mono)" font-size="11" font-weight="700" letter-spacing=".08em" fill="var(--silk)">EXTERNAL</text>
@@ -3035,10 +3049,10 @@ function renderTopLevel(){
     const d = ptsPathD(pts);
     return `<g class="edge${(trace&&!traced&&!selected)||spotDimEdge(e.id)?' dim':''}" data-eid="${esc(e.id)}">
       <path d="${d}" fill="none" stroke="transparent" stroke-width="16" style="cursor:pointer"/>
-      <path d="${d}" fill="none" stroke="${color}" stroke-width="${w}"
-        stroke-dasharray="${selected?'none':(style.dash||'none')}"
+      <path d="${d}" fill="none" stroke="${color}" stroke-width="${cross?w+WARN_EXTRA_W:w}"
+        stroke-dasharray="${cross?WARN_DASH:(selected?'none':(style.dash||'none'))}"
         ${(selected||traced)?'filter="drop-shadow(0 0 3px var(--probe))"':''}
-        marker-end="url(#${style.marker})" style="pointer-events:none"/>
+        marker-end="url(#${cross?WARN_MARKER:style.marker})" style="pointer-events:none"/>
       ${cross?`<title>${esc(crossAreaMsg())}</title>`:''}
       <circle cx="${pa.x}" cy="${pa.y}" r="4.5" fill="${color}" style="pointer-events:none"/>
       ${polyHandleMarkup(pts, e.id, segAttrs, 14)}
@@ -3085,7 +3099,7 @@ function renderTopLevel(){
     // net-count badge (same number as the one on the wire's midpoint) and the
     // direction + neighbouring group in writing.
     const portRows = groupPortRowsFor(g.id).map(r=>{
-      const color = NET_CATEGORY_STYLE[catOf.get(r.eid) || 'other'].color;
+      const color = (r.dom||'').indexOf('>')>=0 ? 'var(--warn)' : NET_CATEGORY_STYLE[catOf.get(r.eid) || 'other'].color;
       const y = groupPortRowY(g, r.row);
       const left = r.side==='left', bw = 26, bh = 16;
       const bx = left ? GROUP_PAD_X : W-GROUP_PAD_X-bw;
@@ -3104,7 +3118,7 @@ function renderTopLevel(){
     return `<g class="node${trace&&!tracedG&&!selected?' dim':''}" data-nid="${esc(g.id)}" transform="translate(${pos.x},${pos.y})" style="cursor:move">
       <rect x="-4" y="6" width="${W+8}" height="${h}" rx="6" fill="#00000018"/>
       <rect width="${W}" height="${h}" rx="6" fill="var(--vellum)"
-        stroke="${(selected||tracedG)?'var(--probe)':needsPick?'var(--warn)':(side==='barrier'?areaStroke(groupBaseArea(g.id),'var(--ink)'):areaStroke(side,'var(--ink)'))}" stroke-width="${(selected||tracedG)?3:2}"/>${warnTag}
+        stroke="${(selected||tracedG)?'var(--probe)':(needsPick||crossN)?'var(--warn)':(side==='barrier'?areaStroke(groupBaseArea(g.id),'var(--ink)'):areaStroke(side,'var(--ink)'))}" stroke-width="${(selected||tracedG)?3:2}"/>${warnTag}
       ${side==='barrier' ? groupHalvesMarkup(g.id, W, h, 6, 'hvclip-'+safeId(g.id)) : areaWashMarkup(side, W, h, 6)}
       <line x1="${GROUP_PAD_X}" y1="30" x2="${W-GROUP_PAD_X}" y2="30" stroke="var(--ink)" stroke-width="1" opacity=".18"/>
       <text x="${GROUP_PAD_X}" y="20" font-family="var(--mono)" font-size="9.5" letter-spacing=".1em" fill="var(--ink-soft)">${eyebrow}</text>
@@ -3221,17 +3235,21 @@ function spotDimEdge(id){
   const s = S.spotlight; if (!s) return false;
   return !(s.type==='edge' && s.id===id);
 }
+// Navigating the list NEVER swaps the panel out from under it: the selection
+// stays on the Issues list (so the next entry is one click away) while the
+// canvas jumps to the culprit and spotlights it. Clicking the block or the
+// wire itself on the canvas is what opens its own card, as always.
 function gotoNodeIssue(id){
   const n = nodeById(id); if (!n) return;
   S.openGroup = nodeGroupIndex().get(id) || UNGROUPED_ID;
-  S.sel = { type:'node', id };
+  S.sel = { type:'issues' };
   S.spotlight = { type:'node', id };
   render(); fitView();
 }
 function gotoEdgeIssue(eid){
   const e = S.edges.find(x=>x.id===eid); if (!e) return;
   S.openGroup = nodeGroupIndex().get(e.source) || nodeGroupIndex().get(e.target) || UNGROUPED_ID;
-  S.sel = { type:'edge', id:eid };
+  S.sel = { type:'issues' };
   S.spotlight = { type:'edge', id:eid, ends:[e.source, e.target] };
   render(); fitView();
 }
@@ -3288,22 +3306,26 @@ function renderInspector(){
     const section = (label, items) => items.length ? `
       <div class="kv"><label>${label} (${items.length})</label></div>
       ${items.join('')}` : '';
+    // The entry currently under the spotlight stays marked, so walking the
+    // list top to bottom is easy to follow.
+    const sp = S.spotlight || {};
+    const on = (kind, id) => sp.type===kind && sp.id===id ? ' on' : '';
     body.innerHTML = total ? `
       <p class="hint" style="margin-top:0">${L('Click an entry to jump to the exact spot — the culprit stays lit while everything else dims. The next click on the canvas lifts the spotlight.',
         'Pulsa una entrada para saltar al punto exacto — el culpable queda iluminado y todo lo demás se atenúa. El siguiente clic en el lienzo quita el foco.')}</p>
       ${section(L('Unconnected blocks','Bloques sin conectar'), iss.isolated.map(n=>
-        `<button class="issue" data-iss-node="${esc(n.id)}"><b>${n.ref?esc(n.ref)+' · ':''}${esc(n.label)}</b> — ${L('not connected to anything','sin conexión con nada')}</button>`))}
+        `<button class="issue${on('node', n.id)}" data-iss-node="${esc(n.id)}"><b>${n.ref?esc(n.ref)+' · ':''}${esc(n.label)}</b> — ${L('not connected to anything','sin conexión con nada')}</button>`))}
       ${section(L('Connections without nets','Conexiones sin redes'), iss.emptyEdges.map(e=>
-        `<button class="issue" data-iss-edge="${esc(e.id)}"><b>${esc(nodeById(e.source)?.label||e.source)} → ${esc(nodeById(e.target)?.label||e.target)}</b> — ${L('carries no nets, dropped on export','no lleva redes, se descarta al exportar')}</button>`))}
+        `<button class="issue${on('edge', e.id)}" data-iss-edge="${esc(e.id)}"><b>${esc(nodeById(e.source)?.label||e.source)} → ${esc(nodeById(e.target)?.label||e.target)}</b> — ${L('carries no nets, dropped on export','no lleva redes, se descarta al exportar')}</button>`))}
       ${iss.emptyEdges.length ? `<div class="btnrow" style="margin-top:2px"><button id="btnDropEmpty">${
         uiLang()==='es' ? `Eliminar ${iss.emptyEdges.length} conexión${iss.emptyEdges.length>1?'es':''} vacía${iss.emptyEdges.length>1?'s':''}`
                         : `Delete ${iss.emptyEdges.length} empty connection${iss.emptyEdges.length>1?'s':''}`}</button></div>` : ''}
       ${section(L('Ungrouped blocks','Bloques sin grupo'), iss.ungrouped.map(n=>
-        `<button class="issue" data-iss-node="${esc(n.id)}"><b>${esc(n.label)}</b> — ${L('belongs to no functional group','no pertenece a ningún grupo funcional')}</button>`))}
+        `<button class="issue${on('node', n.id)}" data-iss-node="${esc(n.id)}"><b>${esc(n.label)}</b> — ${L('belongs to no functional group','no pertenece a ningún grupo funcional')}</button>`))}
       ${section(L('ICs without a selected part','CIs sin componente seleccionado'), iss.unpicked.map(n=>
-        `<button class="issue" data-iss-node="${esc(n.id)}"><b>${n.ref?esc(n.ref)+' · ':''}${esc(n.label)}</b> — ${L('no part card yet (Edit IC… or Auto IC Selection)','aún sin tarjeta de componente (Editar CI… o Selección auto)')}</button>`))}
+        `<button class="issue${on('node', n.id)}" data-iss-node="${esc(n.id)}"><b>${n.ref?esc(n.ref)+' · ':''}${esc(n.label)}</b> — ${L('no part card yet (Edit IC… or Auto IC Selection)','aún sin tarjeta de componente (Editar CI… o Selección auto)')}</button>`))}
       ${section(L('Nets between different isolation areas','Redes entre áreas de aislamiento distintas'), iss.crossings.map(e=>
-        `<button class="issue" data-iss-edge="${esc(e.id)}"><b>${esc(nodeById(e.source)?.label||e.source)} → ${esc(nodeById(e.target)?.label||e.target)}</b> — ${esc(areaName(edgeEndArea(e,e.source)))} → ${esc(areaName(edgeEndArea(e,e.target)))}: ${esc(crossAreaMsg())}</button>`))}`
+        `<button class="issue${on('edge', e.id)}" data-iss-edge="${esc(e.id)}"><b>${esc(nodeById(e.source)?.label||e.source)} → ${esc(nodeById(e.target)?.label||e.target)}</b> — ${esc(areaName(edgeEndArea(e,e.source)))} → ${esc(areaName(edgeEndArea(e,e.target)))}: ${esc(crossAreaMsg())}</button>`))}`
       : `<p>${L('Everything is resolved — no warnings left on the status bar.','Todo resuelto — no quedan avisos en la barra de estado.')}</p>`;
     body.querySelectorAll('[data-iss-node]').forEach(b=>b.onclick=()=>gotoNodeIssue(b.dataset.issNode));
     body.querySelectorAll('[data-iss-edge]').forEach(b=>b.onclick=()=>gotoEdgeIssue(b.dataset.issEdge));

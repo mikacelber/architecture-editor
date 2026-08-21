@@ -293,8 +293,11 @@ check('dropping at a usable width just resizes, no fold', !collapsed() && T.insp
   check('the empty connection is listed with both endpoints named',
     !!item && item.textContent.includes(T.nodeById(victim.source).label));
   item.onclick();
-  check('clicking the entry jumps to the exact sheet and selects the culprit',
-    S.openGroup!==null && S.sel && S.sel.type==='edge' && S.sel.id===victim.id);
+  check('clicking the entry jumps to the exact sheet WITHOUT swapping the panel — the list stays open',
+    S.openGroup!==null && S.sel && S.sel.type==='issues' &&
+    doc.querySelectorAll('#insBody .issue').length>0);
+  check('the entry you jumped to is marked in the list',
+    (x=>!!x && x.classList.contains('on'))(doc.querySelector(`#insBody [data-iss-edge="${victim.id}"]`)));
   // a netless connection has no wire on the sheet (that IS the problem) — the
   // spotlight lights its two endpoint blocks instead, everything else dims
   check('…and spotlights it: the endpoint blocks stay lit while the rest dims',
@@ -303,16 +306,19 @@ check('dropping at a usable width just resizes, no fold', !collapsed() && T.insp
       const src=g.find(x=>x.dataset.nid===victim.source), tgt=g.find(x=>x.dataset.nid===victim.target);
       return src && tgt && !src.classList.contains('dim') && !tgt.classList.contains('dim'); })() &&
     doc.querySelectorAll('#nodesG g.dim').length>0);
-  // a block entry: an unpicked IC
-  S.sel={type:'issues'}; T.render();
+  // a block entry: an unpicked IC — reachable straight from the still-open list
   const nodeItem=doc.querySelector('#insBody [data-iss-node]');
   const nid=nodeItem.dataset.issNode;
   nodeItem.onclick();
   const nodeG=[...doc.querySelectorAll('#nodesG g[data-nid]')].find(x=>x.dataset.nid===nid);
-  check('a block entry opens its sheet, selects and spotlights the block',
-    S.sel.type==='node' && S.sel.id===nid && S.spotlight && S.spotlight.id===nid &&
+  check('a block entry opens its sheet and spotlights the block, panel still on the list',
+    S.sel.type==='issues' && S.spotlight && S.spotlight.id===nid &&
     !!nodeG && !nodeG.classList.contains('dim') &&
     doc.querySelectorAll('#nodesG g.dim').length>0);
+  check('…and the block card only opens when the block itself is clicked',
+    (()=>{ S.sel={type:'node',id:nid}; T.render();
+      return doc.getElementById('insEyebrow').textContent!=='Issues'; })());
+  S.sel={type:'issues'}; T.render();
   doc.getElementById('board').dispatchEvent(new window.MouseEvent('pointerdown',{bubbles:true}));
   check('the next canvas click lifts the spotlight', !S.spotlight);
   // leftovers from before the auto-cleanup existed: swept in one click
