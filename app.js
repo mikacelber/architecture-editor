@@ -3099,7 +3099,13 @@ function renderTopLevel(){
     // net-count badge (same number as the one on the wire's midpoint) and the
     // direction + neighbouring group in writing.
     const portRows = groupPortRowsFor(g.id).map(r=>{
-      const color = (r.dom||'').indexOf('>')>=0 ? 'var(--warn)' : NET_CATEGORY_STYLE[catOf.get(r.eid) || 'other'].color;
+      // The tick + badge speak the port's ISOLATION AREA when it has one to
+      // speak (non-default area), the warning yellow when the connection is
+      // an illegal crossing, and the net-category color otherwise — so the
+      // area of each FROM/TO inside is visible on the group block itself.
+      const rArea = domMemberArea(r.dom, r.dir);
+      const color = (r.dom||'').indexOf('>')>=0 ? 'var(--warn)'
+        : (areaPaint(rArea) || NET_CATEGORY_STYLE[catOf.get(r.eid) || 'other'].color);
       const y = groupPortRowY(g, r.row);
       const left = r.side==='left', bw = 26, bh = 16;
       const bx = left ? GROUP_PAD_X : W-GROUP_PAD_X-bw;
@@ -3807,7 +3813,11 @@ function renderInspector(){
   body.querySelectorAll('[data-domnet]').forEach(b=>b.onclick=()=>{
     commit();
     const net = e.nets[+b.dataset.domnet];
-    net.hv = !isHvNet(net);   // explicit flag — wins over what the type implies
+    // One electrical net has ONE voltage level: the flip lands on every copy
+    // (the same net rides many edges), like the pencil's rename does — a net
+    // must never read HV on one connection and LV on another.
+    const level = !isHvNet(net);
+    for (const ed of S.edges) for (const x of ed.nets) if (x.name===net.name) x.hv = level;
     render();
   });
   $('btnAddNet').onclick=()=>{
