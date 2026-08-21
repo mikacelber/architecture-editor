@@ -521,8 +521,8 @@ function nodePortIndex(){
   for (const e of diagramEdges(S.edges)){
     // aside: the area this connection attaches in AT THIS BLOCK — what pins a
     // port to its half on a mixed (two-area) member.
-    if (idx.has(e.source)) idx.get(e.source).push({ eid:e.id, src:e.source, tgt:e.target, dir:'out', other:e.target, nets:e.nets.length, aside:edgeEndArea(e.source, e.target) });
-    if (idx.has(e.target)) idx.get(e.target).push({ eid:e.id, src:e.source, tgt:e.target, dir:'in',  other:e.source, nets:e.nets.length, aside:edgeEndArea(e.target, e.source) });
+    if (idx.has(e.source)) idx.get(e.source).push({ eid:e.id, src:e.source, tgt:e.target, dir:'out', other:e.target, nets:e.nets.length, aside:edgeEndArea(e, e.source) });
+    if (idx.has(e.target)) idx.get(e.target).push({ eid:e.id, src:e.source, tgt:e.target, dir:'in',  other:e.source, nets:e.nets.length, aside:edgeEndArea(e, e.target) });
   }
   const labelOf = id => { const n=nodeById(id); return n ? n.label : id; };
   for (const [nid, rows] of idx){
@@ -1248,20 +1248,23 @@ function nodeArea(nodeId){ return nodeAreas(nodeId)[0]; }
 // the pair as its dom — its own bus, its own TO/FROM boxes, never merged
 // with same-area traffic. Net LEVELS play no part here: re-levelling a net
 // changes colors and badges, not doms.
-// The area one END of an edge attaches in: a single-area block always
-// presents its area; a mixed block presents, to each neighbour, the side
-// that faces it — the area it shares with that neighbour if any, else its
-// primary. This is what makes a transformer's secondary connection live
-// wholly in the HV area while its primary drive stays LV.
-function edgeEndArea(endId, otherId){
-  const mine = nodeAreas(endId);
-  if (mine.length === 1) return mine[0];
-  const others = nodeAreas(otherId);
-  for (const a of mine) if (others.includes(a)) return a;
-  return mine[0];
+// The area one END of an edge attaches in. A single-area block always
+// presents its area. On a MIXED block the HALF its port sits on says which
+// of the two areas the connection belongs to — dragging the port across the
+// divider re-assigns the net to the other area (primary half left by
+// default, swapped by the block's halves flip). Everything downstream reads
+// this: FROM/TO splitting and coloring, cross-area validation, group ports.
+function edgeEndArea(e, endId){
+  const n = nodeById(endId);
+  if (!n) return 'lv';
+  const areas = nodeAreasOfNode(n);
+  if (areas.length === 1) return areas[0];
+  const dir = e.source===endId ? 'out' : 'in';
+  const side = groupPortSideOf(endId, e.source, e.target, dir);
+  return (side==='right') !== !!n.hvFlip ? areas[1] : areas[0];
 }
 function edgeDomOf(e){
-  const sa = edgeEndArea(e.source, e.target), ta = edgeEndArea(e.target, e.source);
+  const sa = edgeEndArea(e, e.source), ta = edgeEndArea(e, e.target);
   if (sa===ta) return sa==='lv' ? '' : sa;
   return sa+'>'+ta;
 }
@@ -1280,13 +1283,6 @@ function domMemberArea(dom, dir){
   const i = dom.indexOf('>');
   if (i<0) return dom;
   return dir==='out' ? dom.slice(0,i) : dom.slice(i+1);
-}
-// …and the area of the far end (what a FROM/TO box leads to).
-function domFarArea(dom, dir){
-  if (!dom) return 'lv';
-  const i = dom.indexOf('>');
-  if (i<0) return dom;
-  return dir==='out' ? dom.slice(i+1) : dom.slice(0,i);
 }
 // Text suffix naming a connection's isolation identity: nothing for the
 // default LV area, the area's name for same-area traffic, both names for a
@@ -2899,11 +2895,11 @@ function portalMarkupFor(p, selected, wires, traced, dim){
   // keeps the same silhouette instead of bulging into a giant lens: at the
   // base height the two arcs meet and it IS a semicircle, taller boxes just
   // grow a straight run between them.
-  // The box wears the color of the area it LEADS TO (the far end of the
-  // connection) — except a CROSSING dom, which is an illegal barrier jump
-  // and wears the warning yellow instead.
+  // The box wears the color of the area its nets CONNECT IN on this sheet
+  // (the member side) — except a CROSSING dom, which is an illegal barrier
+  // jump and wears the warning yellow instead.
   const crossDom = (item.dom||'').indexOf('>') >= 0;
-  const domPaint = crossDom ? 'var(--warn)' : areaPaint(domFarArea(item.dom, dir));
+  const domPaint = crossDom ? 'var(--warn)' : areaPaint(domMemberArea(item.dom, dir));
   const cr = 6, sr = Math.min(r.h/2, PORTAL_H/2);   // flat-corner radius, cap radius
   const boxD = dir==='in'
     ? `M ${r.x+sr} ${r.y} L ${r.x+r.w-cr} ${r.y} A ${cr} ${cr} 0 0 1 ${r.x+r.w} ${r.y+cr}
@@ -3302,7 +3298,7 @@ function renderInspector(){
       ${section(L('ICs without a selected part','CIs sin componente seleccionado'), iss.unpicked.map(n=>
         `<button class="issue" data-iss-node="${esc(n.id)}"><b>${n.ref?esc(n.ref)+' · ':''}${esc(n.label)}</b> — ${L('no part card yet (Edit IC… or Auto IC Selection)','aún sin tarjeta de componente (Editar CI… o Selección auto)')}</button>`))}
       ${section(L('Nets between different isolation areas','Redes entre áreas de aislamiento distintas'), iss.crossings.map(e=>
-        `<button class="issue" data-iss-edge="${esc(e.id)}"><b>${esc(nodeById(e.source)?.label||e.source)} → ${esc(nodeById(e.target)?.label||e.target)}</b> — ${esc(areaName(edgeEndArea(e.source,e.target)))} → ${esc(areaName(edgeEndArea(e.target,e.source)))}: ${esc(crossAreaMsg())}</button>`))}`
+        `<button class="issue" data-iss-edge="${esc(e.id)}"><b>${esc(nodeById(e.source)?.label||e.source)} → ${esc(nodeById(e.target)?.label||e.target)}</b> — ${esc(areaName(edgeEndArea(e,e.source)))} → ${esc(areaName(edgeEndArea(e,e.target)))}: ${esc(crossAreaMsg())}</button>`))}`
       : `<p>${L('Everything is resolved — no warnings left on the status bar.','Todo resuelto — no quedan avisos en la barra de estado.')}</p>`;
     body.querySelectorAll('[data-iss-node]').forEach(b=>b.onclick=()=>gotoNodeIssue(b.dataset.issNode));
     body.querySelectorAll('[data-iss-edge]').forEach(b=>b.onclick=()=>gotoEdgeIssue(b.dataset.issEdge));
@@ -3575,7 +3571,15 @@ function renderInspector(){
     };
     const s2=$('fSide2'); if (s2) s2.onchange=()=>{ commit(); n.area2 = s2.value; render(); };
     const s2d=$('fSide2Del'); if (s2d) s2d.onclick=()=>{ commit(); delete n.area2; delete n.hvFlip; render(); };
-    const ff=$('fFlip'); if (ff) ff.onchange=()=>{ commit(); n.hvFlip = ff.checked || undefined; render(); };
+    const ff=$('fFlip'); if (ff) ff.onchange=()=>{
+      commit();
+      // The flip MIRRORS the block: the halves swap sides and every port
+      // goes with its own half, so each connection KEEPS its area.
+      for (const r of nodePortRowsFor(n.id))
+        setGroupPortSide(n.id, r.src, r.tgt, r.side==='left' ? 'right' : 'left');
+      n.hvFlip = ff.checked || undefined;
+      render();
+    };
     const selIc=$('btnSelectIC'); if (selIc) selIc.onclick=()=>openReplaceICModal(n);
     const edExt=$('btnEditExt'); if (edExt) edExt.onclick=()=>openEditExternalModal(n);
     const clrIc=$('btnClearIC'); if (clrIc) clrIc.onclick=()=>{
@@ -3659,7 +3663,7 @@ function renderInspector(){
   }).filter(Boolean);
   body.innerHTML = `
     ${e.nets.length?'':`<p style="color:var(--warn)">${L('This connection has no nets yet — add at least one, or it will be dropped on export.','Esta conexión aún no tiene redes — añade al menos una, o se descartará al exportar.')}</p>`}
-    ${edgeCrossesAreas(e)?`<p style="color:var(--warn)">⚠ ${esc(areaName(edgeEndArea(e.source,e.target)))} → ${esc(areaName(edgeEndArea(e.target,e.source)))}: ${esc(crossAreaMsg())}</p>`:''}
+    ${edgeCrossesAreas(e)?`<p style="color:var(--warn)">⚠ ${esc(areaName(edgeEndArea(e,e.source)))} → ${esc(areaName(edgeEndArea(e,e.target)))}: ${esc(crossAreaMsg())}</p>`:''}
     ${shown.map(({n,i})=> (_netEdit && _netEdit.idx===i) ? (()=>{
       // Blocks listed by FUNCTIONAL GROUP (one optgroup per group), and the
       // group holding the select's current block always leads the list.
