@@ -1248,7 +1248,50 @@ function areaName(id){ const a = areaById(id); return a ? a.name : String(id).to
 function nodeAreasOfNode(n){
   const a1 = (n.area && areaById(n.area)) ? n.area : 'lv';
   const a2 = (n.area2 && n.area2 !== a1 && areaById(n.area2)) ? n.area2 : null;
-  return a2 ? [a1, a2] : [a1];
+  if (!a2) return [a1];
+  // The halves are ordered by the AREAS' OWN order in the project, never by
+  // which of the two selects the user happened to fill first: the earlier
+  // area owns the left half, the later one the right. That is the same rule
+  // the group blocks follow (groupBaseArea walks areasOf()), so a block and
+  // its group always read the same way round — and the colored half can
+  // never end up wearing the colorless one's paint.
+  const list = areasOf();
+  const i1 = list.findIndex(a=>a.id===a1), i2 = list.findIndex(a=>a.id===a2);
+  return i2 < i1 ? [a2, a1] : [a1, a2];
+}
+// Keep the STORED pair in that canonical order too, so a block's card shows
+// exactly what its halves show. Swapping the pair swaps the halves, so every
+// port side swaps with it — each connection keeps the AREA it was in.
+function normalizeNodeAreaOrder(n){
+  if (!n || !n.area2) return false;
+  const [first, second] = nodeAreasOfNode(n);
+  const stored1 = (n.area && areaById(n.area)) ? n.area : 'lv';
+  if (stored1 === first) return false;                 // already canonical
+  for (const e of S.edges){
+    if (e.source!==n.id && e.target!==n.id) continue;
+    const dir = e.source===n.id ? 'out' : 'in';
+    const side = groupPortSideOf(n.id, e.source, e.target, dir);
+    setGroupPortSide(n.id, e.source, e.target, side==='left' ? 'right' : 'left');
+  }
+  if (first==='lv') delete n.area; else n.area = first;
+  n.area2 = second;
+  return true;
+}
+function normalizeAllNodeAreaOrders(){ for (const n of S.nodes) normalizeNodeAreaOrder(n); }
+// Set a block's areas as a PAIR (what the card's two selects mean together),
+// never field by field: the selects show the canonical halves, so writing one
+// of them straight into n.area/n.area2 could collide the two. Storing the pair
+// and normalizing keeps each connection in the area it was already in.
+function setNodeAreaPair(n, a, b){
+  const first = areaById(a) ? a : 'lv';
+  if (b && b !== first && areaById(b)){
+    n.area = first==='lv' ? undefined : first;
+    n.area2 = b;
+    normalizeNodeAreaOrder(n);
+  } else {
+    n.area = first==='lv' ? undefined : first;
+    delete n.area2; delete n.hvFlip;
+  }
 }
 function nodeAreas(nodeId){ const n = nodeById(nodeId); return n ? nodeAreasOfNode(n) : ['lv']; }
 function nodeIsMixed(nodeId){ return nodeAreas(nodeId).length > 1; }
@@ -1414,7 +1457,9 @@ function areaWashMarkup(area, w, h, rx){
 // other area's wash and a divider on the other — each half wearing its area's
 // name in its corner. Shared by mixed member blocks and mixed group blocks.
 function halvesMarkup(base, other, flip, w, h, rx, clipId){
-  const op = areaPaint(other) || 'var(--area-hv)';
+  // `other` is the LATER area, so it always owns a color; the fallback is
+  // only a guard and must never borrow another area's paint.
+  const op = areaPaint(other) || 'var(--ink-soft)';
   const oX = flip ? 6 : w-6, bX = flip ? w-6 : 6;
   return `
       <clipPath id="${clipId}"><rect width="${w}" height="${h}" rx="${rx}"/></clipPath>
@@ -3629,18 +3674,18 @@ function renderInspector(){
     }
     $('fSide').onchange=()=>{
       commit();
-      n.area = $('fSide').value==='lv' ? undefined : $('fSide').value;
-      if (n.area2 === (n.area||'lv')) delete n.area2;   // the two areas can never coincide
+      setNodeAreaPair(n, $('fSide').value, $('fSide2') ? $('fSide2').value : null);
       healMixedPortSides(n.id);
       render();
     };
     const s2a=$('fSide2Add'); if (s2a) s2a.onclick=()=>{
       const other = areasOf().find(a=>a.id!==nodeArea(n.id));
       if (!other){ toast(L('Add another area in Isolation Barriers first','Añade otra área en Isolation Barriers primero')); return; }
-      commit(); n.area2 = other.id; healMixedPortSides(n.id); render();
+      commit(); setNodeAreaPair(n, nodeArea(n.id), other.id); healMixedPortSides(n.id); render();
     };
-    const s2=$('fSide2'); if (s2) s2.onchange=()=>{ commit(); n.area2 = s2.value; healMixedPortSides(n.id); render(); };
-    const s2d=$('fSide2Del'); if (s2d) s2d.onclick=()=>{ commit(); delete n.area2; delete n.hvFlip; render(); };
+    const s2=$('fSide2'); if (s2) s2.onchange=()=>{
+      commit(); setNodeAreaPair(n, $('fSide').value, s2.value); healMixedPortSides(n.id); render(); };
+    const s2d=$('fSide2Del'); if (s2d) s2d.onclick=()=>{ commit(); setNodeAreaPair(n, nodeArea(n.id), null); render(); };
     const ff=$('fFlip'); if (ff) ff.onchange=()=>{
       commit();
       // The flip MIRRORS the block: the halves swap sides and every port
@@ -5343,6 +5388,7 @@ function openIsolationModal(){
       if (n.area2 && (!keep.has(n.area2) || n.area2 === (n.area||'lv'))){ delete n.area2; delete n.hvFlip; }
     }
     S.areas = work;
+    normalizeAllNodeAreaOrders();
     applyAreaColors();
     closeModal(); render();
     toast(L('Isolation areas saved','Áreas de aislamiento guardadas'));
@@ -6074,6 +6120,7 @@ function loadSession(s){
   S.areas = Array.isArray(s.areas) && s.areas.length ? s.areas : defaultAreas();
   migrateNodeAreas();   // pre-area sessions carried n.hvSide overrides instead
   migrateAreaColors();  // …and a per-area custom color, derived from the chain now
+  normalizeAllNodeAreaOrders();   // halves follow the project's area order
   healAllMixedPortSides();   // stale cosmetic sides must not fabricate crossings
   applyAreaColors();
   assignRefDes();       // legacy sessions get their U#/EXT# designators here
