@@ -6049,7 +6049,7 @@ const INSP_HIDE_MS = 3000, INSP_MIN_W = 260;
 // to almost nothing on the way there.
 const INSP_COLLAPSE_W = 120, INSP_TINY_W = 40;
 const inspEl = $('inspector'), inspPinBtn = $('inspPin'), inspHandle = $('inspHandle'), inspGrip = $('inspResize');
-const insp = { pinned:true, hidden:false, w:340, hideT:null };
+const insp = { pinned:true, hidden:false, w:340, hideT:null, selKey:null };
 function inspSetWidth(w, tiny){
   insp.w = Math.max(tiny ? INSP_TINY_W : INSP_MIN_W, Math.min(Math.round(w), Math.round(window.innerWidth*0.7)));
   inspEl.style.width = insp.w+'px';
@@ -6069,6 +6069,7 @@ function inspShow(){ insp.hidden = false; inspApply(); }
 // The handle bypasses it: an explicit click hides even a pinned panel.
 function inspHide(){
   if (insp.pinned) return;
+  if (S.sel) return;   // something is selected: the panel behaves as pinned
   if (inspEl.matches(':hover') || inspEl.contains(document.activeElement)){ inspScheduleHide(); return; }
   insp.hidden = true; inspApply();
 }
@@ -6076,14 +6077,21 @@ function inspScheduleHide(){
   clearTimeout(insp.hideT);
   if (!insp.pinned) insp.hideT = setTimeout(inspHide, INSP_HIDE_MS);
 }
-// Called from renderInspector on every render: a live selection brings the
-// panel back and buys it a fresh idle window; with nothing selected the
-// countdown just keeps running. A pinned panel manually folded via the
-// handle stays folded until the handle (or the pin) is clicked again.
+// Called from renderInspector on every render. While something is selected
+// the unpinned panel acts PINNED: no countdown, always visible — it only
+// starts hiding again once the selection is gone. The panel pops open on a
+// NEW selection (not on every re-render of the same one), so an explicit
+// handle-fold isn't undone by the next render of the same selection.
 function inspOnRender(){
   if (insp.pinned) return;
-  if (S.sel) inspShow();
-  inspScheduleHide();
+  const k = S.sel ? S.sel.type+':'+(S.sel.id != null ? S.sel.id : '') : null;
+  if (k){
+    clearTimeout(insp.hideT); insp.hideT = null;   // no countdown while selected
+    if (k !== insp.selKey) inspShow();
+  } else {
+    inspScheduleHide();
+  }
+  insp.selKey = k;
 }
 inspPinBtn.onclick = () => {
   inspPinBtn.blur();   // the focus guard is for form fields, not for the pin itself
