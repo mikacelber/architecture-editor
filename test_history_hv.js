@@ -12,7 +12,8 @@ window.__T={get S(){return S;},get HIST(){return HIST;},loadFromContract,render,
  openGroupView,closeGroupView,nodeArea,nodeAreas,nodeIsMixed,edgeDomOf,domMarker,areaName,areasOf,isHvNet,defaultAreas,
  areaCustom,applyAreaColors,loadSession,drillSheet,portRowLabel,groupsWithUngrouped,groupBaseArea,groupOtherArea,
  nodePortRowsFor,nodePortOf,edgeCrossesAreas,collectIssues,spotDimEdge,spotDimNode,gotoNodeIssue,
- nodeBlockWidth,nodePortRowLabel,textWidth,GROUP_PAD_X:GROUP_PAD_X,WARN_DASH:WARN_DASH,gotoEdgeIssue,domMemberArea,undo};`);
+ nodeBlockWidth,nodePortRowLabel,textWidth,GROUP_PAD_X:GROUP_PAD_X,WARN_DASH:WARN_DASH,gotoEdgeIssue,domMemberArea,undo,
+ AREA_CHAIN:AREA_CHAIN,areaDefaultColor,healMixedPortSides,buildSessionJSON};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -652,6 +653,100 @@ const key=e=>T.groupEdgeRouteKey(e.source,e.target);
   const rk=rows.map(r=>(r.dir==='in'?'in:':'out:')+r.other+(r.dom?'#'+r.dom:'')).sort();
   check('group ports and drill FROM/TO boxes correspond one to one',
     JSON.stringify(pk)===JSON.stringify(rk));
+}
+
+/* ============ stale port sides never fabricate crossings (session heal) ============ */
+{
+  // replica of the reported file: a mixed block whose stored port side —
+  // written by the geometric auto-layout before the block was mixed — parks
+  // the HV net on the LV half, fabricating a phantom crossing
+  T.loadFromContract(
+    { id:'h', title:'h', description:'', ic_components:[
+      { ic_part_number:'MULT', ic_type:'a', description:'', manufacturer:'', DatasheetUrl:'', selection_rationale:'' },
+      { ic_part_number:'OPTO', ic_type:'b', description:'', manufacturer:'', DatasheetUrl:'', selection_rationale:'' },
+      { ic_part_number:'LVDRV', ic_type:'c', description:'', manufacturer:'', DatasheetUrl:'', selection_rationale:'' }] },
+    { global_nets:[
+      { name:'HV_BUS', type:'HIGH_VOLTAGE_PATH', source:'MULT', consumers:['OPTO'], description:'' },
+      { name:'LED_DRV', type:'CONTROL_SIGNAL', source:'LVDRV', consumers:['OPTO'], description:'' }],
+      external_blocks:[] }, []);
+  T.nodeById('MULT').area='hv';
+  T.nodeById('OPTO').area='hv'; T.nodeById('OPTO').area2='lv';
+  // the stale cosmetic sides from the reported session: HV net on the LV half,
+  // LED drive on the HV half — both swapped from any sane intent
+  T.setGroupPortSide('OPTO','MULT','OPTO','right');   // right = second area = lv
+  T.setGroupPortSide('OPTO','LVDRV','OPTO','left');   // left = primary = hv
+  T.render();
+  const hvE=S.edges.find(e=>e.source==='MULT'&&e.target==='OPTO');
+  const ledE=S.edges.find(e=>e.source==='LVDRV'&&e.target==='OPTO');
+  check('the stale sides fabricate two phantom crossings (the reported bug)',
+    T.edgeCrossesAreas(hvE) && T.edgeCrossesAreas(ledE));
+  // a session round-trip heals them: each net lands on the half that agrees
+  T.loadSession(JSON.parse(JSON.stringify(T.buildSessionJSON())));
+  const hvE2=S.edges.find(e=>e.source==='MULT'&&e.target==='OPTO');
+  const ledE2=S.edges.find(e=>e.source==='LVDRV'&&e.target==='OPTO');
+  check('loading the session heals every resolvable crossing',
+    !T.edgeCrossesAreas(hvE2) && !T.edgeCrossesAreas(ledE2) && T.collectIssues().crossings.length===0);
+  check('HV_BUS reads wholly HV, the LED drive wholly LV',
+    T.edgeDomOf(hvE2)==='hv' && T.edgeDomOf(ledE2)==='');
+  // deliberate mid-session mis-parking still errors — the heal is load-time only
+  T.setGroupPortSide('OPTO','MULT','OPTO', T.nodePortOf('OPTO','MULT','OPTO','in').side==='left'?'right':'left');
+  T.render();
+  check('a deliberate mid-session move to the wrong half still errors (no silent self-heal)',
+    T.edgeCrossesAreas(S.edges.find(e=>e.source==='MULT'&&e.target==='OPTO')));
+  // and an unresolvable crossing (no half agrees) survives the load as an error
+  T.loadSession(JSON.parse(JSON.stringify(T.buildSessionJSON())));
+  check('…but a resolvable one heals again on the next load',
+    T.collectIssues().crossings.length===0);
+}
+
+/* ============ an erroring net NEVER changes off the warning yellow ============ */
+{
+  const doc=window.document;
+  // make a real crossing that no heal can resolve: two single-area blocks
+  T.nodeById('LVDRV').area=undefined; delete T.nodeById('LVDRV').area;
+  const led=S.edges.find(e=>e.source==='LVDRV'&&e.target==='OPTO');
+  T.setGroupPortSide('OPTO','LVDRV','OPTO','left'); T.render();   // park it on the HV half
+  check('fixture erroring', T.edgeCrossesAreas(led));
+  T.openGroupView('UNGROUPED');
+  const wireStroke=()=>{
+    const el=doc.querySelector('#edgesG .edge[data-eid="'+led.id+'"] path[stroke]:not([stroke="transparent"])');
+    return el ? el.getAttribute('stroke') : null;
+  };
+  const cardCls=()=>{
+    S.sel={type:'edge', id:led.id}; T.render();
+    const c=doc.querySelector('#insBody .netcard');
+    const r=c.className.includes('err');
+    S.sel=null; T.render();
+    return r;
+  };
+  check('at HV level: wire yellow, card marked err', wireStroke()==='var(--warn)' && cardCls());
+  led.nets.forEach(n=>{ n.hv=false; }); T.render();
+  check('lowered to LV: STILL yellow, STILL err — the error owns the color until fixed',
+    wireStroke()==='var(--warn)' && cardCls() && T.edgeCrossesAreas(led));
+  T.closeGroupView(); T.render();
+}
+
+/* ============ one fixed 20-color chain for the areas ============ */
+{
+  const doc=window.document;
+  check('the chain starts with the LV and HV defaults', T.AREA_CHAIN[0]==='' && T.AREA_CHAIN[1]==='var(--sig-hv)');
+  check('20 slots, all later ones printable hex — no yellow, no black',
+    T.AREA_CHAIN.length===20 && T.AREA_CHAIN.slice(2).every(c=>/^#[0-9A-Fa-f]{6}$/.test(c) &&
+      c.toLowerCase()!=='#000000'));
+  // create two areas twice over: the same positions always get the same colors
+  const mk=()=>{ S.areas=[...T.defaultAreas(), {id:'a1',name:'A3',color:''}, {id:'a2',name:'A4',color:''}];
+    T.applyAreaColors();
+    return [T.areaDefaultColor('a1'), T.areaDefaultColor('a2')]; };
+  const first=mk();
+  S.areas=T.defaultAreas(); T.applyAreaColors();
+  const second=mk();
+  check('the 3rd and 4th areas always draw the same chain colors, project after project',
+    JSON.stringify(first)===JSON.stringify(second) &&
+    first[0]===T.AREA_CHAIN[2] && first[1]===T.AREA_CHAIN[3]);
+  check('the chain colors land on the CSS variables',
+    doc.documentElement.style.getPropertyValue('--area-a1')===T.AREA_CHAIN[2] &&
+    doc.documentElement.style.getPropertyValue('--area-a2')===T.AREA_CHAIN[3]);
+  S.areas=T.defaultAreas(); T.applyAreaColors(); T.render();
 }
 
 console.log('\n'+pass+' passed, '+fail+' failed');

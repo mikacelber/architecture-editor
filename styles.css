@@ -132,6 +132,9 @@ textarea{resize:vertical;min-height:52px;font-family:var(--sans)}
 /* ---------- net list ---------- */
 .netcard{border:1.5px solid var(--line);border-left:4px solid var(--sig-other);border-radius:3px;padding:8px 10px;margin-bottom:8px;background:var(--field-bg)}
 .netcard.cat-hv{border-left-color:var(--sig-hv)}
+/* a net on a connection that ILLEGALLY crosses isolation areas stays warning
+   yellow whatever its level/category — the error owns the color until fixed */
+.netcard.err{border-left-color:var(--warn);border-color:var(--warn)}
 .netcard.cat-power{border-left-color:var(--sig-power)}
 .netcard.cat-control{border-left-color:var(--sig-control)}
 .netcard.cat-logic{border-left-color:var(--sig-logic)}
