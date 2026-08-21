@@ -13,7 +13,7 @@ window.__T={get S(){return S;},loadFromContract,render,openGroupView,closeGroupV
  groupsWithUngrouped,nodeById,openGroupObstacleRects,nodeEdgeLaneKey,commit,undo,_routeCache,
  nodePortRowsFor,nodePortOf,nodePortRowY,setGroupPortSide,moveNodePortToRow,resetGroupPortLayout,GRID:GRID,
  drillSheet,portalOffsetOf,setPortalOffset,PORTAL_MARGIN:PORTAL_MARGIN,LANE_PITCH:LANE_PITCH,PORTAL_H:PORTAL_H,
- translateWireSegment,nodeBlockWidth,textWidth,isHvNet,netCategory,nodeSide,
+ translateWireSegment,nodeBlockWidth,textWidth,isHvNet,netCategory,nodeArea,
  openAddPortalModal,candidateNetsForPortal,groupNetIndex,nodeGroupIndex,computeGroupEdges,traceSets,
  movePortalSlotToRow,pinPortalWires,pinSheetWires,nodeEdgeRouteOf,groupPortRowsFor,laneEnd,fanAssignLanes,nodeEdgeLaneKey,fanStub,
  GROUP_PORT_STUB:GROUP_PORT_STUB,FAN_PITCH:FAN_PITCH,commit,undo,
@@ -401,55 +401,50 @@ check('every in-group connection carries a routing lane',
     T.nodeBlockWidth(longest) >= 12 + T.textWidth(longest.label, 11.5, false) + 14);
 }
 
-/* ---- rule 13: barrier nodes flip their LV|HV halves and pin their ports ---- */
+/* ---- rule 13: a member block's isolation area is explicit configuration ---- */
 {
   const g=T.groupsWithUngrouped().find(x=>x.id===best.id);
   const n=T.nodeById(g.members[0]);
-  const prevSide=n.hvSide, prevFlip=n.hvFlip;
-  n.hvSide='barrier'; n.hvFlip=undefined; T.render();
-  // ports pin by domain: HV rows on the right half, LV rows on the left
+  const prevArea=n.area;
+  n.area='hv'; T.render();
+  check('an HV-area member wears the area wash and its area name tag',
+    (h=>h.includes('var(--area-hv)') && />HV</.test(h))(
+      [...doc.querySelectorAll('#nodesG g[data-nid]')].find(x=>x.dataset.nid===n.id).innerHTML));
+  // ports on a single-area block are never pinned — a block sits wholly in
+  // one area, the barrier lives BETWEEN blocks
   const rows0=T.nodePortRowsFor(n.id);
-  check('a barrier member pins every port to its domain half',
-    rows0.length>0 && rows0.every(r=>r.pinned && r.side===(r.hv?'right':'left')));
+  check('an HV-area member keeps its ports free (no half pinning)',
+    rows0.length>0 && rows0.every(r=>!r.pinned));
   const r0=rows0[0];
   T.setGroupPortSide(n.id, r0.src, r0.tgt, r0.side==='left'?'right':'left'); T.render();
-  check('a stored override cannot move a pinned port across the divider',
-    T.nodePortOf(n.id, r0.src, r0.tgt, r0.dir).side===r0.side);
+  check('a stored side override still works on any-area blocks',
+    T.nodePortOf(n.id, r0.src, r0.tgt, r0.dir).side!==r0.side);
   T.resetGroupPortLayout(n.id);
-  // the flip swaps the halves — ports, wash and all
-  n.hvFlip=true; T.render();
-  check('flipping the node moves every port to the opposite half',
-    T.nodePortRowsFor(n.id).every(r=>r.pinned && r.side===(r.hv?'left':'right')));
-  check('a flipped barrier node paints its HV wash on the LEFT half',
-    doc.getElementById('nodesG').innerHTML.includes('x="0" y="0" width="'+(n.w/2)+'"'));
+  // the inspector offers the area as a plain select over the project areas
   S.sel={ type:'node', id:n.id }; T.render();
-  check('the node inspector offers the LV|HV flip switch below Voltage domain',
-    !!doc.getElementById('fFlip') && doc.getElementById('fFlip').checked);
-  S.sel=null; n.hvSide=prevSide; n.hvFlip=prevFlip; T.render();
-  check('clearing the flip restores the default (HV wash on the right)',
-    !doc.getElementById('nodesG').innerHTML.includes('x="0" y="0" width="'+(n.w/2)+'"'));
+  const sel=doc.getElementById('fSide');
+  check('the block card offers an Isolation area select listing every area',
+    !!sel && sel.value==='hv' && sel.querySelectorAll('option').length===S.areas.length);
+  check('the old per-block halves flip is gone', !doc.getElementById('fFlip'));
+  S.sel=null; n.area=prevArea; if (!prevArea) delete n.area; T.render();
+  check('clearing the area restores the plain look',
+    !([...doc.querySelectorAll('#nodesG g[data-nid]')].find(x=>x.dataset.nid===n.id).innerHTML.includes('var(--area-hv)')));
 }
 
-/* ---- rule 15: per-net LV|HV flag propagates to ports, blocks and colors ---- */
+/* ---- rule 15: per-net LV|HV flag drives colors ONLY — never blocks or ports ---- */
 {
   const g=T.groupsWithUngrouped().find(x=>x.id===best.id);
   const m=new Set(g.members);
-  // an internal edge whose endpoints classify automatically (no manual hvSide)
   const e=T.diagramEdges(S.edges).find(x=>m.has(x.source)&&m.has(x.target)
-    && !T.nodeById(x.source).hvSide && !T.nodeById(x.target).hvSide
     && x.nets.every(nn=>!T.isHvNet(nn)));
   const net=e.nets[0];
   check('an LV-typed net reads LV before any flag', T.isHvNet(net)===false && T.netCategory(net)!=='hv');
   net.hv=true; T.render();
   check('the flag wins over the type: the net reads HV now', T.isHvNet(net)===true && T.netCategory(net)==='hv');
-  const srcSide=T.nodeSide(e.source);
-  check('the touching block re-classifies automatically (hv or barrier)', srcSide==='hv' || srcSide==='barrier');
-  if (srcSide==='barrier'){
-    const row=T.nodePortRowsFor(e.source).find(r=>r.src===e.source&&r.tgt===e.target);
-    check('the flagged net\'s port pins to the HV half', row.pinned && row.side==='right' && row.hv);
-  } else {
-    check('an all-HV block needs no barrier pinning (whole block is HV)', true);
-  }
+  check('the touching blocks DO NOT move: areas are per-block configuration, independent of levels',
+    T.nodeArea(e.source)==='lv' && T.nodeArea(e.target)==='lv');
+  const row=T.nodePortRowsFor(e.source).find(r=>r.src===e.source&&r.tgt===e.target);
+  check('the flagged net pins no port anywhere', !!row && !row.pinned);
   // the connection inspector offers the toggle and it flips back
   S.sel={ type:'edge', id:e.id }; T.render();
   const domBtn=doc.querySelector('#insBody [data-domnet]');
@@ -875,69 +870,82 @@ check('every in-group connection carries a routing lane',
     inSpecs.every(s=>{ const e=S.edges.find(x=>x.id===s.e.id); return e && !T.nodeEdgeRouteOf(e); }));
 }
 
-/* ---- rule 20: a group connection never mixes isolation AREAS — an edge in
-   the HV area travels whole in its own connection (LV-level nets included),
-   and the FROM/TO portals split in two. Wire COLOR stays the nets' own
-   category — the area shows on the blocks, not on the bus. ---- */
+/* ---- rule 20: a group connection never mixes isolation DOMS — a crossing
+   edge travels whole in its own connection (its net LEVELS irrelevant), the
+   FROM/TO portals split per dom, and wire COLOR stays the nets' own
+   category — the areas show on blocks and portal boxes, not on the bus. ---- */
 {
   T.closeGroupView(); T.render();
-  // find (or force) a group pair whose nets span both domains
+  // find a group pair with two edges whose target blocks differ, so moving ONE
+  // target into the HV area splits the pair into two doms
   const idx=T.nodeGroupIndex();
-  let pairEdge=T.diagramEdges(S.edges).find(e=>{
-    const gs=idx.get(e.source), gt=idx.get(e.target);
-    return gs&&gt&&gs!==gt&&e.nets.length>=2;
-  });
+  let pairEdge=null, gs=null, gt=null;
+  outer:
+  for (const e of T.diagramEdges(S.edges)){
+    const a=idx.get(e.source), b=idx.get(e.target);
+    if (!a||!b||a===b) continue;
+    const others=T.diagramEdges(S.edges).filter(o=>o.id!==e.id && idx.get(o.source)===a && idx.get(o.target)===b);
+    // the pair must survive the split (another edge stays same-area) and the
+    // crossing edge's nets must be its own (shared rails ride both buses)
+    if (others.some(o=>o.target!==e.target && o.source!==e.target) &&
+        e.nets.some(nn=>others.every(o=>!o.nets.some(n=>n.name===nn.name)))){
+      pairEdge=e; gs=a; gt=b; break outer;
+    }
+  }
+  check('fixture offers a splittable group pair', !!pairEdge);
   T.commit();
-  const realEdge=S.edges.find(x=>x.id===pairEdge.id);
-  realEdge.nets[0].hv=true; realEdge.nets[1].hv=false;
+  T.nodeById(pairEdge.target).area='hv';
   T.render();
-  const gs=idx.get(pairEdge.source), gt=idx.get(pairEdge.target);
   const splits=T.computeGroupEdges().filter(e=>e.source===gs&&e.target===gt);
-  check('a mixed pair derives TWO group connections, one per AREA',
-    splits.length===2 && splits.some(e=>e.dom==='hv') && splits.some(e=>e.dom===''));
-  const hvE=splits.find(e=>e.dom==='hv'), lvE=splits.find(e=>e.dom==='');
-  check('the HV-area connection carries its WHOLE bus — the re-levelled LV net rides along, no new TO/FROM',
-    [realEdge.nets[0].name, realEdge.nets[1].name].every(nm=>hvE.nets.some(n=>n.name===nm)) &&
-    hvE.nets.some(n=>!T.isHvNet(n)));
-  check('the LV-area connection is the other edges\' bus — nothing of the flipped edge leaks into it',
-    !lvE.nets.some(n=>n.name===realEdge.nets[0].name) && !lvE.nets.some(n=>n.name===realEdge.nets[1].name));
-  check('the two connections are separately selectable (distinct ids)', hvE.id!==lvE.id);
-  const hvCat=T.edgeCategory ? null : null;
-  const hvPathRed=doc.querySelector(`#edgesG .edge[data-eid="${hvE.id}"] path[stroke="var(--sig-hv)"]`);
-  check('the HV-area bus is drawn in its nets\' category color (red only because it carries a true-HV net)',
-    !!hvPathRed);
-  const lvPath=doc.querySelector(`#edgesG .edge[data-eid="${lvE.id}"] path[stroke="var(--sig-hv)"]`);
-  check('the LV-area connection keeps its normal colour', !lvPath);
-  // each domain has its own port row on both group blocks
+  check('a pair spanning two areas derives TWO group connections, one per DOM',
+    splits.length===2 && splits.some(e=>e.dom==='lv>hv') && splits.some(e=>e.dom===''));
+  const xE=splits.find(e=>e.dom==='lv>hv'), lvE=splits.find(e=>e.dom==='');
+  check('the crossing connection carries its WHOLE bus — every net of the crossing edge, levels irrelevant',
+    pairEdge.nets.every(nn=>xE.nets.some(n=>n.name===nn.name)));
+  // nets shared with other member pairs legitimately ride both buses; the
+  // crossing edge's EXCLUSIVE nets must never leak into the same-area bus
+  const stayers=T.diagramEdges(S.edges).filter(o=>o.id!==pairEdge.id && idx.get(o.source)===gs &&
+    idx.get(o.target)===gt && o.target!==pairEdge.target && o.source!==pairEdge.target);
+  const exclusive=pairEdge.nets.filter(nn=>stayers.every(o=>!o.nets.some(n=>n.name===nn.name)));
+  check('nets exclusive to the crossing edge never leak into the same-area connection',
+    exclusive.length>0 && !exclusive.some(nn=>lvE.nets.some(n=>n.name===nn.name)));
+  check('the two connections are separately selectable (distinct ids)', xE.id!==lvE.id);
+  if (pairEdge.nets.every(n=>!T.isHvNet(n)))
+    check('the crossing bus keeps its nets\' category color — crossing an area border does not paint a wire red',
+      !doc.querySelector(`#edgesG .edge[data-eid="${xE.id}"] path[stroke="var(--sig-hv)"]`));
+  else
+    check('the crossing bus color follows its nets\' own categories', true);
+  // each dom has its own port row on both group blocks
   const rowsAt=gid=>T.groupPortRowsFor(gid).filter(r=>r.src===gs&&r.tgt===gt);
-  check('each domain gets its own port row on the blocks',
+  check('each dom gets its own port row on the blocks',
     rowsAt(gs).length===2 && rowsAt(gt).length===2 &&
-    rowsAt(gs).some(r=>r.dom==='hv') && rowsAt(gs).some(r=>!r.dom));
+    rowsAt(gs).some(r=>r.dom==='lv>hv') && rowsAt(gs).some(r=>!r.dom));
 
-  // drill view: the boundary splits into an LV and an HV portal
+  // drill view: the boundary splits into a same-area and a crossing portal
   T.openGroupView(gt); T.render();
   const ps=T.drillSheet().portals.filter(p=>p.dir==='in' && p.item.source===gs);
-  check('the FROM boundary splits into an LV and an HV portal',
-    ps.length===2 && ps.some(p=>p.item.dom==='hv') && ps.some(p=>p.item.dom===''));
-  const hvP=ps.find(p=>p.item.dom==='hv');
-  check('the HV portal key carries the domain (#hv)', hvP.key.endsWith('#hv'));
-  check('the HV portal wires all carry an HV net',
-    hvP.unders.length>0 && hvP.unders.every(e=>e.nets.some(n=>T.isHvNet(n))));
+  check('the FROM boundary splits into a same-area and a crossing portal',
+    ps.length===2 && ps.some(p=>p.item.dom==='lv>hv') && ps.some(p=>p.item.dom===''));
+  const xP=ps.find(p=>p.item.dom==='lv>hv');
+  check('the crossing portal key carries its dom (#lv>hv)', xP.key.endsWith('#lv>hv'));
+  check('the crossing portal holds exactly the crossing edge\'s wire',
+    xP.unders.length===1 && xP.unders[0].id===pairEdge.id);
   const lvP=ps.find(p=>p.item.dom==='');
-  check('the LV portal wires never carry an HV net',
-    lvP.unders.every(e=>e.nets.every(n=>!T.isHvNet(n))));
-  check('the HV portal box is drawn in the HV red',
-    !!doc.querySelector(`#edgesG .portal[data-portal="${hvP.key.replace(/"/g,'')}"] path[stroke="var(--sig-hv)"]`));
-  // a domain flip re-anchors ports, so lanes go stale — the in-group
-  // Auto-layout (what a user does after re-domaining) must leave the split
-  // sheet fully clean
+  check('the same-area portal never carries the crossing wire',
+    lvP.unders.length>0 && lvP.unders.every(e=>e.id!==pairEdge.id));
+  check('the crossing portal box wears the HV area color and NAMES the crossing',
+    (mk=>!!mk && mk.innerHTML.includes('var(--area-hv)') && / · LV → HV</.test(mk.innerHTML))(
+      [...doc.querySelectorAll('#edgesG .portal')].find(p=>p.dataset.portal===xP.key)));
+  // an area change re-anchors ports, so lanes go stale — the in-group
+  // Auto-layout (what a user does after re-assigning areas) must leave the
+  // split sheet fully clean
   doc.getElementById('btnLayout').onclick();
   let bad=null;
   for (const w of wirePts()){ const hit=crossesAny(w.pts, T.openGroupObstacleRects()); if (hit) bad=w.eid+' over '+hit; }
   check('wires clear of every block with split portals (after in-group auto-layout)'+(bad?' ['+bad+']':''), !bad);
 
   T.closeGroupView();
-  T.undo(); T.undo(); T.render();   // unwind the auto-layout, then the domain flip
+  T.undo(); T.undo(); T.render();   // unwind the auto-layout, then the area assignment
   check('undo merges the pair back into one connection',
     T.computeGroupEdges().filter(e=>e.source===gs&&e.target===gt).length===1);
 }

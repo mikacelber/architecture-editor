@@ -135,9 +135,13 @@ check('lanes saved in the session', sess.groupEdgeLanes && Object.keys(sess.grou
   check('labels use the (IN)/(OUT) format', nh.includes('(IN) ') && nh.includes('(OUT) '));
   check('old bare IN/OUT format is gone', !/>IN  |>OUT  /.test(nh));
 
-  // On barrier blocks every port row (badge + label) stays inside its own half.
+  // Areas are explicit per-block configuration now, so BUILD a mixed group:
+  // move one member of a connected group into the HV area.
+  const gmix=T.visibleGroups().find(g=>g.members.length>=2 && T.groupPortRowsFor(g.id).length);
+  T.nodeById(gmix.members[gmix.members.length-1]).area='hv'; T.render();
+  // On mixed (barrier) blocks every port row (badge + label) stays inside its own half.
   const barrier=T.visibleGroups().filter(g=>T.groupSide(g.id)==='barrier');
-  check('barrier groups exist to verify ('+barrier.map(g=>g.id).join(', ')+')', barrier.length>0);
+  check('a mixed group exists to verify ('+barrier.map(g=>g.id).join(', ')+')', barrier.length>0);
   let crossed=[];
   for (const g of barrier){
     const W=T.groupBlockWidth(g), mid=W/2, P=T.GROUP_PAD_X;
