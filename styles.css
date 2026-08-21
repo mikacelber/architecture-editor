@@ -8,7 +8,7 @@
   --epoxy:var(--paper); --epoxy-edge:var(--ink); --silk:var(--ink);
   --probe:#FFC53D; --probe-deep:#B8860B;
   --copper:#B0793C; --copper-soft:#C9A06B; --grid:rgba(43,42,38,.07); --hv:#C43E1C;
-  --panel:#FFFFFF; --line:#DEDACC; --ok:#3D7A46; --warn:#A05C12;
+  --panel:#FFFFFF; --line:#DEDACC; --ok:#3D7A46; --warn:#A8890B;
   --vellum:#F6EFDC; --field-bg:#FDFCF9;
   --btn-hover:#EFECE2; --primary-hover:#2A3D5C; --danger-hover:#FBEAE4;
   --overlay:rgba(27,42,65,.45);
@@ -23,7 +23,7 @@
   --paper:#1B2027; --ink:#E7ECF3; --ink-soft:#8D99AC;
   --probe:#FFC53D; --probe-deep:#D9A227;
   --copper:#D3A06C; --copper-soft:#B98A57; --grid:rgba(232,230,225,.06); --hv:#FF7A5C;
-  --panel:#20262E; --line:#39424C; --ok:#5FBE6D; --warn:#E0A23D;
+  --panel:#20262E; --line:#39424C; --ok:#5FBE6D; --warn:#F2C932;
   --vellum:#2E2A1E; --field-bg:#161B21;
   --btn-hover:#2A323C; --primary-hover:#C7CEDA; --danger-hover:#3A2620;
   --overlay:rgba(0,0,0,.55);
@@ -279,6 +279,9 @@ button.chip.warn:hover{border-color:var(--warn);background:var(--danger-hover)}
   border:1.5px solid var(--line);border-left:4px solid var(--warn);border-radius:3px;
   background:var(--field-bg);padding:6px 9px;margin-bottom:6px;cursor:pointer}
 .issue:hover{border-color:var(--warn)}
+/* the entry currently spotlighted on the canvas — the list stays open while
+   you walk it, so it has to say where you are */
+.issue.on{border-color:var(--warn);background:var(--danger-hover);border-left-width:6px}
 .issue b{font-family:var(--mono);font-size:11.5px}
 
 /* Auto IC Selection progress log inside the modal */

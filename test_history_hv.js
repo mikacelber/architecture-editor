@@ -12,7 +12,7 @@ window.__T={get S(){return S;},get HIST(){return HIST;},loadFromContract,render,
  openGroupView,closeGroupView,nodeArea,nodeAreas,nodeIsMixed,edgeDomOf,domMarker,areaName,areasOf,isHvNet,defaultAreas,
  areaCustom,applyAreaColors,loadSession,drillSheet,portRowLabel,groupsWithUngrouped,groupBaseArea,groupOtherArea,
  nodePortRowsFor,nodePortOf,edgeCrossesAreas,collectIssues,spotDimEdge,spotDimNode,gotoNodeIssue,
- nodeBlockWidth,nodePortRowLabel,textWidth,GROUP_PAD_X:GROUP_PAD_X};`);
+ nodeBlockWidth,nodePortRowLabel,textWidth,GROUP_PAD_X:GROUP_PAD_X,WARN_DASH:WARN_DASH,gotoEdgeIssue};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -536,6 +536,68 @@ const key=e=>T.groupEdgeRouteKey(e.source,e.target);
     needs.every(x=>x <= mid));
   check('the width rule bites: the block is at least twice its widest row',
     W >= 2*Math.max(...needs));
+}
+
+/* ============ a net in error SHOUTS: yellow, thick, dotted, both ends ============ */
+{
+  const doc=window.document;
+  // build a clean crossing: LVSRC (lv) → XF (lv) with XF's port on its HV half
+  T.loadFromContract(
+    { id:'w', title:'w', description:'', ic_components:[
+      { ic_part_number:'LVSRC', ic_type:'a', description:'', manufacturer:'', DatasheetUrl:'', selection_rationale:'' },
+      { ic_part_number:'XF', ic_type:'b', description:'', manufacturer:'', DatasheetUrl:'', selection_rationale:'' },
+      { ic_part_number:'HVLOAD', ic_type:'c', description:'', manufacturer:'', DatasheetUrl:'', selection_rationale:'' }] },
+    { global_nets:[
+      { name:'DRIVE', type:'CONTROL_SIGNAL', source:'LVSRC', consumers:['XF'], description:'' },
+      { name:'SEC', type:'HIGH_VOLTAGE_PATH', source:'XF', consumers:['HVLOAD'], description:'' }],
+      external_blocks:[] },
+    [ { id:'G1', title:'G1', description:'', members:['LVSRC','XF'] },
+      { id:'G2', title:'G2', description:'', members:['HVLOAD'] } ]);
+  T.nodeById('HVLOAD').area='hv'; T.nodeById('XF').area2='hv';
+  T.setGroupPortSide('XF','LVSRC','XF','right');     // the LV drive parked on the HV half → error
+  T.render();
+  const de=S.edges.find(e=>e.source==='LVSRC'&&e.target==='XF');
+  check('the fixture has a net in error', T.edgeCrossesAreas(de));
+  T.openGroupView('G1');
+  const wire=doc.querySelector('#edgesG .edge[data-eid="'+de.id+'"] path[stroke="var(--warn)"]');
+  check('the wire draws in the warning yellow', !!wire);
+  check('…finely dotted', wire.getAttribute('stroke-dasharray')===T.WARN_DASH);
+  const plain=[...doc.querySelectorAll('#edgesG path[stroke]')]
+    .find(p=>/^var\(--sig-/.test(p.getAttribute('stroke')||''));
+  check('…and thicker than an ordinary wire',
+    parseFloat(wire.getAttribute('stroke-width')) > parseFloat(plain.getAttribute('stroke-width')));
+  check('…with the warning arrowhead', wire.getAttribute('marker-end')==='url(#arrowWarn)');
+  const both=['LVSRC','XF'].map(id=>[...doc.querySelectorAll('#nodesG g[data-nid]')].find(x=>x.dataset.nid===id));
+  check('the blocks at BOTH ends outline in the warning yellow',
+    both.every(el=>el.querySelector('rect[stroke="var(--warn)"]')));
+  check('a block that is NOT an end of it is never blamed for the crossing',
+    (()=>{ T.closeGroupView(); T.openGroupView('G2');
+      const el=[...doc.querySelectorAll('#nodesG g[data-nid]')].find(x=>x.dataset.nid==='HVLOAD');
+      // (it does wear amber — its part is unpicked — but its warning never
+      // mentions the isolation areas, and both real ends' warnings do)
+      return !/isolation areas/.test(el.innerHTML) &&
+        both.every(e2=>/isolation areas/.test(e2.innerHTML)); })());
+  T.closeGroupView(); T.openGroupView('G1');
+  check('the ports of the net in error go yellow too',
+    [...doc.querySelectorAll('#nodesG .portnum')].some(p=>p.dataset.eid===de.id &&
+      p.querySelector('rect[stroke="var(--warn)"]')));
+  T.closeGroupView(); T.render();
+  // and at the top level, on the bus between the two groups
+  const ge=T.computeGroupEdges().find(e=>(e.dom||'').includes('>'));
+  if (ge){
+    const bus=doc.querySelector('#edgesG .edge[data-eid="'+ge.id+'"] path[stroke="var(--warn)"]');
+    check('the top-level bus is yellow, dotted and thick too',
+      !!bus && bus.getAttribute('stroke-dasharray')===T.WARN_DASH &&
+      bus.getAttribute('marker-end')==='url(#arrowWarn)');
+  } else check('the top-level bus is yellow, dotted and thick too (no cross-group bus here)', true);
+  // the Issues list stays open while you walk it
+  S.sel={type:'issues'}; T.render();
+  T.gotoEdgeIssue(de.id);
+  check('walking the Issues list never swaps the panel away',
+    S.sel.type==='issues' && doc.querySelectorAll('#insBody .issue').length>0);
+  check('…and marks the entry you are looking at',
+    (x=>!!x && x.classList.contains('on'))(doc.querySelector('#insBody [data-iss-edge="'+de.id+'"]')));
+  S.spotlight=null; S.sel=null; T.render();
 }
 
 console.log('\n'+pass+' passed, '+fail+' failed');

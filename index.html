@@ -75,6 +75,11 @@
         <marker id="arrowOther" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="9.5" markerHeight="9.5" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
           <path d="M0 0.6 L7.4 4 L0 7.4 Z" fill="var(--sig-other)"/>
         </marker>
+        <!-- A net in error (one crossing two isolation areas) drops its category
+             styling for this one: warning yellow, dotted and thicker. -->
+        <marker id="arrowWarn" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="11" markerHeight="11" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+          <path d="M0 0.6 L7.4 4 L0 7.4 Z" fill="var(--warn)"/>
+        </marker>
       </defs>
       <!-- Plain pan-capture surface. The ONLY grid is the adaptive one in #gridG,
            drawn in screen space and kept aligned to the world lattice by app.js. -->
