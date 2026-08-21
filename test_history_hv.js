@@ -12,7 +12,7 @@ window.__T={get S(){return S;},get HIST(){return HIST;},loadFromContract,render,
  openGroupView,closeGroupView,nodeArea,nodeAreas,nodeIsMixed,edgeDomOf,domMarker,areaName,areasOf,isHvNet,defaultAreas,
  areaCustom,applyAreaColors,loadSession,drillSheet,portRowLabel,groupsWithUngrouped,groupBaseArea,groupOtherArea,
  nodePortRowsFor,nodePortOf,edgeCrossesAreas,collectIssues,spotDimEdge,spotDimNode,gotoNodeIssue,
- nodeBlockWidth,nodePortRowLabel,textWidth,GROUP_PAD_X:GROUP_PAD_X,WARN_DASH:WARN_DASH,gotoEdgeIssue};`);
+ nodeBlockWidth,nodePortRowLabel,textWidth,GROUP_PAD_X:GROUP_PAD_X,WARN_DASH:WARN_DASH,gotoEdgeIssue,domMemberArea,undo};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -598,6 +598,60 @@ const key=e=>T.groupEdgeRouteKey(e.source,e.target);
   check('…and marks the entry you are looking at',
     (x=>!!x && x.classList.contains('on'))(doc.querySelector('#insBody [data-iss-edge="'+de.id+'"]')));
   S.spotlight=null; S.sel=null; T.render();
+}
+
+/* ============ one net, one level: the LV/HV flip lands on every copy ============ */
+{
+  const doc=window.document;
+  // one net feeding two consumers -> two edges, two copies of the same net
+  T.loadFromContract(
+    { id:'lvl', title:'lvl', description:'', ic_components:['A','B','C'].map(p=>(
+      { ic_part_number:p, ic_type:'t', description:'', manufacturer:'', DatasheetUrl:'', selection_rationale:'' })) },
+    { global_nets:[ { name:'RAIL', type:'POWER_DISTRIBUTION', source:'A', consumers:['B','C'], description:'' } ],
+      external_blocks:[] }, []);
+  const copies=()=>S.edges.filter(e=>e.nets.some(n=>n.name==='RAIL')).map(e=>e.nets.find(n=>n.name==='RAIL'));
+  check('the net rides two connections', copies().length===2);
+  S.sel={type:'edge', id:S.edges.find(e=>e.nets.some(n=>n.name==='RAIL')).id}; T.render();
+  doc.querySelector('#insBody [data-domnet]').onclick();
+  check('flipping the LV/HV badge on ONE card raises the level of EVERY copy',
+    copies().every(n=>T.isHvNet(n)));
+  S.sel={type:'edge', id:S.edges.filter(e=>e.nets.some(n=>n.name==='RAIL'))[1].id}; T.render();
+  doc.querySelector('#insBody [data-domnet]').onclick();
+  check('…and flipping it back from the OTHER connection lowers every copy',
+    copies().every(n=>!T.isHvNet(n)));
+  T.undo();
+  check('each flip is one undoable step', copies().every(n=>T.isHvNet(n)));
+  S.sel=null; T.render();
+}
+
+/* ============ demo-flow regression: group ports mirror their FROM/TOs' areas ============ */
+{
+  // the user's exact flow on the shipped demo: make the flyback transformer
+  // mixed and park its secondary on the HV half
+  const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
+  T.loadFromContract(fx.input,fx.contract,fx.groups);
+  const xf=T.nodeById('EXT:HV flyback transformer');
+  xf.area2='hv';
+  const sec=S.edges.find(e=>e.source===xf.id && /multiplier/i.test(e.target));
+  T.setGroupPortSide(xf.id, sec.source, sec.target, 'right'); T.render();
+  const gid='ISOLATION_BARRIER';
+  check('the transformer mixes its group', T.groupSide(gid)==='barrier');
+  const rows=T.groupPortRowsFor(gid);
+  check('EVERY port of the group is pinned to the half of its own dom — none floats',
+    rows.length>0 && rows.every(r=>r.pinned &&
+      r.side===((T.domMemberArea(r.dom,r.dir)!==T.groupBaseArea(gid))?'right':'left')));
+  const hvRow=rows.find(r=>(r.dom||'').includes('>')||T.domMemberArea(r.dom,r.dir)==='hv');
+  check('the HV-side connection sits on the HV half', !!hvRow && hvRow.side==='right');
+  T.setGroupPortSide(gid, hvRow.src, hvRow.tgt, 'left', hvRow.dom); T.render();
+  check('a stored override cannot move a group port to the other area',
+    T.groupPortOf(gid, hvRow.src, hvRow.tgt, hvRow.dir, hvRow.dom).side==='right');
+  // the drill FROM/TO boxes and the group rows tell the same story, one to one
+  T.openGroupView(gid);
+  const pk=T.drillSheet().portals.map(p=>p.key).sort();
+  T.closeGroupView(); T.render();
+  const rk=rows.map(r=>(r.dir==='in'?'in:':'out:')+r.other+(r.dom?'#'+r.dom:'')).sort();
+  check('group ports and drill FROM/TO boxes correspond one to one',
+    JSON.stringify(pk)===JSON.stringify(rk));
 }
 
 console.log('\n'+pass+' passed, '+fail+' failed');
