@@ -13,7 +13,8 @@ window.__T={get S(){return S;},get HIST(){return HIST;},loadFromContract,render,
  applyAreaColors,loadSession,drillSheet,portRowLabel,groupsWithUngrouped,groupBaseArea,groupOtherArea,
  nodePortRowsFor,nodePortOf,edgeCrossesAreas,collectIssues,spotDimEdge,spotDimNode,gotoNodeIssue,
  nodeBlockWidth,nodePortRowLabel,textWidth,GROUP_PAD_X:GROUP_PAD_X,WARN_DASH:WARN_DASH,gotoEdgeIssue,domMemberArea,undo,
- AREA_CHAIN:AREA_CHAIN,areaDefaultColor,healMixedPortSides,buildSessionJSON};`);
+ AREA_CHAIN:AREA_CHAIN,areaDefaultColor,healMixedPortSides,buildSessionJSON,nodeAreasOfNode,areaPaint,
+ normalizeNodeAreaOrder,edgeEndArea};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -684,9 +685,10 @@ const key=e=>T.groupEdgeRouteKey(e.source,e.target);
   T.nodeById('MULT').area='hv';
   T.nodeById('OPTO').area='hv'; T.nodeById('OPTO').area2='lv';
   // the stale cosmetic sides from the reported session: HV net on the LV half,
-  // LED drive on the HV half — both swapped from any sane intent
-  T.setGroupPortSide('OPTO','MULT','OPTO','right');   // right = second area = lv
-  T.setGroupPortSide('OPTO','LVDRV','OPTO','left');   // left = primary = hv
+  // LED drive on the HV half — both swapped from any sane intent (halves are
+  // canonical: LV owns the left, HV the right, whichever select was filled first)
+  T.setGroupPortSide('OPTO','MULT','OPTO','left');    // left = lv half
+  T.setGroupPortSide('OPTO','LVDRV','OPTO','right');  // right = hv half
   T.render();
   const hvE=S.edges.find(e=>e.source==='MULT'&&e.target==='OPTO');
   const ledE=S.edges.find(e=>e.source==='LVDRV'&&e.target==='OPTO');
@@ -717,7 +719,7 @@ const key=e=>T.groupEdgeRouteKey(e.source,e.target);
   // make a real crossing that no heal can resolve: two single-area blocks
   T.nodeById('LVDRV').area=undefined; delete T.nodeById('LVDRV').area;
   const led=S.edges.find(e=>e.source==='LVDRV'&&e.target==='OPTO');
-  T.setGroupPortSide('OPTO','LVDRV','OPTO','left'); T.render();   // park it on the HV half
+  T.setGroupPortSide('OPTO','LVDRV','OPTO','right'); T.render();   // park it on the HV half
   check('fixture erroring', T.edgeCrossesAreas(led));
   T.openGroupView('UNGROUPED');
   const wireStroke=()=>{
@@ -759,6 +761,69 @@ const key=e=>T.groupEdgeRouteKey(e.source,e.target);
     doc.documentElement.style.getPropertyValue('--area-a1')===T.AREA_CHAIN[2] &&
     doc.documentElement.style.getPropertyValue('--area-a2')===T.AREA_CHAIN[3]);
   S.areas=T.defaultAreas(); T.applyAreaColors(); T.render();
+}
+
+/* ============ a mixed block's halves follow the PROJECT's area order ============ */
+{
+  const doc=window.document;
+  // the reported optocoupler: HV picked as the FIRST area, LV added second
+  T.loadFromContract(
+    { id:'oc', title:'oc', description:'', ic_components:[
+      { ic_part_number:'HVSRC', ic_type:'a', description:'', manufacturer:'', DatasheetUrl:'', selection_rationale:'' },
+      { ic_part_number:'OC100HG', ic_type:'opto', description:'', manufacturer:'', DatasheetUrl:'', selection_rationale:'' },
+      { ic_part_number:'LVDRV', ic_type:'c', description:'', manufacturer:'', DatasheetUrl:'', selection_rationale:'' }] },
+    { global_nets:[
+      { name:'HV_BUS', type:'HIGH_VOLTAGE_PATH', source:'HVSRC', consumers:['OC100HG'], description:'' },
+      { name:'LED', type:'CONTROL_SIGNAL', source:'LVDRV', consumers:['OC100HG'], description:'' }],
+      external_blocks:[] }, []);
+  T.nodeById('HVSRC').area='hv';
+  const oc=T.nodeById('OC100HG'); oc.area='hv'; oc.area2='lv';   // HV first, LV second
+  T.render();
+  check('the halves come out in the PROJECT order (LV left, HV right), not the order the selects were filled',
+    T.nodeAreasOfNode(oc).join('|')==='lv|hv');
+  check('…so the halves read canonically even from a raw inverted pair (hv, lv)',
+    (oc.area==='hv' && oc.area2==='lv') && T.nodeAreasOfNode(oc)[1]==='hv');
+  // editing the block through its card normalizes the stored pair as well
+  S.sel={type:'node', id:'OC100HG'}; T.render();
+  const s2=doc.getElementById('fSide2'); s2.value='hv'; s2.onchange();
+  check('a card edit normalizes the stored pair to match what the halves show',
+    (T.nodeById('OC100HG').area||'lv')==='lv' && T.nodeById('OC100HG').area2==='hv');
+  S.sel=null; T.render();
+  T.openGroupView('UNGROUPED');
+  const el=[...doc.querySelectorAll('#nodesG g[data-nid]')].find(x=>x.dataset.nid==='OC100HG');
+  const tag=t=>[...el.querySelectorAll('text')].find(x=>x.textContent===t);
+  check('the HV tag sits on the RIGHT in the HV color, the LV tag on the LEFT in plain ink',
+    +tag('HV').getAttribute('x') > oc.w/2 && tag('HV').getAttribute('fill')==='var(--area-hv)' &&
+    +tag('LV').getAttribute('x') < oc.w/2 && tag('LV').getAttribute('fill')==='var(--ink-soft)');
+  const wash=[...el.querySelectorAll('rect')].find(r=>r.getAttribute('clip-path'));
+  check('the HV wash paints the HV (right) half — never the LV one',
+    +wash.getAttribute('x') > 0 && wash.getAttribute('fill')==='var(--area-hv)');
+  // and the semantics agree with what is drawn
+  const hv=S.edges.find(e=>e.source==='HVSRC'&&e.target==='OC100HG');
+  T.setGroupPortSide('OC100HG','HVSRC','OC100HG','right'); T.render();
+  check('an HV signal parked on the HV half reads HV — no error (the reported inversion)',
+    T.edgeEndArea(hv,'OC100HG')==='hv' && !T.edgeCrossesAreas(hv));
+  T.setGroupPortSide('OC100HG','HVSRC','OC100HG','left'); T.render();
+  check('…and on the LV half it errors, as it should', T.edgeCrossesAreas(hv));
+  T.closeGroupView();
+  // the migration preserves each net's AREA while fixing the visuals
+  T.setGroupPortSide('OC100HG','HVSRC','OC100HG','right');
+  T.setGroupPortSide('OC100HG','LVDRV','OC100HG','left'); T.render();
+  const sess=JSON.parse(JSON.stringify(T.buildSessionJSON()));
+  const bad=sess.nodes.find(n=>n.id==='OC100HG');
+  bad.area='hv'; bad.area2='lv';                       // re-invert it, as an old file would carry it
+  bad._x=1; delete bad._x;
+  // an old file also stored the sides that MEANT hv under the inverted order
+  sess.groupPortSides['OC100HG|HVSRC→OC100HG']='left';
+  sess.groupPortSides['OC100HG|LVDRV→OC100HG']='right';
+  T.loadSession(sess);
+  const oc2=T.nodeById('OC100HG');
+  check('loading an inverted legacy file normalizes the pair',
+    (oc2.area||'lv')==='lv' && oc2.area2==='hv');
+  check('…and swaps the port sides with it, so every net keeps the area it had',
+    T.edgeEndArea(S.edges.find(e=>e.source==='HVSRC'&&e.target==='OC100HG'),'OC100HG')==='hv' &&
+    T.edgeEndArea(S.edges.find(e=>e.source==='LVDRV'&&e.target==='OC100HG'),'OC100HG')==='lv' &&
+    T.collectIssues().crossings.length===0);
 }
 
 console.log('\n'+pass+' passed, '+fail+' failed');
