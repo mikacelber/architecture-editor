@@ -14,7 +14,8 @@ window.__T={get S(){return S;},get HIST(){return HIST;},loadFromContract,render,
  nodePortRowsFor,nodePortOf,edgeCrossesAreas,collectIssues,spotDimEdge,spotDimNode,gotoNodeIssue,
  nodeBlockWidth,nodePortRowLabel,textWidth,GROUP_PAD_X:GROUP_PAD_X,WARN_DASH:WARN_DASH,gotoEdgeIssue,domMemberArea,undo,
  AREA_CHAIN:AREA_CHAIN,areaDefaultColor,healMixedPortSides,buildSessionJSON,nodeAreasOfNode,areaPaint,
- normalizeNodeAreaOrder,edgeEndArea};`);
+ normalizeNodeAreaOrder,edgeEndArea,groupAreasOf,needsAreaOrder,openAreaOrderModal,openImportModal,
+ tolerantParse,groupBlockWidth};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -824,6 +825,100 @@ const key=e=>T.groupEdgeRouteKey(e.source,e.target);
     T.edgeEndArea(S.edges.find(e=>e.source==='HVSRC'&&e.target==='OC100HG'),'OC100HG')==='hv' &&
     T.edgeEndArea(S.edges.find(e=>e.source==='LVDRV'&&e.target==='OC100HG'),'OC100HG')==='lv' &&
     T.collectIssues().crossings.length===0);
+}
+
+/* ============ a group's halves read like its members' ============ */
+{
+  // the reported group: two pure-HV members plus two mixed ones. Counting
+  // members made HV the "home" half and LV the washed one — inside out.
+  T.loadFromContract(
+    { id:'grp', title:'grp', description:'', ic_components:[
+      { ic_part_number:'BLEED', ic_type:'a', description:'', manufacturer:'', DatasheetUrl:'', selection_rationale:'' },
+      { ic_part_number:'OCHI', ic_type:'opto', description:'', manufacturer:'', DatasheetUrl:'', selection_rationale:'' },
+      { ic_part_number:'OCLO', ic_type:'opto', description:'', manufacturer:'', DatasheetUrl:'', selection_rationale:'' },
+      { ic_part_number:'CONN', ic_type:'d', description:'', manufacturer:'', DatasheetUrl:'', selection_rationale:'' },
+      { ic_part_number:'LVDRV', ic_type:'e', description:'', manufacturer:'', DatasheetUrl:'', selection_rationale:'' }] },
+    { global_nets:[
+      { name:'HVB', type:'HIGH_VOLTAGE_PATH', source:'BLEED', consumers:['OCHI'], description:'' },
+      { name:'OUT', type:'HIGH_VOLTAGE_PATH', source:'OCLO', consumers:['CONN'], description:'' },
+      { name:'LED', type:'CONTROL_SIGNAL', source:'LVDRV', consumers:['OCHI'], description:'' }],
+      external_blocks:[] },
+    [ { id:'SW', title:'SW', description:'', members:['BLEED','OCHI','OCLO','CONN'] },
+      { id:'DRV', title:'DRV', description:'', members:['LVDRV'] } ]);
+  for (const id of ['BLEED','CONN']) T.nodeById(id).area='hv';
+  for (const id of ['OCHI','OCLO']){ T.nodeById(id).area='hv'; T.nodeById(id).area2='lv'; }
+  T.render();
+  check('the group holds both areas even though HV outnumbers LV 4:2',
+    T.groupAreasOf('SW').join('|')==='lv|hv');
+  check('its halves follow the project order, not the member count (the reported bug)',
+    T.groupBaseArea('SW')==='lv' && T.groupOtherArea('SW')==='hv');
+  const doc=window.document;
+  const el=[...doc.querySelectorAll('#nodesG g[data-nid]')].find(x=>x.dataset.nid==='SW');
+  const W=T.groupBlockWidth(T.groupsWithUngrouped().find(g=>g.id==='SW'));
+  const wash=[...el.querySelectorAll('rect')].find(r=>r.getAttribute('clip-path'));
+  check('the HV wash paints the HV (right) half in the HV color — no grey/red mix-up',
+    +wash.getAttribute('x')>0 && wash.getAttribute('fill')==='var(--area-hv)');
+  const tag=t=>[...el.querySelectorAll('text')].find(x=>x.textContent===t);
+  check('and the tags agree: HV right in HV color, LV left in plain ink',
+    +tag('HV').getAttribute('x')>W/2 && tag('HV').getAttribute('fill')==='var(--area-hv)' &&
+    +tag('LV').getAttribute('x')<W/2 && tag('LV').getAttribute('fill')==='var(--ink-soft)');
+  check('a group and its mixed member read the same way round',
+    T.groupBaseArea('SW')===T.nodeAreasOfNode(T.nodeById('OCHI'))[0]);
+}
+
+/* ============ the import asks for the area ORDER once, then never again ============ */
+{
+  const doc=window.document;
+  check('a fresh contract import states its order by construction — nothing to ask',
+    S.areaOrderSet===true && !T.needsAreaOrder());
+  // an older session carries no order: the import must ask
+  const legacy=JSON.parse(JSON.stringify(T.buildSessionJSON()));
+  delete legacy.areaOrderSet;
+  T.loadSession(legacy);
+  check('a session with no stated order asks for one', T.needsAreaOrder());
+  T.openAreaOrderModal();
+  check('the dialog lists every area with its position, swatch and ▲▼',
+    doc.getElementById('modalTitle').textContent==='Isolation area order' &&
+    doc.querySelectorAll('[data-ao-up]').length===2 &&
+    doc.querySelectorAll('#aoRows .isoswatch').length===2);
+  // put HV first, LV second — the colors and halves must follow
+  doc.querySelector('[data-ao-down="0"]').onclick();
+  doc.getElementById('mOk').onclick();
+  check('the chosen order lands on the project', S.areas.map(a=>a.id).join(',')==='hv,lv');
+  check('…and the colors follow the position: the FIRST area is now the plain one',
+    T.areaPaint('hv')==='' && T.areaPaint('lv')==='var(--area-lv)' &&
+    doc.documentElement.style.getPropertyValue('--area-lv')===T.AREA_CHAIN[1]);
+  check('…and a mixed block\'s halves follow it too',
+    T.nodeAreasOfNode(T.nodeById('OCHI')).join('|')==='hv|lv');
+  check('the answer is stored, so nothing asks again', S.areaOrderSet===true && !T.needsAreaOrder());
+  // it rides the export and survives a round-trip and an undo
+  const sess=JSON.parse(JSON.stringify(T.buildSessionJSON()));
+  check('the export carries the stated order', sess.areaOrderSet===true &&
+    sess.areas.map(a=>a.id).join(',')==='hv,lv');
+  T.loadSession(sess);
+  check('re-importing that file never asks again', !T.needsAreaOrder() &&
+    S.areas.map(a=>a.id).join(',')==='hv,lv');
+  // back to LV-first for the rest of the suite
+  S.areas=T.defaultAreas(); S.areaOrderSet=true; T.applyAreaColors(); T.render();
+}
+
+/* ============ Isolation Barriers can reorder the areas too ============ */
+{
+  const doc=window.document;
+  S.sel=null; T.render();
+  doc.getElementById('btnIsoBar').onclick();
+  check('every row offers ▲▼ and only the first is undeletable',
+    doc.querySelectorAll('[data-area-up]').length===2 &&
+    doc.querySelectorAll('[data-area-del]').length===1);
+  check('the first row cannot move up, the last cannot move down',
+    doc.querySelector('[data-area-up="0"]').disabled &&
+    doc.querySelector('[data-area-down="1"]').disabled);
+  doc.querySelector('[data-area-down="0"]').onclick();
+  doc.getElementById('mOk').onclick();
+  check('reordering there re-colors the areas the same way',
+    S.areas.map(a=>a.id).join(',')==='hv,lv' && T.areaPaint('hv')==='');
+  T.undo();
+  check('and it is one undoable step', S.areas.map(a=>a.id).join(',')==='lv,hv');
 }
 
 console.log('\n'+pass+' passed, '+fail+' failed');
