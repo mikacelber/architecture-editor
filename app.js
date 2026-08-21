@@ -1362,7 +1362,7 @@ function safeId(s){ return String(s).replace(/[^A-Za-z0-9_-]/g,'_'); }
    the HV area's is the HV signal red, and extra areas draw from a small
    palette. Applied as CSS custom properties (--area-<id>) so every area
    visual (strokes, washes, tags, portal boxes) follows one knob. */
-function defaultAreas(){ return [ { id:'lv', name:'LV', color:'' }, { id:'hv', name:'HV', color:'' } ]; }
+function defaultAreas(){ return [ { id:'lv', name:'LV' }, { id:'hv', name:'HV' } ]; }
 // ONE fixed chain of 20 default colors, by the area's POSITION in the list —
 // every project gets the same colors for the same areas, however many it
 // creates. Slot 0 is the LV default (no color: the ordinary block look) and
@@ -1373,33 +1373,30 @@ const AREA_CHAIN = ['', 'var(--sig-hv)',
   '#E07B39','#8B5CF6','#0E8F7E','#2A63C4','#C2418D','#7A4E2D','#4C7A1E','#0FA3C4',
   '#364FC7','#2F9E44','#B03A48','#9775FA','#0B7285','#D6336C','#5F3DC4','#66A80F',
   '#846358','#862E9C'];
-function areaCustom(id){ const a = areaById(id); return (a && a.color) || ''; }
+// An area's color is DERIVED, never stored and never editable: its position
+// in the list picks its slot in the chain. Slot 0 is "no color" (the plain
+// block look the first area wears), slot 1 the HV red, the rest the printable
+// hues. Same areas, same colors, in every project.
 function areaDefaultColor(id){
-  if (id==='lv') return '';
-  if (id==='hv') return 'var(--sig-hv)';
   const i = areasOf().findIndex(a=>a.id===id);
-  const c = AREA_CHAIN[(i >= 0 ? i : 2) % AREA_CHAIN.length];
-  return /^#/.test(c) ? c : AREA_CHAIN[2];   // slots 0/1 belong to lv/hv
+  return AREA_CHAIN[(i >= 0 ? i : 2) % AREA_CHAIN.length];
 }
 let _appliedAreaVars = [];
 function applyAreaColors(){
   const r = document.documentElement.style;
   for (const v of _appliedAreaVars) r.removeProperty(v);
   _appliedAreaVars = [];
-  for (const a of areasOf()){
-    // hv/lv keep their stylesheet defaults unless customized, so a theme
-    // switch keeps repainting them live.
-    const c = a.color || ((a.id==='hv' || a.id==='lv') ? '' : areaDefaultColor(a.id));
-    if (!c) continue;
+  areasOf().forEach((a,i)=>{
+    const c = AREA_CHAIN[i % AREA_CHAIN.length];
+    if (!c) return;                       // slot 0 paints nothing
     const v = '--area-'+safeId(a.id);
     r.setProperty(v, c); _appliedAreaVars.push(v);
-  }
+  });
 }
-// The paint of an area: '' for the plain default-LV look, otherwise the CSS
-// variable that applyAreaColors (or the stylesheet, for HV) keeps current.
+// The paint of an area: '' for the colorless first slot, otherwise the CSS
+// variable applyAreaColors keeps current.
 function areaPaint(id){
-  if (id==='lv' && !areaCustom('lv')) return '';
-  return `var(--area-${safeId(id)})`;
+  return areaDefaultColor(id) ? `var(--area-${safeId(id)})` : '';
 }
 function areaStroke(area, lvFallback){ return areaPaint(area) || lvFallback; }
 // The corner tag names the block's isolation area.
@@ -2137,6 +2134,9 @@ const HIST = { past: [], future: [] };
 // maps onto the HV area; a barrier block becomes a MIXED block (LV primary +
 // HV second half, keeping its flip); everything else lands in the default LV
 // area.
+// Older sessions stored a per-area custom color; colors are derived from the
+// chain now, so the stale field is dropped on the way in.
+function migrateAreaColors(){ for (const a of areasOf()) delete a.color; }
 function migrateNodeAreas(){
   for (const n of S.nodes){
     if (!n.area && n.hvSide==='hv') n.area = 'hv';
@@ -2179,6 +2179,7 @@ function restoreState(json){
   S.project = s.project || {};
   S.areas = Array.isArray(s.areas) && s.areas.length ? s.areas : defaultAreas();
   migrateNodeAreas();
+  migrateAreaColors();
   applyAreaColors();
   S.openGroup = s.openGroup ?? null;
   S.edgeSeq = Math.max(0, ...S.edges.map(e=>+String(e.id).replace(/^e/,'')||0)) + 1;
@@ -5294,19 +5295,12 @@ function projectOf(){
    area); deleting any other area sends its blocks back to the default one.
    Nothing sticks until Save, and the whole edit is one undo step. */
 function openIsolationModal(){
-  const work = areasOf().map(a=>({ ...a }));
-  const cs = getComputedStyle(document.documentElement);
-  const toHex = c => {
-    const m = String(c).trim().match(/^rgba?\((\d+)[, ]+(\d+)[, ]+(\d+)/);
-    if (m) return '#'+[m[1],m[2],m[3]].map(v=>(+v).toString(16).padStart(2,'0')).join('');
-    return /^#([0-9a-f]{6})$/i.test(String(c).trim()) ? String(c).trim() : '#888888';
-  };
-  // The hex a row's color input shows when the area has no custom color.
-  const defHex = (a, i) => {
-    if (a.id==='hv') return toHex(cs.getPropertyValue('--sig-hv'));
-    if (a.id==='lv') return toHex(cs.getPropertyValue('--epoxy-edge')||cs.getPropertyValue('--ink-soft'));
+  const work = areasOf().map(a=>({ id:a.id, name:a.name }));
+  // The swatch is a READING of the chain slot this row sits in, not a control:
+  // colors are fixed so the same area always looks the same in every project.
+  const swatch = i => {
     const c = AREA_CHAIN[i % AREA_CHAIN.length];
-    return /^#/.test(c) ? c : toHex(cs.getPropertyValue('--sig-hv'));
+    return c || 'var(--epoxy-edge)';   // slot 0 has no color — show the plain block outline
   };
   const blockCount = id => S.nodes.filter(n=>nodeAreas(n.id).includes(id)).length;
   openModal(L('Isolation Barriers','Barreras de aislamiento'), `
@@ -5314,8 +5308,8 @@ function openIsolationModal(){
       'Las áreas de aislamiento de este proyecto. Cada bloque está asignado a exactamente un área (en su propia ficha); el color y la etiqueta del bloque siguen su área, y las conexiones entre bloques de áreas distintas cruzan una barrera de aislamiento — tienen sus propias cajas TO/FROM. Los niveles LV/HV de las redes son independientes de todo esto.')}</p>
     <div id="isoRows"></div>
     <div class="btnrow" style="margin-top:2px"><button id="isoAdd">+ ${L('Add area','Añadir área')}</button></div>
-    <p class="hint">${L('Names and colors are saved with the session. The default area can be renamed but never deleted; deleting another area moves its blocks back to the default one.',
-      'Los nombres y colores se guardan con la sesión. El área por defecto se puede renombrar pero nunca eliminar; al eliminar otra área sus bloques vuelven al área por defecto.')}</p>
+    <p class="hint">${L('Names are saved with the session; colors are fixed by each area\'s position in the list, so the same areas always look the same across projects. The default area can be renamed but never deleted; deleting another area moves its blocks back to the default one.',
+      'Los nombres se guardan con la sesión; los colores son fijos según la posición de cada área en la lista, así que las mismas áreas se ven igual en todos los proyectos. El área por defecto se puede renombrar pero nunca eliminar; al eliminar otra área sus bloques vuelven al área por defecto.')}</p>
   `, `<button id="mCancel">${L('Cancel','Cancelar')}</button><button class="primary" id="mOk">${L('Save','Guardar')}</button>`);
   const renderRows = ()=>{
     $('isoRows').innerHTML = work.map((a,i)=>`
@@ -5323,17 +5317,11 @@ function openIsolationModal(){
         <div class="kv" style="flex:1"><label>${L('Area','Área')}${a.id==='lv'?' · '+L('default','por defecto'):''} — ${blockCount(a.id)} ${L('blocks','bloques')}</label>
           <input type="text" data-area-name="${i}" value="${esc(a.name)}"></div>
         <div class="kv"><label>${L('Color','Color')}</label>
-          <input type="color" data-area-color="${i}" value="${esc(a.color || defHex(a, i))}"></div>
-        <button data-area-reset="${i}" title="${L('Back to the default color','Volver al color por defecto')}" style="align-self:flex-end">${L('Default','Por defecto')}</button>
+          <span class="isoswatch" data-area-color="${i}" style="background:${swatch(i)}"
+            title="${L('Fixed by the area\'s position — the same in every project','Fijo por la posición del área — el mismo en cualquier proyecto')}"></span></div>
         ${a.id==='lv' ? '' : `<button class="danger" data-area-del="${i}" style="align-self:flex-end" title="${L('Delete this area — its blocks go back to the default area','Eliminar esta área — sus bloques vuelven al área por defecto')}">✕</button>`}
       </div>`).join('');
     document.querySelectorAll('[data-area-name]').forEach(inp=>inp.oninput=()=>{ work[+inp.dataset.areaName].name = inp.value; });
-    document.querySelectorAll('[data-area-color]').forEach(inp=>inp.oninput=()=>{ work[+inp.dataset.areaColor].color = inp.value; });
-    document.querySelectorAll('[data-area-reset]').forEach(b=>b.onclick=()=>{
-      const a = work[+b.dataset.areaReset];
-      a.color = '';
-      renderRows();
-    });
     document.querySelectorAll('[data-area-del]').forEach(b=>b.onclick=()=>{
       work.splice(+b.dataset.areaDel, 1);
       renderRows();
@@ -5342,7 +5330,7 @@ function openIsolationModal(){
   renderRows();
   $('isoAdd').onclick = ()=>{
     const n = Math.max(0, ...work.map(a=>+(String(a.id).match(/^a(\d+)$/)||[0,0])[1])) + 1;
-    work.push({ id:'a'+n, name:'AREA '+(work.length+1), color:'' });
+    work.push({ id:'a'+n, name:'AREA '+(work.length+1) });
     renderRows();
   };
   $('mCancel').onclick = closeModal;
@@ -6085,6 +6073,7 @@ function loadSession(s){
   S.sel = null; S.traceNet = null; S.link = null;
   S.areas = Array.isArray(s.areas) && s.areas.length ? s.areas : defaultAreas();
   migrateNodeAreas();   // pre-area sessions carried n.hvSide overrides instead
+  migrateAreaColors();  // …and a per-area custom color, derived from the chain now
   healAllMixedPortSides();   // stale cosmetic sides must not fabricate crossings
   applyAreaColors();
   assignRefDes();       // legacy sessions get their U#/EXT# designators here
