@@ -468,5 +468,58 @@ const key=e=>T.groupEdgeRouteKey(e.source,e.target);
     !T.edgeCrossesAreas(xe) && T.collectIssues().crossings.length===0);
 }
 
+/* ============ Port side ON A MIXED BLOCK assigns the net's area ============ */
+{
+  const doc=window.document;
+  // state from the previous section: BARRIER is mixed (lv+hv), HVA/HVB hv.
+  // Move HVB back to LV so group B is itself mixed.
+  delete T.nodeById('HVB').area; T.render();
+  // 1. dragging a port across the divider re-assigns the net's area
+  const de=S.edges.find(e=>e.source==='LVSRC'&&e.target==='BARRIER');
+  check('an input lands on the primary (LV) half by default — same-area, legal',
+    T.edgeDomOf(de)==='' && !T.edgeCrossesAreas(de));
+  T.setGroupPortSide('BARRIER', de.source, de.target, 'right'); T.render();
+  check('moving the port to the HV half re-assigns the net to the HV area — and errors, its far end is LV',
+    T.edgeDomOf(de)==='lv>hv' && T.edgeCrossesAreas(de));
+  check('…and the crossing shows up in the issues at once',
+    T.collectIssues().crossings.some(e=>e.id===de.id));
+  T.setGroupPortSide('BARRIER', de.source, de.target, 'left'); T.render();
+  check('moving it back to the LV half clears the error', !T.edgeCrossesAreas(de));
+  // 2. signals of DIFFERENT areas to the same neighbour: one TO/FROM per area,
+  //    each box colored by the area its nets connect in
+  S.edges.push({ id:'eaux', source:'BARRIER', target:'HVB', nets:[{name:'AUX_CTL', type:'CONTROL_SIGNAL', description:''}] });
+  T.setGroupPortSide('BARRIER', 'BARRIER', 'HVB', 'left'); T.render();
+  const doms=T.computeGroupEdges().filter(e=>e.source==='A'&&e.target==='B').map(e=>e.dom).sort();
+  check('signals of different areas to the same neighbour derive one connection per area',
+    doms.join('|')==='|hv');
+  T.openGroupView('A');
+  check('the drill shows one TO box per area', T.drillSheet().portals.filter(p=>p.dir==='out').length===2);
+  const hvBox=[...doc.querySelectorAll('#edgesG .portal')].find(el=>el.dataset.portal==='out:B#hv');
+  const lvBox=[...doc.querySelectorAll('#edgesG .portal')].find(el=>el.dataset.portal==='out:B');
+  check('the HV-side TO box wears the HV area color; the LV-side one stays plain',
+    !!hvBox && hvBox.innerHTML.includes('var(--area-hv)') &&
+    !!lvBox && !lvBox.innerHTML.includes('var(--area-hv)') && !lvBox.innerHTML.includes('var(--warn)'));
+  T.closeGroupView();
+  // 3. mixed GROUP blocks pin their ports per area — and they cannot cross
+  check('group B (HVA hv + HVB lv) reads as a mixed group', T.groupSide('B')==='barrier');
+  const rowsB=T.groupPortRowsFor('B');
+  check('group ports sit on the half of their own area, pinned',
+    rowsB.length>=2 && rowsB.every(r=>r.pinned) &&
+    rowsB.find(r=>r.dom==='hv').side==='right' && rowsB.find(r=>!r.dom).side==='left');
+  const hvR=rowsB.find(r=>r.dom==='hv');
+  T.setGroupPortSide('B', hvR.src, hvR.tgt, 'left', hvR.dom); T.render();
+  check('a stored override cannot move a group port across areas',
+    T.groupPortOf('B', hvR.src, hvR.tgt, hvR.dir, hvR.dom).side==='right');
+  // 4. the halves flip mirrors the mixed block but keeps every net's area
+  S.sel={type:'node', id:'BARRIER'}; T.render();
+  const domsBefore=[T.edgeDomOf(de), T.edgeDomOf(S.edges.find(e=>e.id==='eaux'))].join('|');
+  const ff=doc.getElementById('fFlip');
+  ff.checked=true; ff.onchange();
+  check('flipping the halves mirrors the ports but keeps every net\'s area',
+    [T.edgeDomOf(S.edges.find(e=>e.source==='LVSRC'&&e.target==='BARRIER')),
+     T.edgeDomOf(S.edges.find(e=>e.id==='eaux'))].join('|')===domsBefore);
+  S.sel=null; T.render();
+}
+
 console.log('\n'+pass+' passed, '+fail+' failed');
 process.exit(fail?1:0);
