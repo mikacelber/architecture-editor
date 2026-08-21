@@ -950,8 +950,8 @@ check('every in-group connection carries a routing lane',
   const lvP=ps.find(p=>p.item.dom==='');
   check('the same-area portal never carries the crossing wire',
     lvP.unders.length>0 && lvP.unders.every(e=>e.id!==pairEdge.id));
-  check('the crossing portal box wears the HV area color and NAMES the crossing',
-    (mk=>!!mk && mk.innerHTML.includes('var(--area-hv)') && / · LV → HV</.test(mk.innerHTML))(
+  check('the crossing portal box wears the WARNING yellow and NAMES the crossing',
+    (mk=>!!mk && mk.innerHTML.includes('var(--warn)') && / · LV → HV</.test(mk.innerHTML))(
       [...doc.querySelectorAll('#edgesG .portal')].find(p=>p.dataset.portal===xP.key)));
   // an area change re-anchors ports, so lanes go stale — the in-group
   // Auto-layout (what a user does after re-assigning areas) must leave the
