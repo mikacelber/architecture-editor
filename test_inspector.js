@@ -108,6 +108,8 @@ check('dropping at a usable width just resizes, no fold', !collapsed() && T.insp
   check('the pencil flips the card into editable text with Save / Discard',
     doc.getElementById('enName') && doc.getElementById('enName').value===shared &&
     !!doc.getElementById('enDesc') && !!doc.getElementById('enSave') && !!doc.getElementById('enCancel'));
+  check('the edit card offers the net TYPE, preselected to the current one',
+    !!doc.getElementById('enType') && doc.getElementById('enType').value===edge.nets[idx].type);
   doc.getElementById('enName').value='SHOULD_NOT_STICK';
   doc.getElementById('enCancel').onclick();
   check('Discard puts the card back untouched',
@@ -115,6 +117,7 @@ check('dropping at a usable width just resizes, no fold', !collapsed() && T.insp
   doc.getElementById('insBody').querySelector(`[data-editnet="${idx}"]`).onclick();
   doc.getElementById('enName').value='renamed net 9';   // sloppy input on purpose
   doc.getElementById('enDesc').value='fresh description';
+  doc.getElementById('enType').value='ANALOG_SIGNAL';
   doc.getElementById('enSave').onclick();
   check('Save normalizes the name like every other net entry',
     edge.nets.some(n=>n.name==='RENAMED_NET_9'));
@@ -123,6 +126,8 @@ check('dropping at a usable width just resizes, no fold', !collapsed() && T.insp
     copies===byName[shared] && !S.edges.some(e=>e.nets.some(n=>n.name===shared)));
   check('…and the description follows on every copy',
     S.edges.every(e=>e.nets.every(n=>n.name!=='RENAMED_NET_9' || n.description==='fresh description')));
+  check('…and the new TYPE lands on every copy too',
+    S.edges.every(e=>e.nets.every(n=>n.name!=='RENAMED_NET_9' || n.type==='ANALOG_SIGNAL')));
   check('the card is back in display mode', !doc.getElementById('enName'));
   T.undo();
   check('the whole edit is ONE undoable step',
