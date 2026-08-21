@@ -46,11 +46,16 @@ check('unpinning arms the auto-hide countdown', T.insp.hideT!=null);
 T.inspHide();   // what the countdown fires
 check('an unpinned idle panel folds away completely', collapsed() && folded());
 
-/* ---- selecting a block brings it back, deselecting lets it fold again ---- */
+/* ---- a live selection keeps the panel up, as if pinned ---- */
 S.sel={type:'node',id:S.nodes[0].id}; T.render();
 check('selecting a block slides the hidden panel back in', !collapsed() && !folded());
-check('the selection buys a fresh idle window', T.insp.hideT!=null);
+check('while something is selected there is NO idle countdown (acts pinned)', T.insp.hideT==null);
+T.inspHide();   // a stray countdown tick
+check('even a stray hide tick cannot fold the panel while the selection lives', !collapsed());
+T.render();
+check('re-rendering the same selection keeps it visible — no hide/show flicker', !collapsed() && T.insp.hideT==null);
 S.sel=null; T.render();
+check('deselecting re-arms the idle countdown', T.insp.hideT!=null);
 T.inspHide();
 check('after deselecting, the idle countdown folds it away again', collapsed());
 handle.onclick();
