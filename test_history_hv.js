@@ -11,7 +11,7 @@ window.__T={get S(){return S;},get HIST(){return HIST;},loadFromContract,render,
  moveGroupPortToRow,commit,commitGesture,undo,redo,resetGroupPortLayout,snapshotState,buildSessionJSON,groupPosOf,_routeCache,nodeById,
  openGroupView,closeGroupView,nodeArea,nodeAreas,nodeIsMixed,edgeDomOf,domMarker,areaName,areasOf,isHvNet,defaultAreas,
  areaCustom,applyAreaColors,loadSession,drillSheet,portRowLabel,groupsWithUngrouped,groupBaseArea,groupOtherArea,
- nodePortRowsFor,nodePortOf};`);
+ nodePortRowsFor,nodePortOf,edgeCrossesAreas,collectIssues,spotDimEdge,spotDimNode,gotoNodeIssue};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -370,17 +370,16 @@ const key=e=>T.groupEdgeRouteKey(e.source,e.target);
     T.edgeDomOf(S.edges.find(e=>e.source==='BARRIER'&&e.target==='HVA'))==='hv');
   check('the primary drive stays in the LV area',
     T.edgeDomOf(S.edges.find(e=>e.source==='LVSRC'&&e.target==='BARRIER'))==='');
-  // port pinning on the mixed block: a signal on one area\'s side can never
-  // cross to the other
+  // ports on a mixed block move freely, like on any other block — the AREAS
+  // are electrical configuration, not port geometry
   T.openGroupView('A');
   const rows=T.nodePortRowsFor('BARRIER');
-  check('every port of a mixed block is pinned to its area half',
-    rows.length===2 && rows.every(r=>r.pinned) &&
-    rows.find(r=>r.src==='LVSRC').side==='left' && rows.find(r=>r.tgt==='HVA').side==='right');
+  check('ports of a mixed block flip freely (never pinned)',
+    rows.length===2 && rows.every(r=>!r.pinned));
   const hvRow=rows.find(r=>r.tgt==='HVA');
-  T.setGroupPortSide('BARRIER', hvRow.src, hvRow.tgt, 'left'); T.render();
-  check('a stored override cannot drag a port across the divider',
-    T.nodePortOf('BARRIER', hvRow.src, hvRow.tgt, hvRow.dir).side==='right');
+  T.setGroupPortSide('BARRIER', hvRow.src, hvRow.tgt, hvRow.side==='left'?'right':'left'); T.render();
+  check('a side override moves a mixed block\'s port like any other',
+    T.nodePortOf('BARRIER', hvRow.src, hvRow.tgt, hvRow.dir).side!==hvRow.side);
   T.resetGroupPortLayout('BARRIER'); T.render();
   const el=[...doc.querySelectorAll('#nodesG g[data-nid]')].find(x=>x.dataset.nid==='BARRIER');
   check('the mixed block renders halves wearing both area names',
@@ -390,8 +389,9 @@ const key=e=>T.groupEdgeRouteKey(e.source,e.target);
   check('the block card offers the generic Area halves switch',
     !!ff && !doc.getElementById('insBody').innerHTML.includes('LV | HV'));
   ff.checked=true; ff.onchange();
-  check('flipping swaps the halves: the HV-side port moves left, still pinned',
-    (r=>r.side==='left' && r.pinned)(T.nodePortRowsFor('BARRIER').find(r=>r.tgt==='HVA')));
+  check('flipping swaps the halves visually (wash moves to the left half)',
+    (h=>h.includes('x="0" y="0" width="'+(T.nodeById('BARRIER').w/2)+'"'))(
+      [...doc.querySelectorAll('#nodesG g[data-nid]')].find(x=>x.dataset.nid==='BARRIER').innerHTML));
   const ff2=doc.getElementById('fFlip');
   ff2.checked=false; ff2.onchange();
   // the small "x" returns the block to a single area
@@ -407,6 +407,65 @@ const key=e=>T.groupEdgeRouteKey(e.source,e.target);
   T.loadSession(sess);
   check('legacy hvSide:barrier sessions migrate to a mixed LV+HV block',
     T.nodeAreas('BARRIER').join(',')==='lv,hv');
+}
+
+/* ============ Cross-area nets are ERRORS: yellow, warning, spotlight ============ */
+{
+  const doc=window.document;
+  T.loadFromContract(
+    { id:'iso2', title:'iso2', description:'', ic_components:[
+      { ic_part_number:'LVSRC', ic_type:'a', description:'', manufacturer:'', DatasheetUrl:'', selection_rationale:'' },
+      { ic_part_number:'BARRIER', ic_type:'b', description:'', manufacturer:'', DatasheetUrl:'', selection_rationale:'' },
+      { ic_part_number:'HVA', ic_type:'c', description:'', manufacturer:'', DatasheetUrl:'', selection_rationale:'' },
+      { ic_part_number:'HVB', ic_type:'d', description:'', manufacturer:'', DatasheetUrl:'', selection_rationale:'' }] },
+    { global_nets:[
+      { name:'DRIVE', type:'CONTROL_SIGNAL', source:'LVSRC', consumers:['BARRIER'], description:'' },
+      { name:'HV_OUT', type:'HIGH_VOLTAGE_PATH', source:'BARRIER', consumers:['HVA'], description:'' },
+      { name:'HV_LOCAL_CTL', type:'CONTROL_SIGNAL', source:'HVA', consumers:['HVB'], description:'' }],
+      external_blocks:[] },
+    [ { id:'A', title:'A', description:'', members:['LVSRC','BARRIER'] },
+      { id:'B', title:'B', description:'', members:['HVA','HVB'] } ]);
+  T.nodeById('HVA').area='hv'; T.nodeById('HVB').area='hv'; T.render();
+  const xe=S.edges.find(e=>e.source==='BARRIER'&&e.target==='HVA');
+  check('a net from an LV block straight into an HV block is a crossing ERROR', T.edgeCrossesAreas(xe));
+  check('collectIssues lists it under crossings', T.collectIssues().crossings.some(e=>e.id===xe.id));
+  check('the status bar warns about nets between different isolation areas',
+    doc.getElementById('statusBar').innerHTML.includes('between different isolation areas'));
+  T.openGroupView('B');
+  check('the crossing wire and its FROM box highlight in warning yellow',
+    [...doc.querySelectorAll('#edgesG .portal')].some(p=>p.innerHTML.includes('var(--warn)')));
+  check('…and carry the explanation (a mixed block is needed)',
+    doc.getElementById('edgesG').innerHTML.includes('cannot connect two different isolation areas'));
+  T.closeGroupView();
+  const ge=T.computeGroupEdges().find(e=>(e.dom||'').includes('>'));
+  check('the top-level bus derives with the crossing dom', !!ge);
+  check('the top-level bus draws in warning yellow',
+    (el=>!!el && el.innerHTML.includes('var(--warn)'))(doc.querySelector('#edgesG .edge[data-eid="'+ge.id+'"]')));
+  check('both groups wear the warning triangle naming the cross-area problem',
+    ['A','B'].every(gid=>{
+      const el=[...doc.querySelectorAll('#nodesG g[data-nid]')].find(x=>x.dataset.nid===gid);
+      return el.innerHTML.includes('fill="var(--warn)"') && el.innerHTML.includes('isolation areas');
+    }));
+  S.sel={type:'edge', id:xe.id}; T.render();
+  check('the connection card explains the error', doc.getElementById('insBody').innerHTML.includes('isolation areas'));
+  S.sel={type:'issues'}; T.render();
+  const entry=doc.querySelector('[data-iss-edge="'+xe.id+'"]');
+  check('the Issues panel lists the crossing with the fix (a MIXED block first)',
+    !!entry && /mixed block/i.test(entry.textContent));
+  entry.onclick();
+  check('clicking it spotlights the net AND both end blocks (the problem involves all three)',
+    !T.spotDimEdge(xe.id) && !T.spotDimNode('BARRIER') && !T.spotDimNode('HVA') && T.spotDimNode('LVSRC'));
+  // a BLOCK issue lights only the block — nets stay dim
+  T.gotoNodeIssue('HVB');
+  check('a block issue spotlights only the block — every net dims',
+    !T.spotDimNode('HVB') && T.spotDimNode('HVA') && S.edges.every(e=>T.spotDimEdge(e.id)));
+  check('boundary FROM/TO boxes recede too under a block spotlight',
+    [...doc.querySelectorAll('#edgesG .portal')].every(p=>(p.getAttribute('class')||'').includes('dim')));
+  S.spotlight=null; S.sel=null; T.closeGroupView(); T.render();
+  // the FIX the warning prescribes: a mixed block clears the error
+  T.nodeById('BARRIER').area2='hv'; T.render();
+  check('making the block mixed resolves the crossing (the prescribed fix works)',
+    !T.edgeCrossesAreas(xe) && T.collectIssues().crossings.length===0);
 }
 
 console.log('\n'+pass+' passed, '+fail+' failed');

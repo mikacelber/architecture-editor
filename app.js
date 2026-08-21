@@ -540,27 +540,16 @@ function nodePortIndex(){
         || a._nat - b._nat);
       rows.forEach(r=>{ delete r._nat; });
     }
-    // A single-area member flips its ports freely (in=left / out=right by
-    // default, overridable per port). A MIXED member pins every port to the
-    // half of the area its connection attaches in — primary left by default,
-    // swapped by the block's halves flip — exactly like a mixed group block:
-    // a signal on one area's side can never cross to the other.
-    const nAreas = nodeAreas(nid);
-    const nd = nodeById(nid);
-    const flip = !!(nd && nd.hvFlip);
+    // Every member block — mixed ones included — flips its ports freely:
+    // in=left / out=right by default, overridable per port. Which AREA a
+    // connection lives in is electrical fact (r.aside, from the assigned
+    // areas), not port geometry; an illegal cross-area net warns instead of
+    // being force-pinned.
     rows.forEach(r=>{
-      r.xhalf = nAreas.length>1 && r.aside !== nAreas[0];
-      r.pinned = nAreas.length>1;
-      r.side = r.pinned ? ((r.xhalf !== flip) ? 'right' : 'left') : groupPortSideOf(nid, r.src, r.tgt, r.dir);
+      r.pinned = false;
+      r.side = groupPortSideOf(nid, r.src, r.tgt, r.dir);
     });
-    // Mixed members stack their two sides in parallel columns (same rule as
-    // the mixed group blocks) — ports of both areas share the line.
-    if (nAreas.length>1){
-      let li=0, ri=0;
-      rows.forEach(r=>{ r.row = r.side==='left' ? li++ : ri++; });
-    } else {
-      rows.forEach((r,i)=>{ r.row = i; });
-    }
+    rows.forEach((r,i)=>{ r.row = i; });
   }
   _nodePortIdx = idx;
   return idx;
@@ -570,20 +559,14 @@ function nodePortOf(id, src, tgt, dir){
   return nodePortRowsFor(id).find(r=>r.src===src && r.tgt===tgt && r.dir===dir);
 }
 function moveNodePortToRow(nid, key, newRow){
-  const order = movePortRowOrder(nodePortRowsFor(nid), key, newRow, nodeIsMixed(nid));
+  const order = movePortRowOrder(nodePortRowsFor(nid), key, newRow, false);
   if (!order) return false;
   S.groupPortOrder[nid] = order;
   invalidateGroupPorts();
   return true;
 }
-// Visible row count of a member block's port zone (parallel columns on a
-// mixed block).
-function nodePortRowCount(id){
-  const rows = nodePortRowsFor(id);
-  if (!nodeIsMixed(id)) return rows.length;
-  const left = rows.filter(r=>r.side==='left').length;
-  return Math.max(left, rows.length-left);
-}
+// Visible row count of a member block's port zone.
+function nodePortRowCount(id){ return nodePortRowsFor(id).length; }
 // Same geometry as the group blocks: a header, a separator, then the port zone
 // with one GRID-pitch row per connection — the block grows to fit, and rows are
 // aligned so their centers land on grid lines when the block's y is on the grid.
@@ -617,13 +600,9 @@ function nodeBlockWidth(n){
     // the full label — the block widens instead of cutting the name
     fit(26 + textWidth(n.label, 11, false) + GROUP_PAD_X);
   }
-  // On a mixed block the midline is a physical boundary: a port row must fit
-  // ENTIRELY inside its own half, so the block is at least twice the widest
-  // row (same rule as groupBlockWidth).
-  const HALF_MARGIN = 8;
   for (const r of nodePortRowsFor(n.id)){
     const rowNeed = GROUP_PAD_X + 26 + 6 + textWidth(nodePortRowLabel(r), 9, true);
-    fit(nAreas.length>1 ? 2*(rowNeed + HALF_MARGIN) : rowNeed + GROUP_PAD_X);
+    fit(rowNeed + GROUP_PAD_X);
   }
   return Math.ceil(need/GRID)*GRID;
 }
@@ -1285,6 +1264,15 @@ function edgeDomOf(e){
   const sa = edgeEndArea(e.source, e.target), ta = edgeEndArea(e.target, e.source);
   if (sa===ta) return sa==='lv' ? '' : sa;
   return sa+'>'+ta;
+}
+// A net may never jump the isolation barrier on its own: an edge whose two
+// ends resolve to DIFFERENT areas is an ERROR — the crossing needs a mixed
+// block that changes one area to the other. These connections draw in the
+// warning yellow and are listed in the Issues panel.
+function edgeCrossesAreas(e){ return edgeDomOf(e).indexOf('>') >= 0; }
+function crossAreaMsg(){
+  return L('a net cannot connect two different isolation areas — to cross the barrier, first add a MIXED block (the "+" under "Isolation area" in a block\'s card) that changes one area to the other',
+           'una red no puede conectar dos áreas de aislamiento distintas — para cruzar la barrera, añade primero un bloque MIXTO (el "+" bajo "Isolation area" en la ficha de un bloque) que cambie de un área a la otra');
 }
 // Which area the member/open-group end of a dom'd connection sits in…
 function domMemberArea(dom, dir){
@@ -2723,6 +2711,9 @@ function renderDrillDown(){
   const edgeMarkup = specs.filter(s=>s.kind==='internal').map(s=>{
     const e = s.e;
     const cat = edgeCategory(e), style = NET_CATEGORY_STYLE[cat];
+    // An illegal barrier jump highlights the whole wire in the warning yellow.
+    const cross = edgeCrossesAreas(e);
+    const color = cross ? 'var(--warn)' : style.color;
     const selected = S.sel && S.sel.type==='edge' && S.sel.id===e.id;
     const traced = trace && trace.edgeIds.has(e.id);
     const { pts } = wireOf(s);
@@ -2731,15 +2722,16 @@ function renderDrillDown(){
     const d = ptsPathD(pts);
     return `<g class="edge${(trace&&!traced&&!selected)||spotDimEdge(e.id)?' dim':''}" data-eid="${esc(e.id)}">
       <path d="${d}" fill="none" stroke="transparent" stroke-width="14" style="cursor:pointer"/>
-      <path d="${d}" fill="none" stroke="${style.color}" stroke-width="${w}"
+      <path d="${d}" fill="none" stroke="${color}" stroke-width="${w}"
         stroke-dasharray="${selected?'none':(style.dash||'none')}"
         ${(selected||traced)?'filter="drop-shadow(0 0 3px var(--probe))"':''}
         marker-end="url(#${style.marker})" style="pointer-events:none"/>
-      <circle cx="${s.pa.x}" cy="${s.pa.y}" r="4" fill="${style.color}" style="pointer-events:none"/>
+      ${cross?`<title>${esc(crossAreaMsg())}</title>`:''}
+      <circle cx="${s.pa.x}" cy="${s.pa.y}" r="4" fill="${color}" style="pointer-events:none"/>
       ${polyHandleMarkup(pts, e.id, '', 12)}
       <g class="netbadge" data-eid="${esc(e.id)}" style="cursor:pointer">
         <rect x="${mid.x-13}" y="${mid.y-9}" width="26" height="16" rx="8"
-          fill="${selected?'var(--probe)':'var(--paper)'}" stroke="${style.color}" stroke-width="1.2"/>
+          fill="${selected?'var(--probe)':'var(--paper)'}" stroke="${color}" stroke-width="1.2"/>
         <text x="${mid.x}" y="${mid.y+3.5}" text-anchor="middle"
           font-family="var(--mono)" font-size="9.5" fill="var(--ink)">${e.nets.length}</text>
       </g>
@@ -2755,9 +2747,14 @@ function renderDrillDown(){
   const portalBoxMarkup = p=>{
     const selected = S.sel && S.sel.type==='portal' && S.sel.id===p.key;
     const tracedBox = trace && p.unders.some(e=>trace.edgeIds.has(e.id));
-    const boxDim = trace && !tracedBox && !selected;
+    // The issue spotlight reaches the boundary too: a box recedes unless one
+    // of its wires is the spotlit edge.
+    const spotBox = S.spotlight ? p.unders.every(e=>spotDimEdge(e.id)) : false;
+    const boxDim = (trace && !tracedBox && !selected) || spotBox;
     const wires = specs.filter(s=>s.portalKey===p.key).map(s=>{
       const style = NET_CATEGORY_STYLE[edgeCategory(s.e)];
+      const cross = edgeCrossesAreas(s.e);
+      const color = cross ? 'var(--warn)' : style.color;
       // The badge selects its OWN underlying connection (nets in the
       // inspector), so a wire in a bundle is inspectable on its own.
       const selEdge = S.sel && S.sel.type==='edge' && S.sel.id===s.e.id;
@@ -2768,26 +2765,27 @@ function renderDrillDown(){
       const w = (selected || selEdge || traced) ? EDGE_STROKE_W+1.2 : EDGE_STROKE_W;
       // A lit portal can still carry OTHER nets — those wires recede on their
       // own (the whole box only dims when nothing under it carries the net).
-      const wireDim = trace && !traced && !selEdge && !boxDim;
+      const wireDim = (trace && !traced && !selEdge && !boxDim) || (!spotBox && spotDimEdge(s.e.id));
       // The slot's ring on the portal edge doubles as its reorder handle:
       // drag it up/down to shuffle this wire among the portal's slots.
       const sp = s.kind==='in' ? s.pa : s.pb;
       return `${wireDim?'<g class="dim">':''}
       <path d="${d}" fill="none" stroke="transparent" stroke-width="12"/>
-      <path d="${d}" fill="none" stroke="${style.color}" stroke-width="${w}"
+      <path d="${d}" fill="none" stroke="${color}" stroke-width="${w}"
         stroke-dasharray="${selEdge?'none':(style.dash||'none')}"
         ${(selEdge||traced)?'filter="drop-shadow(0 0 3px var(--probe))"':''}
         marker-end="url(#${style.marker})" style="pointer-events:none"/>
-      <circle cx="${s.pa.x}" cy="${s.pa.y}" r="3.6" fill="${style.color}" style="pointer-events:none"/>
+      ${cross?`<title>${esc(crossAreaMsg())}</title>`:''}
+      <circle cx="${s.pa.x}" cy="${s.pa.y}" r="3.6" fill="${color}" style="pointer-events:none"/>
       ${polyHandleMarkup(pts, s.e.id, '', 12)}
       <g class="slothandle" data-portal="${esc(p.key)}" data-eid="${esc(s.e.id)}" style="cursor:ns-resize">
         <circle cx="${sp.x}" cy="${sp.y}" r="10" fill="transparent"/>
-        <circle cx="${sp.x}" cy="${sp.y}" r="5" fill="var(--paper)" stroke="${style.color}" stroke-width="1.6" style="pointer-events:none"/>
+        <circle cx="${sp.x}" cy="${sp.y}" r="5" fill="var(--paper)" stroke="${color}" stroke-width="1.6" style="pointer-events:none"/>
         <title>Drag up/down to reorder this wire on the portal</title>
       </g>
       <g class="netbadge" data-eid="${esc(s.e.id)}" style="cursor:pointer">
         <rect x="${mid.x-13}" y="${mid.y-9}" width="26" height="16" rx="8"
-          fill="${selEdge?'var(--probe)':'var(--paper)'}" stroke="${style.color}" stroke-width="1.2"/>
+          fill="${selEdge?'var(--probe)':'var(--paper)'}" stroke="${color}" stroke-width="1.2"/>
         <text x="${mid.x}" y="${mid.y+3.5}" text-anchor="middle"
           font-family="var(--mono)" font-size="9.5" fill="var(--ink)">${s.e.nets.length}</text>
       </g>${wireDim?'</g>':''}`;
@@ -2902,10 +2900,10 @@ function portalMarkupFor(p, selected, wires, traced, dim){
   // base height the two arcs meet and it IS a semicircle, taller boxes just
   // grow a straight run between them.
   // The box wears the color of the area it LEADS TO (the far end of the
-  // connection), falling back to the member side's area for crossings into
-  // the plain LV area — so a barrier crossing is always visibly marked.
-  const farArea = domFarArea(item.dom, dir);
-  const domPaint = areaPaint(farArea) || areaPaint(domMemberArea(item.dom, dir));
+  // connection) — except a CROSSING dom, which is an illegal barrier jump
+  // and wears the warning yellow instead.
+  const crossDom = (item.dom||'').indexOf('>') >= 0;
+  const domPaint = crossDom ? 'var(--warn)' : areaPaint(domFarArea(item.dom, dir));
   const cr = 6, sr = Math.min(r.h/2, PORTAL_H/2);   // flat-corner radius, cap radius
   const boxD = dir==='in'
     ? `M ${r.x+sr} ${r.y} L ${r.x+r.w-cr} ${r.y} A ${cr} ${cr} 0 0 1 ${r.x+r.w} ${r.y+cr}
@@ -3021,6 +3019,9 @@ function renderTopLevel(){
 
   edgesG.innerHTML = gEdges.map(e=>{
     const cat = catOfEdge(e), style = NET_CATEGORY_STYLE[cat];
+    // A bus whose dom crosses areas is carrying an illegal barrier jump.
+    const cross = (e.dom||'').indexOf('>') >= 0;
+    const color = cross ? 'var(--warn)' : style.color;
     const selected = S.sel && S.sel.type==='groupEdge' && S.sel.id===e.id;
     const traced = trace && e.nets.some(nn=>nn.name===trace.name);
     const pa = groupPortAnchor(e.source, e.source, e.target, 'out', e.dom);
@@ -3033,15 +3034,16 @@ function renderTopLevel(){
     const d = ptsPathD(pts);
     return `<g class="edge${(trace&&!traced&&!selected)||spotDimEdge(e.id)?' dim':''}" data-eid="${esc(e.id)}">
       <path d="${d}" fill="none" stroke="transparent" stroke-width="16" style="cursor:pointer"/>
-      <path d="${d}" fill="none" stroke="${style.color}" stroke-width="${w}"
+      <path d="${d}" fill="none" stroke="${color}" stroke-width="${w}"
         stroke-dasharray="${selected?'none':(style.dash||'none')}"
         ${(selected||traced)?'filter="drop-shadow(0 0 3px var(--probe))"':''}
         marker-end="url(#${style.marker})" style="pointer-events:none"/>
-      <circle cx="${pa.x}" cy="${pa.y}" r="4.5" fill="${style.color}" style="pointer-events:none"/>
+      ${cross?`<title>${esc(crossAreaMsg())}</title>`:''}
+      <circle cx="${pa.x}" cy="${pa.y}" r="4.5" fill="${color}" style="pointer-events:none"/>
       ${polyHandleMarkup(pts, e.id, segAttrs, 14)}
       <g class="netbadge" data-eid="${esc(e.id)}" style="cursor:pointer">
         <rect x="${mid.x-15}" y="${mid.y-10}" width="30" height="18" rx="9"
-          fill="${selected?'var(--probe)':'var(--paper)'}" stroke="${style.color}" stroke-width="1.4"/>
+          fill="${selected?'var(--probe)':'var(--paper)'}" stroke="${color}" stroke-width="1.4"/>
         <text x="${mid.x}" y="${mid.y+4}" text-anchor="middle"
           font-family="var(--mono)" font-size="10.5" font-weight="600" fill="var(--ink)">${e.nets.length}</text>
       </g>
@@ -3063,14 +3065,20 @@ function renderTopLevel(){
     }).join('');
     const side = groupSide(g.id);
     const sepY = groupSeparatorY(g);
-    // ≥1 member IC without its physical part picked → the whole group warns
+    // ≥1 member IC without its physical part picked → the whole group warns.
+    // A member touching an illegal cross-area net warns the group too.
     const needsPick = groupNeedsIcPick(g.id);
     const missing = needsPick ? g.members.filter(id=>{ const m=nodeById(id); return m&&m.kind==='ic'&&!icSelected(m); }).length : 0;
+    const mset = new Set(g.members);
+    const crossN = diagramEdges(S.edges).filter(e=>edgeCrossesAreas(e) && (mset.has(e.source)||mset.has(e.target))).length;
     const wtX = W - (side==='barrier' ? Math.max(areaTagW(groupBaseArea(g.id)), areaTagW(groupOtherArea(g.id))) : areaTagW(side)) - 24;   // clear of the corner tag
-    const warnTag = needsPick ? `<g style="pointer-events:none">
+    const warnBits = [];
+    if (needsPick) warnBits.push(`${missing} IC${missing>1?'s':''} in this group still need${missing>1?'':'s'} a part selected`);
+    if (crossN) warnBits.push(`${crossN} net${crossN>1?'s':''} of this group connect${crossN>1?'':'s'} two different isolation areas — ${crossAreaMsg()}`);
+    const warnTag = warnBits.length ? `<g style="pointer-events:none">
       <path d="M ${wtX} 16 l7 -12 l7 12 Z" fill="var(--warn)"/>
       <text x="${wtX+7}" y="14.4" text-anchor="middle" font-family="var(--mono)" font-size="9" font-weight="700" fill="var(--paper)">!</text>
-      <title>${missing} IC${missing>1?'s':''} in this group still need${missing>1?'':'s'} a part selected</title>
+      <title>${esc(warnBits.join('\n'))}</title>
     </g>` : '';
     // One row per connection: a lead-in tick from the block edge, the draggable
     // net-count badge (same number as the one on the wire's midpoint) and the
@@ -3254,7 +3262,7 @@ function renderInspector(){
             'Vista de sistema — cada bloque es un grupo funcional, derivado automáticamente de las conexiones subyacentes. Selecciona un grupo o una conexión para inspeccionarlo, o haz doble clic en un grupo para abrirlo. Arrastra un grupo para recolocarlo.')
         : L('Select a block or a connection to inspect it. Press <b>Delete</b> to remove the selection. Click "System" above to return to the top level.',
             'Selecciona un bloque o una conexión para inspeccionarlo. Pulsa <b>Supr</b> para eliminar la selección. Pulsa "Sistema" arriba para volver al nivel superior.')}</p>`;
-    const issTotal = (i=>i.isolated.length+i.emptyEdges.length+i.ungrouped.length+i.unpicked.length)(collectIssues());
+    const issTotal = (i=>i.isolated.length+i.emptyEdges.length+i.ungrouped.length+i.unpicked.length+i.crossings.length)(collectIssues());
     if (issTotal){
       body.insertAdjacentHTML('afterbegin',
         `<div class="btnrow" style="margin-top:0"><button class="warn" id="btnIssues">${issTotal} ${L('issues — see the list','avisos — ver la lista')}</button></div>`);
@@ -3273,7 +3281,7 @@ function renderInspector(){
   }
   if (S.sel.type==='issues'){
     const iss = collectIssues();
-    const total = iss.isolated.length+iss.emptyEdges.length+iss.ungrouped.length+iss.unpicked.length;
+    const total = iss.isolated.length+iss.emptyEdges.length+iss.ungrouped.length+iss.unpicked.length+iss.crossings.length;
     eye.textContent = L('Issues','Avisos');
     title.textContent = total ? total+' '+L('issues to resolve','avisos por resolver') : L('No issues','Sin avisos');
     const section = (label, items) => items.length ? `
@@ -3292,7 +3300,9 @@ function renderInspector(){
       ${section(L('Ungrouped blocks','Bloques sin grupo'), iss.ungrouped.map(n=>
         `<button class="issue" data-iss-node="${esc(n.id)}"><b>${esc(n.label)}</b> — ${L('belongs to no functional group','no pertenece a ningún grupo funcional')}</button>`))}
       ${section(L('ICs without a selected part','CIs sin componente seleccionado'), iss.unpicked.map(n=>
-        `<button class="issue" data-iss-node="${esc(n.id)}"><b>${n.ref?esc(n.ref)+' · ':''}${esc(n.label)}</b> — ${L('no part card yet (Edit IC… or Auto IC Selection)','aún sin tarjeta de componente (Editar CI… o Selección auto)')}</button>`))}`
+        `<button class="issue" data-iss-node="${esc(n.id)}"><b>${n.ref?esc(n.ref)+' · ':''}${esc(n.label)}</b> — ${L('no part card yet (Edit IC… or Auto IC Selection)','aún sin tarjeta de componente (Editar CI… o Selección auto)')}</button>`))}
+      ${section(L('Nets between different isolation areas','Redes entre áreas de aislamiento distintas'), iss.crossings.map(e=>
+        `<button class="issue" data-iss-edge="${esc(e.id)}"><b>${esc(nodeById(e.source)?.label||e.source)} → ${esc(nodeById(e.target)?.label||e.target)}</b> — ${esc(areaName(edgeEndArea(e.source,e.target)))} → ${esc(areaName(edgeEndArea(e.target,e.source)))}: ${esc(crossAreaMsg())}</button>`))}`
       : `<p>${L('Everything is resolved — no warnings left on the status bar.','Todo resuelto — no quedan avisos en la barra de estado.')}</p>`;
     body.querySelectorAll('[data-iss-node]').forEach(b=>b.onclick=()=>gotoNodeIssue(b.dataset.issNode));
     body.querySelectorAll('[data-iss-edge]').forEach(b=>b.onclick=()=>gotoEdgeIssue(b.dataset.issEdge));
@@ -3386,6 +3396,7 @@ function renderInspector(){
     eye.textContent = L('Group connection (read-only)','Conexión de grupos (solo lectura)') + domMarker(e.dom);
     title.textContent = `${gs?gs.title:e.source} → ${gt?gt.title:e.target}${domMarker(e.dom)}`;
     body.innerHTML = `
+      ${(e.dom||'').indexOf('>')>=0?`<p style="color:var(--warn)">⚠ ${esc(crossAreaMsg())}</p>`:''}
       <p style="color:var(--ink-soft)">${uiLang()==='es'
         ? `Derivada de ${e.nets.length} red${e.nets.length===1?'':'es'} subyacente${e.nets.length===1?'':'s'} entre bloques miembros. Abre un grupo para editar sus conexiones individuales. Arrastra los segmentos verticales lateralmente o los horizontales arriba/abajo para redirigir — incluido el último segmento donde el cable entra al bloque.`
         : `Derived from ${e.nets.length} underlying net${e.nets.length===1?'':'s'} between member blocks. Open a group to edit its individual connections. Drag the vertical segments sideways or the horizontal segments up/down to reroute — including the last segment where the wire enters the block.`}</p>
@@ -3648,6 +3659,7 @@ function renderInspector(){
   }).filter(Boolean);
   body.innerHTML = `
     ${e.nets.length?'':`<p style="color:var(--warn)">${L('This connection has no nets yet — add at least one, or it will be dropped on export.','Esta conexión aún no tiene redes — añade al menos una, o se descartará al exportar.')}</p>`}
+    ${edgeCrossesAreas(e)?`<p style="color:var(--warn)">⚠ ${esc(areaName(edgeEndArea(e.source,e.target)))} → ${esc(areaName(edgeEndArea(e.target,e.source)))}: ${esc(crossAreaMsg())}</p>`:''}
     ${shown.map(({n,i})=> (_netEdit && _netEdit.idx===i) ? (()=>{
       // Blocks listed by FUNCTIONAL GROUP (one optgroup per group), and the
       // group holding the select's current block always leads the list.
@@ -3805,6 +3817,8 @@ function collectIssues(){
     emptyEdges: S.edges.filter(e=>e.nets.length===0),
     ungrouped: (ug ? ug.members : []).map(id=>nodeById(id)).filter(Boolean),
     unpicked:  S.nodes.filter(n=>n.kind==='ic' && !icSelected(n)),
+    // nets jumping the isolation barrier without a mixed block in between
+    crossings: drawn.filter(edgeCrossesAreas),
   };
 }
 function renderStatus(){
@@ -3829,6 +3843,8 @@ function renderStatus(){
   if (ungrouped && ungrouped.members.length) bits.push(warnChip(`${ungrouped.members.length} ${L('ungrouped block','bloque')}${ungrouped.members.length>1?'s':''}${uiLang()==='es'?' sin grupo':''}`));
   const unpicked = iss.unpicked.length;
   if (unpicked) bits.push(warnChip(`${unpicked} ${L('IC','CI')}${unpicked>1?'s':''} ${L('without a selected part','sin componente seleccionado')}`));
+  const crossN = iss.crossings.length;
+  if (crossN) bits.push(warnChip(`${crossN} ${L('net','red')}${crossN>1?(uiLang()==='es'?'es':'s'):''} ${L('between different isolation areas','entre áreas de aislamiento distintas')}`));
   // The header's Auto IC Selection wears the same amber while any IC still
   // lacks its part, and goes back to normal once every card is filled.
   const autoBtn = $('btnAutoIC'); if (autoBtn) autoBtn.classList.toggle('warn', unpicked>0);
