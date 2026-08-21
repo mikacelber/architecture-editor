@@ -11,7 +11,8 @@ window.__T={get S(){return S;},get HIST(){return HIST;},loadFromContract,render,
  moveGroupPortToRow,commit,commitGesture,undo,redo,resetGroupPortLayout,snapshotState,buildSessionJSON,groupPosOf,_routeCache,nodeById,
  openGroupView,closeGroupView,nodeArea,nodeAreas,nodeIsMixed,edgeDomOf,domMarker,areaName,areasOf,isHvNet,defaultAreas,
  areaCustom,applyAreaColors,loadSession,drillSheet,portRowLabel,groupsWithUngrouped,groupBaseArea,groupOtherArea,
- nodePortRowsFor,nodePortOf,edgeCrossesAreas,collectIssues,spotDimEdge,spotDimNode,gotoNodeIssue};`);
+ nodePortRowsFor,nodePortOf,edgeCrossesAreas,collectIssues,spotDimEdge,spotDimNode,gotoNodeIssue,
+ nodeBlockWidth,nodePortRowLabel,textWidth,GROUP_PAD_X:GROUP_PAD_X};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -519,6 +520,22 @@ const key=e=>T.groupEdgeRouteKey(e.source,e.target);
     [T.edgeDomOf(S.edges.find(e=>e.source==='LVSRC'&&e.target==='BARRIER')),
      T.edgeDomOf(S.edges.find(e=>e.id==='eaux'))].join('|')===domsBefore);
   S.sel=null; T.render();
+}
+
+/* ============ mixed member block width: no port name crosses the divider ============ */
+{
+  // BARRIER is mixed from the section above and carries ports on both halves
+  T.render();
+  const n=T.nodeById('BARRIER');
+  const W=T.nodeBlockWidth(n), mid=W/2, P=T.GROUP_PAD_X;
+  const rows=T.nodePortRowsFor('BARRIER');
+  check('the mixed block still has ports on both halves to make the test meaningful',
+    rows.some(r=>r.side==='left') && rows.some(r=>r.side==='right'));
+  const needs=rows.map(r=>P + 26 + 6 + T.textWidth(T.nodePortRowLabel(r), 9, true));
+  check('no port row (badge + name) reaches past the area divider',
+    needs.every(x=>x <= mid));
+  check('the width rule bites: the block is at least twice its widest row',
+    W >= 2*Math.max(...needs));
 }
 
 console.log('\n'+pass+' passed, '+fail+' failed');

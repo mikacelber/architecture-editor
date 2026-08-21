@@ -600,9 +600,14 @@ function nodeBlockWidth(n){
     // the full label — the block widens instead of cutting the name
     fit(26 + textWidth(n.label, 11, false) + GROUP_PAD_X);
   }
+  // On a mixed block the midline is the barrier: a port row (badge + label)
+  // must fit ENTIRELY inside its own half so no name reaches into the other
+  // area — the block is at least twice its widest row, same rule as the
+  // mixed group blocks.
+  const HALF_MARGIN = 8;
   for (const r of nodePortRowsFor(n.id)){
     const rowNeed = GROUP_PAD_X + 26 + 6 + textWidth(nodePortRowLabel(r), 9, true);
-    fit(rowNeed + GROUP_PAD_X);
+    fit(nAreas.length>1 ? 2*(rowNeed + HALF_MARGIN) : rowNeed + GROUP_PAD_X);
   }
   return Math.ceil(need/GRID)*GRID;
 }
@@ -3681,13 +3686,14 @@ function renderInspector(){
       return `
       <div class="netcard editing cat-${netCategory(n)}">
         <div class="kv"><label>${L('Net name','Nombre de la red')}</label><input type="text" id="enName" value="${esc(n.name)}"></div>
+        <div class="kv"><label>${L('Type','Tipo')}</label><select id="enType">${NET_TYPES.map(t=>`<option ${t===n.type?'selected':''}>${t}</option>`).join('')}</select></div>
         <div class="kv"><label>${L('Description','Descripción')}</label><textarea id="enDesc">${esc(n.description||'')}</textarea></div>
         <div class="row">
           <div class="kv"><label>${L('From (driver)','Desde (generador)')}</label><select id="enFrom">${blockOpts(e.source)}</select></div>
           <div class="kv"><label>${L('To (consumer)','Hasta (consumidor)')}</label><select id="enTo">${blockOpts(e.target)}</select></div>
         </div>
-        <p class="hint">${L('Renaming applies everywhere this net appears. Changing a block MOVES this leg of the net: the old block loses the connection and its port, the new pair gains it — no leftovers, no warnings.',
-                            'Renombrar se aplica allá donde aparezca esta red. Cambiar un bloque MUEVE este tramo de la red: el bloque anterior pierde la conexión y su puerto, la nueva pareja la gana — sin restos ni avisos.')}</p>
+        <p class="hint">${L('Renaming or re-typing applies everywhere this net appears. Changing a block MOVES this leg of the net: the old block loses the connection and its port, the new pair gains it — no leftovers, no warnings.',
+                            'Renombrar o cambiar el tipo se aplica allá donde aparezca esta red. Cambiar un bloque MUEVE este tramo de la red: el bloque anterior pierde la conexión y su puerto, la nueva pareja la gana — sin restos ni avisos.')}</p>
         <div class="btnrow" style="margin-top:4px">
           <button class="primary" id="enSave">${L('Save','Guardar')}</button>
           <button id="enCancel">${L('Discard','Descartar')}</button>
@@ -3699,7 +3705,7 @@ function renderInspector(){
           <span class="nettype">${esc(n.type)}</span>
           <button class="netdom ${isHvNet(n)?'hv':'lv'}" data-domnet="${i}"
             title="${L('Voltage LEVEL of this net — click to flip. Fully independent of the isolation areas: block colors follow each block\'s assigned area, so re-levelling a net moves no block and spawns no TO/FROM.','NIVEL de tensión de esta red — clic para cambiarlo. Totalmente independiente de las áreas de aislamiento: el color de cada bloque sigue el área que tiene asignada, así que cambiar el nivel no mueve bloques ni crea TO/FROM.')}">${isHvNet(n)?'HV':'LV'}</button>
-          <button class="pen" data-editnet="${i}" title="${L('Edit this net — name and description','Editar esta red — nombre y descripción')}">✎</button>
+          <button class="pen" data-editnet="${i}" title="${L('Edit this net — name, type, description and endpoints','Editar esta red — nombre, tipo, descripción y extremos')}">✎</button>
           <button class="x" data-delnet="${i}" title="${L('Remove net','Quitar red')}">✕</button>
         </div>
         ${n.description?`<div class="netdesc">${esc(n.description)}</div>`:''}
@@ -3752,10 +3758,10 @@ function renderInspector(){
       toast(L('This connection already carries a net with that name','Esta conexión ya lleva una red con ese nombre')); return;
     }
     commit();
-    const old = net.name, touched = new Set();
+    const old = net.name, type = $('enType').value, touched = new Set();
     for (const ed of S.edges){
       let hit = false;
-      for (const x of ed.nets) if (x.name===old){ x.name=name; x.description=desc; hit=true; }
+      for (const x of ed.nets) if (x.name===old){ x.name=name; x.type=type; x.description=desc; hit=true; }
       if (hit) touched.add(ed);
     }
     touched.forEach(ed=>ed.nets.sort((a,b)=>a.name.localeCompare(b.name)));
