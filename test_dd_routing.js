@@ -431,6 +431,23 @@ check('every in-group connection carries a routing lane',
     !([...doc.querySelectorAll('#nodesG g[data-nid]')].find(x=>x.dataset.nid===n.id).innerHTML.includes('var(--area-hv)')));
 }
 
+/* ---- rule 13b: external blocks share the IC header style ---- */
+{
+  const prevOpen=S.openGroup;
+  const gext=T.groupsWithUngrouped().find(g=>g.members.some(id=>{const n=T.nodeById(id);return n&&n.kind!=='ic';}));
+  T.openGroupView(gext.id); T.render();
+  const extId=gext.members.find(id=>{const n=T.nodeById(id);return n&&n.kind!=='ic';});
+  const el=[...doc.querySelectorAll('#nodesG g[data-nid]')].find(x=>x.dataset.nid===extId);
+  check('external header wears the silkscreen dot like an IC', el.innerHTML.includes('<circle cx="13" cy="13"'));
+  check('"EXTERNAL" is bold silkscreen white',
+    el.innerHTML.includes('font-weight="700" letter-spacing=".08em" fill="var(--silk)">EXTERNAL</text>'));
+  check('the name is normal weight on its own line',
+    el.innerHTML.includes('y="44" font-family="var(--sans)" font-size="11" fill="var(--ink)">'));
+  check('the reference designator moved to the name line', /class="refdes" x="[0-9.]+" y="44"/.test(el.innerHTML));
+  if (prevOpen) T.openGroupView(prevOpen); else T.closeGroupView();
+  T.render();
+}
+
 /* ---- rule 15: per-net LV|HV flag drives colors ONLY — never blocks or ports ---- */
 {
   const g=T.groupsWithUngrouped().find(x=>x.id===best.id);

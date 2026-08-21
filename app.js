@@ -519,8 +519,10 @@ function nodePortIndex(){
   if (_nodePortIdx) return _nodePortIdx;
   const idx = new Map(S.nodes.map(n=>[n.id, []]));
   for (const e of diagramEdges(S.edges)){
-    if (idx.has(e.source)) idx.get(e.source).push({ eid:e.id, src:e.source, tgt:e.target, dir:'out', other:e.target, nets:e.nets.length });
-    if (idx.has(e.target)) idx.get(e.target).push({ eid:e.id, src:e.source, tgt:e.target, dir:'in',  other:e.source, nets:e.nets.length });
+    // aside: the area this connection attaches in AT THIS BLOCK — what pins a
+    // port to its half on a mixed (two-area) member.
+    if (idx.has(e.source)) idx.get(e.source).push({ eid:e.id, src:e.source, tgt:e.target, dir:'out', other:e.target, nets:e.nets.length, aside:edgeEndArea(e.source, e.target) });
+    if (idx.has(e.target)) idx.get(e.target).push({ eid:e.id, src:e.source, tgt:e.target, dir:'in',  other:e.source, nets:e.nets.length, aside:edgeEndArea(e.target, e.source) });
   }
   const labelOf = id => { const n=nodeById(id); return n ? n.label : id; };
   for (const [nid, rows] of idx){
@@ -538,13 +540,27 @@ function nodePortIndex(){
         || a._nat - b._nat);
       rows.forEach(r=>{ delete r._nat; });
     }
-    // A member block sits wholly in ONE isolation area, so its ports flip
-    // freely — side defaults in=left / out=right, overridable per port.
+    // A single-area member flips its ports freely (in=left / out=right by
+    // default, overridable per port). A MIXED member pins every port to the
+    // half of the area its connection attaches in — primary left by default,
+    // swapped by the block's halves flip — exactly like a mixed group block:
+    // a signal on one area's side can never cross to the other.
+    const nAreas = nodeAreas(nid);
+    const nd = nodeById(nid);
+    const flip = !!(nd && nd.hvFlip);
     rows.forEach(r=>{
-      r.pinned = false;
-      r.side = groupPortSideOf(nid, r.src, r.tgt, r.dir);
+      r.xhalf = nAreas.length>1 && r.aside !== nAreas[0];
+      r.pinned = nAreas.length>1;
+      r.side = r.pinned ? ((r.xhalf !== flip) ? 'right' : 'left') : groupPortSideOf(nid, r.src, r.tgt, r.dir);
     });
-    rows.forEach((r,i)=>{ r.row = i; });
+    // Mixed members stack their two sides in parallel columns (same rule as
+    // the mixed group blocks) — ports of both areas share the line.
+    if (nAreas.length>1){
+      let li=0, ri=0;
+      rows.forEach(r=>{ r.row = r.side==='left' ? li++ : ri++; });
+    } else {
+      rows.forEach((r,i)=>{ r.row = i; });
+    }
   }
   _nodePortIdx = idx;
   return idx;
@@ -554,18 +570,24 @@ function nodePortOf(id, src, tgt, dir){
   return nodePortRowsFor(id).find(r=>r.src===src && r.tgt===tgt && r.dir===dir);
 }
 function moveNodePortToRow(nid, key, newRow){
-  const order = movePortRowOrder(nodePortRowsFor(nid), key, newRow, false);
+  const order = movePortRowOrder(nodePortRowsFor(nid), key, newRow, nodeIsMixed(nid));
   if (!order) return false;
   S.groupPortOrder[nid] = order;
   invalidateGroupPorts();
   return true;
 }
-// Visible row count of a member block's port zone.
-function nodePortRowCount(id){ return nodePortRowsFor(id).length; }
+// Visible row count of a member block's port zone (parallel columns on a
+// mixed block).
+function nodePortRowCount(id){
+  const rows = nodePortRowsFor(id);
+  if (!nodeIsMixed(id)) return rows.length;
+  const left = rows.filter(r=>r.side==='left').length;
+  return Math.max(left, rows.length-left);
+}
 // Same geometry as the group blocks: a header, a separator, then the port zone
 // with one GRID-pitch row per connection — the block grows to fit, and rows are
 // aligned so their centers land on grid lines when the block's y is on the grid.
-function nodeHeaderBottom(n){ return n.kind==='ic' ? 50 : 40; }
+function nodeHeaderBottom(n){ return 50; }   // both kinds carry a two-line header now
 function nodePortZoneTop(n){
   const raw = nodeHeaderBottom(n) + GROUP_PORT_ZONE_PAD;
   return Math.ceil((raw - GRID/2)/GRID)*GRID + GRID/2;
@@ -583,20 +605,25 @@ function nodePortRowLabel(r){
 function nodeBlockWidth(n){
   let need = n.kind==='ic' ? NODE_W_IC : NODE_W_EXT;
   const fit = w => { if (w > need) need = w; };
-  // header rows share the right margin with the area corner tag, which is as
-  // wide as the area's name needs
-  const tagW = Math.max(GROUP_SIDE_TAG_W, areaTagW(nodeArea(n.id)));
+  // header rows share the right margin with the area corner tag(s), as wide
+  // as the area name(s) need — a mixed block wears one name per half
+  const nAreas = nodeAreasOfNode(n);
+  const tagW = Math.max(GROUP_SIDE_TAG_W, ...nAreas.map(areaTagW));
   if (n.kind==='ic'){
     fit(26 + textWidth(n.label, 13.5, true) + GROUP_PAD_X + tagW);
     fit(26 + textWidth((n.data.ic_type||'').slice(0,30), 10, false) + GROUP_PAD_X);
   } else {
-    fit(12 + textWidth('EXTERNAL', 10, true, 0.08) + GROUP_PAD_X + tagW);
+    fit(26 + textWidth('EXTERNAL', 10, true, 0.08) + GROUP_PAD_X + tagW);
     // the full label — the block widens instead of cutting the name
-    fit(12 + textWidth(n.label, 11.5, false) + GROUP_PAD_X);
+    fit(26 + textWidth(n.label, 11, false) + GROUP_PAD_X);
   }
+  // On a mixed block the midline is a physical boundary: a port row must fit
+  // ENTIRELY inside its own half, so the block is at least twice the widest
+  // row (same rule as groupBlockWidth).
+  const HALF_MARGIN = 8;
   for (const r of nodePortRowsFor(n.id)){
     const rowNeed = GROUP_PAD_X + 26 + 6 + textWidth(nodePortRowLabel(r), 9, true);
-    fit(rowNeed + GROUP_PAD_X);
+    fit(nAreas.length>1 ? 2*(rowNeed + HALF_MARGIN) : rowNeed + GROUP_PAD_X);
   }
   return Math.ceil(need/GRID)*GRID;
 }
@@ -1224,18 +1251,38 @@ const EDGE_STROKE_W = 2.2, GROUP_EDGE_STROKE_W = 2.6;
 function areasOf(){ return (S.areas && S.areas.length) ? S.areas : (S.areas = defaultAreas()); }
 function areaById(id){ return areasOf().find(a=>a.id===id); }
 function areaName(id){ const a = areaById(id); return a ? a.name : String(id).toUpperCase(); }
-function nodeArea(nodeId){
-  const n = nodeById(nodeId);
-  return (n && n.area && areaById(n.area)) ? n.area : 'lv';
+// A block lives in one area — or in TWO (n.area2), when it physically
+// straddles the barrier: a flyback transformer, an opto. Its first area is
+// the primary one; a mixed block renders half per area and pins each port to
+// the half of the area that connection lives in.
+function nodeAreasOfNode(n){
+  const a1 = (n.area && areaById(n.area)) ? n.area : 'lv';
+  const a2 = (n.area2 && n.area2 !== a1 && areaById(n.area2)) ? n.area2 : null;
+  return a2 ? [a1, a2] : [a1];
 }
+function nodeAreas(nodeId){ const n = nodeById(nodeId); return n ? nodeAreasOfNode(n) : ['lv']; }
+function nodeIsMixed(nodeId){ return nodeAreas(nodeId).length > 1; }
+function nodeArea(nodeId){ return nodeAreas(nodeId)[0]; }
 // The dom (isolation identity) of a connection: same-area edges belong to
 // that area ('' for the default LV area, so old sessions' keys still match);
 // an edge whose endpoints sit in different areas CROSSES a barrier and gets
 // the pair as its dom — its own bus, its own TO/FROM boxes, never merged
 // with same-area traffic. Net LEVELS play no part here: re-levelling a net
 // changes colors and badges, not doms.
+// The area one END of an edge attaches in: a single-area block always
+// presents its area; a mixed block presents, to each neighbour, the side
+// that faces it — the area it shares with that neighbour if any, else its
+// primary. This is what makes a transformer's secondary connection live
+// wholly in the HV area while its primary drive stays LV.
+function edgeEndArea(endId, otherId){
+  const mine = nodeAreas(endId);
+  if (mine.length === 1) return mine[0];
+  const others = nodeAreas(otherId);
+  for (const a of mine) if (others.includes(a)) return a;
+  return mine[0];
+}
 function edgeDomOf(e){
-  const sa = nodeArea(e.source), ta = nodeArea(e.target);
+  const sa = edgeEndArea(e.source, e.target), ta = edgeEndArea(e.target, e.source);
   if (sa===ta) return sa==='lv' ? '' : sa;
   return sa+'>'+ta;
 }
@@ -1267,7 +1314,7 @@ function domMarker(dom){
 function groupSide(groupId){
   const g = groupsWithUngrouped().find(x=>x.id===groupId);
   if (!g || !g.members.length) return 'lv';
-  const areas = new Set(g.members.map(nodeArea));
+  const areas = new Set(g.members.flatMap(nodeAreas));   // a mixed member mixes its group
   return areas.size===1 ? [...areas][0] : 'barrier';
 }
 // The dominant area of a mixed group — its "home" half; ties break by the
@@ -1276,7 +1323,7 @@ function groupBaseArea(groupId){
   const g = groupsWithUngrouped().find(x=>x.id===groupId);
   if (!g || !g.members.length) return 'lv';
   const count = new Map();
-  for (const m of g.members){ const a = nodeArea(m); count.set(a, (count.get(a)||0)+1); }
+  for (const m of g.members) for (const a of nodeAreas(m)) count.set(a, (count.get(a)||0)+1);
   let best = null, bestN = -1;
   for (const a of areasOf()) if (count.has(a.id) && count.get(a.id) > bestN){ best = a.id; bestN = count.get(a.id); }
   return best || 'lv';
@@ -1286,7 +1333,7 @@ function groupOtherArea(groupId){
   const g = groupsWithUngrouped().find(x=>x.id===groupId);
   const base = groupBaseArea(groupId);
   if (!g) return base;
-  const present = new Set(g.members.map(nodeArea));
+  const present = new Set(g.members.flatMap(nodeAreas));
   for (const a of areasOf()) if (a.id!==base && present.has(a.id)) return a.id;
   return base;
 }
@@ -1338,12 +1385,10 @@ function areaWashMarkup(area, w, h, rx){
   const p = area==='lv' ? '' : areaPaint(area);
   return p ? `<rect width="${w}" height="${h}" rx="${rx}" fill="${p}" opacity=".24" style="pointer-events:none"/>` : '';
 }
-// A mixed group renders as two halves — the base area's look on one side, the
+// A mixed block renders as two halves — the base area's look on one side, the
 // other area's wash and a divider on the other — each half wearing its area's
-// name in its corner.
-function groupHalvesMarkup(gid, w, h, rx, clipId){
-  const flip = groupHvFlip(gid);
-  const base = groupBaseArea(gid), other = groupOtherArea(gid);
+// name in its corner. Shared by mixed member blocks and mixed group blocks.
+function halvesMarkup(base, other, flip, w, h, rx, clipId){
   const op = areaPaint(other) || 'var(--area-hv)';
   const oX = flip ? 6 : w-6, bX = flip ? w-6 : 6;
   return `
@@ -1352,6 +1397,13 @@ function groupHalvesMarkup(gid, w, h, rx, clipId){
       <line x1="${w/2}" y1="2" x2="${w/2}" y2="${h-2}" stroke="${op}" stroke-width="1.3" opacity=".8" style="pointer-events:none"/>
       <text x="${oX}" y="11" ${flip?'':'text-anchor="end" '}font-family="var(--mono)" font-size="7.5" font-weight="700" letter-spacing=".04em" fill="${op}" style="pointer-events:none">${esc(areaName(other))}</text>
       <text x="${bX}" y="11" ${flip?'text-anchor="end" ':''}font-family="var(--mono)" font-size="7.5" font-weight="700" letter-spacing=".04em" fill="${areaPaint(base)||'var(--ink-soft)'}" style="pointer-events:none">${esc(areaName(base))}</text>`;
+}
+function groupHalvesMarkup(gid, w, h, rx, clipId){
+  return halvesMarkup(groupBaseArea(gid), groupOtherArea(gid), groupHvFlip(gid), w, h, rx, clipId);
+}
+function nodeHalvesMarkup(n, rx){
+  const [base, other] = nodeAreasOfNode(n);
+  return halvesMarkup(base, other, !!n.hvFlip, n.w, n.h, rx, 'hvclip-'+safeId(n.id));
 }
 // Which half is which on a mixed group block: base area left by default,
 // swapped when the user flipped it. Stored on the group object itself (the
@@ -2054,12 +2106,15 @@ const HISTORY_MAX = 60;
 const HIST = { past: [], future: [] };
 // Sessions from before explicit per-block areas stored an inferred/overridden
 // n.hvSide ('lv'|'hv'|'barrier') and a per-block halves flip. The HV override
-// maps onto the HV area; everything else lands in the default LV area (blocks
-// no longer straddle — the barrier lives between areas, not inside a block).
+// maps onto the HV area; a barrier block becomes a MIXED block (LV primary +
+// HV second half, keeping its flip); everything else lands in the default LV
+// area.
 function migrateNodeAreas(){
   for (const n of S.nodes){
-    if (n.hvSide==='hv' && !n.area) n.area = 'hv';
-    delete n.hvSide; delete n.hvFlip;
+    if (!n.area && n.hvSide==='hv') n.area = 'hv';
+    else if (!n.area && !n.area2 && n.hvSide==='barrier') n.area2 = 'hv';
+    delete n.hvSide;
+    if (!(n.area2 && n.area2 !== (n.area||'lv') && areaById(n.area2))) delete n.hvFlip;
   }
 }
 function snapshotState(){ return JSON.stringify(buildSessionJSON()); }
@@ -2788,9 +2843,13 @@ function renderDrillDown(){
       </g>`;
     }).join('');
     const dimN = (trace && !tracedN && !selected) || spotDimNode(n.id) ? ' dim' : '';
+    const nAreas = nodeAreasOfNode(n);
+    const mixed = nAreas.length>1;
+    const areaMarkup = rx => mixed ? nodeHalvesMarkup(n, rx) : areaWashMarkup(side, n.w, n.h, rx);
+    const tagMarkup = mixed ? '' : areaTag(side, n.w);   // halves carry their own name tags
     if (n.kind==='ic'){
       const needsPick = !icSelected(n);
-      const wtX = n.w - areaTagW(side) - 22;   // clear of the area corner tag (every block wears one)
+      const wtX = n.w - Math.max(...nAreas.map(areaTagW)) - 22;   // clear of the area corner tag (every block wears one)
       const warnTag = needsPick ? `<g style="pointer-events:none">
         <path d="M ${wtX} 15 l6.5 -11 l6.5 11 Z" fill="var(--warn)"/>
         <text x="${wtX+6.5}" y="13.6" text-anchor="middle" font-family="var(--mono)" font-size="8.5" font-weight="700" fill="var(--paper)">!</text>
@@ -2800,12 +2859,12 @@ function renderDrillDown(){
         <rect x="-3" y="4" width="${n.w+6}" height="${n.h}" rx="5" fill="#00000018"/>
         <rect width="${n.w}" height="${n.h}" rx="5" fill="var(--epoxy)"
           stroke="${(selected||tracedN)?'var(--probe)':needsPick?'var(--warn)':areaStroke(side,'var(--epoxy-edge)')}" stroke-width="${(selected||tracedN)?2.5:needsPick?2:1.4}"/>
-        ${areaWashMarkup(side, n.w, n.h, 5)}
+        ${areaMarkup(5)}
         <circle cx="13" cy="13" r="3.6" fill="var(--silk)"/>
         <text x="26" y="26" font-family="var(--mono)" font-size="13.5" font-weight="600" fill="var(--silk)">${esc(n.label)}</text>
         <text x="26" y="44" font-family="var(--sans)" font-size="10" fill="var(--ink-soft)">${esc((n.data.ic_type||'').slice(0,30))}</text>
         <text class="refdes" x="${n.w-10}" y="44" text-anchor="end" font-family="var(--mono)" font-size="10" font-weight="600" fill="var(--ink-soft)">${esc(n.ref||'')}</text>
-        ${areaTag(side, n.w)}${warnTag}
+        ${tagMarkup}${warnTag}
         <line x1="10" y1="${sepY}" x2="${n.w-10}" y2="${sepY}" stroke="var(--silk)" stroke-width="1" opacity=".25"/>
         ${portRows}
       </g>`;
@@ -2813,11 +2872,12 @@ function renderDrillDown(){
     return `<g class="node${dimN}" data-nid="${esc(n.id)}" transform="translate(${n.x},${n.y})" style="cursor:move">
       <rect width="${n.w}" height="${n.h}" rx="4" fill="var(--paper)"
         stroke="${(selected||tracedN)?'var(--probe)':areaStroke(side,'var(--ink-soft)')}" stroke-width="${(selected||tracedN)?2.5:1.4}" stroke-dasharray="${selected?'none':'5 4'}"/>
-      ${areaWashMarkup(side, n.w, n.h, 4)}
-      <text x="12" y="20" font-family="var(--mono)" font-size="10" letter-spacing=".08em" fill="var(--ink-soft)">EXTERNAL</text>
-      <text class="refdes" x="${n.w-12}" y="20" text-anchor="end" font-family="var(--mono)" font-size="10" font-weight="600" fill="var(--ink-soft)">${esc(n.ref||'')}</text>
-      <text x="12" y="36" font-family="var(--sans)" font-size="11.5" font-weight="500" fill="var(--ink)">${esc(n.label)}</text>
-      ${areaTag(side, n.w)}
+      ${areaMarkup(4)}
+      <circle cx="13" cy="13" r="3.6" fill="var(--silk)"/>
+      <text x="26" y="26" font-family="var(--mono)" font-size="11" font-weight="700" letter-spacing=".08em" fill="var(--silk)">EXTERNAL</text>
+      <text x="26" y="44" font-family="var(--sans)" font-size="11" fill="var(--ink)">${esc(n.label)}</text>
+      <text class="refdes" x="${n.w-12}" y="44" text-anchor="end" font-family="var(--mono)" font-size="10" font-weight="600" fill="var(--ink-soft)">${esc(n.ref||'')}</text>
+      ${tagMarkup}
       <line x1="10" y1="${sepY}" x2="${n.w-10}" y2="${sepY}" stroke="var(--ink)" stroke-width="1" opacity=".25"/>
       ${portRows}
     </g>`;
@@ -3391,12 +3451,28 @@ function renderInspector(){
     eye.textContent = (n.kind==='ic' ? L('Integrated circuit','Circuito integrado') : L('External block','Bloque externo'))
       + (n.ref ? ' · '+n.ref : '');
     title.textContent = n.label;
+    const a1 = nodeArea(n.id);
+    const a2 = nodeAreas(n.id)[1] || null;
+    const areaOpts = (sel, skip) => areasOf().filter(a=>a.id!==skip)
+      .map(a=>`<option value="${esc(a.id)}" ${sel===a.id?'selected':''}>${esc(a.name)}</option>`).join('');
     const sideRow = `
       <div class="kv"><label>${L('Isolation area','Área de aislamiento')}</label>
-        <select id="fSide">
-          ${areasOf().map(a=>`<option value="${esc(a.id)}" ${nodeArea(n.id)===a.id?'selected':''}>${esc(a.name)}</option>`).join('')}
-        </select>
-      </div>`;
+        <select id="fSide">${areaOpts(a1, a2)}</select>
+      </div>
+      ${a2 ? `
+      <div class="kv"><label>${L('Second area (mixed block)','Segunda área (bloque mixto)')}</label>
+        <div class="row" style="align-items:center;gap:6px">
+          <select id="fSide2" style="flex:1">${areaOpts(a2, a1)}</select>
+          <button class="danger" id="fSide2Del" title="${L('Remove the second area — the block goes back to a single area','Quitar la segunda área — el bloque vuelve a una sola área')}">✕</button>
+        </div>
+      </div>
+      <div class="kv"><label>${L('Area halves','Mitades de área')}</label>
+        <label class="switch"><input type="checkbox" id="fFlip" ${n.hvFlip?'checked':''}><span class="knob"></span>
+          <span class="swlabel">${n.hvFlip?L('Halves swapped','Mitades intercambiadas'):L('Default order','Orden por defecto')}</span></label>
+      </div>` : `
+      <div class="kv" style="margin-top:-6px">
+        <button id="fSide2Add" style="align-self:flex-start;padding:3px 9px;font-size:11px" title="${L('A block that physically straddles the barrier (a transformer, an opto) lives in TWO areas — one per half','Un bloque que cruza físicamente la barrera (un transformador, un opto) vive en DOS áreas — una por mitad')}">+ ${L('Add area (mixed block)','Añadir área (bloque mixto)')}</button>
+      </div>`}`;
     const customPorts = !!S.groupPortOrder[n.id] || Object.keys(S.groupPortSides).some(k=>k.startsWith(n.id+'|'));
     const portHint = `<p class="hint">${uiLang()==='es'
       ? `${nodePortRowsFor(n.id).length} puerto${nodePortRowsFor(n.id).length===1?'':'s'} en la zona de puertos de este bloque. Arrastra la etiqueta de recuento de un puerto lateralmente para cambiar el borde al que se ancla, o arriba/abajo para reordenarlo.`
@@ -3475,7 +3551,20 @@ function renderInspector(){
         ${addNetSection}
         <div class="btnrow">${customPorts?`<button id="btnResetNodePorts">${L('Reset port layout','Restablecer puertos')}</button>`:''}<button class="danger" id="btnDelNode">${L('Delete block and its connections','Eliminar el bloque y sus conexiones')}</button></div>`;
     }
-    $('fSide').onchange=()=>{ commit(); n.area = $('fSide').value==='lv' ? undefined : $('fSide').value; render(); };
+    $('fSide').onchange=()=>{
+      commit();
+      n.area = $('fSide').value==='lv' ? undefined : $('fSide').value;
+      if (n.area2 === (n.area||'lv')) delete n.area2;   // the two areas can never coincide
+      render();
+    };
+    const s2a=$('fSide2Add'); if (s2a) s2a.onclick=()=>{
+      const other = areasOf().find(a=>a.id!==nodeArea(n.id));
+      if (!other){ toast(L('Add another area in Isolation Barriers first','Añade otra área en Isolation Barriers primero')); return; }
+      commit(); n.area2 = other.id; render();
+    };
+    const s2=$('fSide2'); if (s2) s2.onchange=()=>{ commit(); n.area2 = s2.value; render(); };
+    const s2d=$('fSide2Del'); if (s2d) s2d.onclick=()=>{ commit(); delete n.area2; delete n.hvFlip; render(); };
+    const ff=$('fFlip'); if (ff) ff.onchange=()=>{ commit(); n.hvFlip = ff.checked || undefined; render(); };
     const selIc=$('btnSelectIC'); if (selIc) selIc.onclick=()=>openReplaceICModal(n);
     const edExt=$('btnEditExt'); if (edExt) edExt.onclick=()=>openEditExternalModal(n);
     const clrIc=$('btnClearIC'); if (clrIc) clrIc.onclick=()=>{
@@ -5125,7 +5214,7 @@ function openIsolationModal(){
     const extras = work.filter(x=>x.id!=='lv' && x.id!=='hv').map(x=>x.id);
     return AREA_PALETTE[Math.max(0, extras.indexOf(a.id)) % AREA_PALETTE.length];
   };
-  const blockCount = id => S.nodes.filter(n=>nodeArea(n.id)===id).length;
+  const blockCount = id => S.nodes.filter(n=>nodeAreas(n.id).includes(id)).length;
   openModal(L('Isolation Barriers','Barreras de aislamiento'), `
     <p class="hint" style="margin-top:0">${L('The isolation areas of this project. Every block is assigned to exactly one area (in its own card); a block\'s color and corner tag follow its area, and connections between blocks of different areas cross an isolation barrier — they get their own TO/FROM boxes. Net LV/HV levels are independent of all this.',
       'Las áreas de aislamiento de este proyecto. Cada bloque está asignado a exactamente un área (en su propia ficha); el color y la etiqueta del bloque siguen su área, y las conexiones entre bloques de áreas distintas cruzan una barrera de aislamiento — tienen sus propias cajas TO/FROM. Los niveles LV/HV de las redes son independientes de todo esto.')}</p>
@@ -5167,7 +5256,10 @@ function openIsolationModal(){
     commit();
     for (const w of work) w.name = (w.name||'').trim() || String(w.id).toUpperCase();
     const keep = new Set(work.map(a=>a.id));
-    for (const n of S.nodes) if (n.area && !keep.has(n.area)) delete n.area;  // deleted area → default
+    for (const n of S.nodes){
+      if (n.area && !keep.has(n.area)) delete n.area;          // deleted area → default
+      if (n.area2 && (!keep.has(n.area2) || n.area2 === (n.area||'lv'))){ delete n.area2; delete n.hvFlip; }
+    }
     S.areas = work;
     applyAreaColors();
     closeModal(); render();
