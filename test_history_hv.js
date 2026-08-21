@@ -9,8 +9,9 @@ window.__T={get S(){return S;},get HIST(){return HIST;},loadFromContract,render,
  groupBlockRect,groupPortAnchor,groupEdgeRouteKey,groupEdgePts,laneOf,setGroupEdgeRoute,groupEdgeRouteOf,
  pointOutOfBlocks,groupPortRowsFor,groupsWithUngrouped,groupSide,groupPortOf,setGroupPortSide,
  moveGroupPortToRow,commit,commitGesture,undo,redo,resetGroupPortLayout,snapshotState,buildSessionJSON,groupPosOf,_routeCache,nodeById,
- openGroupView,closeGroupView,nodeArea,edgeDomOf,domMarker,areaName,areasOf,isHvNet,defaultAreas,areaCustom,
- applyAreaColors,loadSession,drillSheet,portRowLabel,groupsWithUngrouped,groupBaseArea,groupOtherArea};`);
+ openGroupView,closeGroupView,nodeArea,nodeAreas,nodeIsMixed,edgeDomOf,domMarker,areaName,areasOf,isHvNet,defaultAreas,
+ areaCustom,applyAreaColors,loadSession,drillSheet,portRowLabel,groupsWithUngrouped,groupBaseArea,groupOtherArea,
+ nodePortRowsFor,nodePortOf};`);
 const T=window.__T, S=T.S;
 let pass=0,fail=0; const check=(n,c)=>{c?pass++:fail++;console.log((c?'PASS  ':'FAIL  ')+n);};
 const fx=JSON.parse(fs.readFileSync('system.json','utf8'))[0].editor_fixture;
@@ -346,6 +347,66 @@ const key=e=>T.groupEdgeRouteKey(e.source,e.target);
   T.undo();
   check('…and the create/rename/recolor save is another', S.areas.length===2 && S.areas[1].name==='HV' &&
     S.areas[1].color==='');
+}
+
+/* ============ Mixed blocks: an IC/external can straddle TWO areas ============ */
+{
+  const doc=window.document;
+  // BARRIER is the physical crossing (think flyback transformer): give it a
+  // second area through the real block card
+  S.sel={type:'node', id:'BARRIER'}; T.render();
+  check('a single-area block card offers a small "+" to make it mixed',
+    !!doc.getElementById('fSide2Add') && !doc.getElementById('fSide2') && !doc.getElementById('fFlip'));
+  doc.getElementById('fSide2Add').onclick();
+  check('the "+" adds the first other area as the second one',
+    T.nodeAreas('BARRIER').join(',')==='lv,hv' && T.nodeIsMixed('BARRIER'));
+  const s1=doc.getElementById('fSide'), s2=doc.getElementById('fSide2');
+  check('the second select never offers the primary area — nor the other way round',
+    !!s2 && ![...s2.options].some(o=>o.value==='lv') && ![...s1.options].some(o=>o.value==='hv'));
+  S.sel=null; T.render();
+  check('a mixed member mixes its group block too', T.groupSide('A')==='barrier');
+  // doms follow the halves: the secondary-side connection lives WHOLLY in HV
+  check('the crossing edge now lives wholly in the HV area (transformer secondary)',
+    T.edgeDomOf(S.edges.find(e=>e.source==='BARRIER'&&e.target==='HVA'))==='hv');
+  check('the primary drive stays in the LV area',
+    T.edgeDomOf(S.edges.find(e=>e.source==='LVSRC'&&e.target==='BARRIER'))==='');
+  // port pinning on the mixed block: a signal on one area\'s side can never
+  // cross to the other
+  T.openGroupView('A');
+  const rows=T.nodePortRowsFor('BARRIER');
+  check('every port of a mixed block is pinned to its area half',
+    rows.length===2 && rows.every(r=>r.pinned) &&
+    rows.find(r=>r.src==='LVSRC').side==='left' && rows.find(r=>r.tgt==='HVA').side==='right');
+  const hvRow=rows.find(r=>r.tgt==='HVA');
+  T.setGroupPortSide('BARRIER', hvRow.src, hvRow.tgt, 'left'); T.render();
+  check('a stored override cannot drag a port across the divider',
+    T.nodePortOf('BARRIER', hvRow.src, hvRow.tgt, hvRow.dir).side==='right');
+  T.resetGroupPortLayout('BARRIER'); T.render();
+  const el=[...doc.querySelectorAll('#nodesG g[data-nid]')].find(x=>x.dataset.nid==='BARRIER');
+  check('the mixed block renders halves wearing both area names',
+    />HV</.test(el.innerHTML) && />LV</.test(el.innerHTML));
+  S.sel={type:'node', id:'BARRIER'}; T.render();
+  const ff=doc.getElementById('fFlip');
+  check('the block card offers the generic Area halves switch',
+    !!ff && !doc.getElementById('insBody').innerHTML.includes('LV | HV'));
+  ff.checked=true; ff.onchange();
+  check('flipping swaps the halves: the HV-side port moves left, still pinned',
+    (r=>r.side==='left' && r.pinned)(T.nodePortRowsFor('BARRIER').find(r=>r.tgt==='HVA')));
+  const ff2=doc.getElementById('fFlip');
+  ff2.checked=false; ff2.onchange();
+  // the small "x" returns the block to a single area
+  doc.getElementById('fSide2Del').onclick();
+  check('removing the second area returns the block to a single area (crossing dom again)',
+    !T.nodeIsMixed('BARRIER') &&
+    T.edgeDomOf(S.edges.find(e=>e.source==='BARRIER'&&e.target==='HVA'))==='lv>hv');
+  S.sel=null; T.closeGroupView();
+  // a pre-#83 session with a barrier override imports as a mixed block
+  const sess=JSON.parse(JSON.stringify(T.buildSessionJSON()));
+  sess.nodes.find(n=>n.id==='BARRIER').hvSide='barrier';
+  delete sess.nodes.find(n=>n.id==='BARRIER').area2;
+  T.loadSession(sess);
+  check('legacy hvSide:barrier sessions migrate to a mixed LV+HV block',
+    T.nodeAreas('BARRIER').join(',')==='lv,hv');
 }
 
 console.log('\n'+pass+' passed, '+fail+' failed');
