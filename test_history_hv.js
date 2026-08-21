@@ -10,7 +10,7 @@ window.__T={get S(){return S;},get HIST(){return HIST;},loadFromContract,render,
  pointOutOfBlocks,groupPortRowsFor,groupsWithUngrouped,groupSide,groupPortOf,setGroupPortSide,
  moveGroupPortToRow,commit,commitGesture,undo,redo,resetGroupPortLayout,snapshotState,buildSessionJSON,groupPosOf,_routeCache,nodeById,
  openGroupView,closeGroupView,nodeArea,nodeAreas,nodeIsMixed,edgeDomOf,domMarker,areaName,areasOf,isHvNet,defaultAreas,
- areaCustom,applyAreaColors,loadSession,drillSheet,portRowLabel,groupsWithUngrouped,groupBaseArea,groupOtherArea,
+ applyAreaColors,loadSession,drillSheet,portRowLabel,groupsWithUngrouped,groupBaseArea,groupOtherArea,
  nodePortRowsFor,nodePortOf,edgeCrossesAreas,collectIssues,spotDimEdge,spotDimNode,gotoNodeIssue,
  nodeBlockWidth,nodePortRowLabel,textWidth,GROUP_PAD_X:GROUP_PAD_X,WARN_DASH:WARN_DASH,gotoEdgeIssue,domMemberArea,undo,
  AREA_CHAIN:AREA_CHAIN,areaDefaultColor,healMixedPortSides,buildSessionJSON};`);
@@ -287,54 +287,67 @@ const key=e=>T.groupEdgeRouteKey(e.source,e.target);
     T.groupSide('B')==='hv' && T.groupSide('A')==='lv');
 }
 
-/* ============ Isolation Barriers settings: create / rename / recolor / delete ============ */
+/* ============ Isolation Barriers settings: create / rename / delete ============ */
 {
   const doc=window.document;
-  check('the project starts with the two default areas, LV and HV',
-    S.areas.map(a=>a.id).join(',')==='lv,hv' && S.areas.every(a=>a.color===''));
+  check('the project starts with the two default areas, LV and HV, carrying no stored color',
+    S.areas.map(a=>a.id).join(',')==='lv,hv' && S.areas.every(a=>a.color===undefined));
   S.sel=null; T.render();
   const btn=doc.getElementById('btnIsoBar');
   check('an "Isolation Barriers" button sits next to Project Options', !!btn &&
     !!doc.getElementById('btnProjOpts') && btn.textContent==='Isolation Barriers');
   btn.onclick();
-  check('the popup lists every area with an editable name and color',
+  check('the popup lists every area with an editable name and a colour swatch',
     doc.getElementById('modalTitle').textContent==='Isolation Barriers' &&
     doc.querySelectorAll('[data-area-color]').length===2 &&
     doc.querySelectorAll('[data-area-name]').length===2);
+  check('the swatch is a round READING of the chain, not a control',
+    [...doc.querySelectorAll('[data-area-color]')].every(s=>s.tagName!=='INPUT' &&
+      s.className==='isoswatch'));
+  check('the "Default" reset buttons are gone — colors cannot be edited at all',
+    doc.querySelectorAll('[data-area-reset]').length===0);
+  check('the HV swatch shows chain slot 1',
+    doc.querySelector('[data-area-color="1"]').getAttribute('style')==='background:'+T.AREA_CHAIN[1]);
   check('the default LV area offers no delete button; the others do',
     doc.querySelectorAll('[data-area-del]').length===1);
-  // rename HV and recolor it, then add a brand-new area — one Save
+  // rename HV, then add a brand-new area — one Save
   const nameInp=doc.querySelector('[data-area-name="1"]');
   nameInp.value='HIGH SIDE'; nameInp.oninput();
-  const hvInput=doc.querySelector('[data-area-color="1"]');
-  hvInput.value='#123456'; hvInput.oninput();
   doc.getElementById('isoAdd').onclick();
+  check('a new row shows its own chain slot on a round swatch',
+    doc.querySelector('[data-area-color="2"]').getAttribute('style')==='background:'+T.AREA_CHAIN[2]);
   check('adding an area appends an editable row', doc.querySelectorAll('[data-area-name]').length===3);
   const newName=doc.querySelector('[data-area-name="2"]');
   newName.value='BATTERY'; newName.oninput();
   doc.getElementById('mOk').onclick();
-  check('the save lands: renamed HV, new BATTERY area, custom color on the CSS variable',
+  check('the save lands: renamed HV, new BATTERY area, chain color on its CSS variable',
     S.areas.length===3 && S.areas[1].name==='HIGH SIDE' && S.areas[2].name==='BATTERY' &&
-    S.areas[1].color==='#123456' &&
-    doc.documentElement.style.getPropertyValue('--area-hv')==='#123456');
+    S.areas.every(a=>a.color===undefined) &&
+    doc.documentElement.style.getPropertyValue('--area-'+S.areas[2].id)===T.AREA_CHAIN[2]);
   check('areaName follows the rename everywhere', T.areaName('hv')==='HIGH SIDE');
   // a block assigned to the new area wears its name and its palette color
   T.nodeById('HVB').area=S.areas[2].id; T.render(); T.openGroupView('B');
   const el=[...doc.querySelectorAll('#nodesG g[data-nid]')].find(x=>x.dataset.nid==='HVB');
   check('a block in the new area wears its NAME as the corner tag',
     />BATTERY</.test(el.innerHTML) && el.innerHTML.includes('var(--area-'+S.areas[2].id+')'));
-  check('the new area got a default palette color as a CSS variable',
-    !!doc.documentElement.style.getPropertyValue('--area-'+S.areas[2].id));
+  check('the new area got its fixed chain color as a CSS variable',
+    doc.documentElement.style.getPropertyValue('--area-'+S.areas[2].id)===T.AREA_CHAIN[2]);
   check('a renamed area names the block tag too',
     (h=>/>HIGH SIDE</.test(h))([...doc.querySelectorAll('#nodesG g[data-nid]')]
       .find(x=>x.dataset.nid==='HVA').innerHTML));
   T.closeGroupView();
   // everything rides the session
   T.loadSession(JSON.parse(JSON.stringify(T.buildSessionJSON())));
-  check('areas (names, colors) and block assignments come back on import',
-    S.areas.length===3 && S.areas[1].name==='HIGH SIDE' && S.areas[1].color==='#123456' &&
+  check('area names and block assignments come back on import, colors re-derived',
+    S.areas.length===3 && S.areas[1].name==='HIGH SIDE' &&
     T.nodeArea('HVB')===S.areas[2].id &&
-    doc.documentElement.style.getPropertyValue('--area-hv')==='#123456');
+    doc.documentElement.style.getPropertyValue('--area-'+S.areas[2].id)===T.AREA_CHAIN[2]);
+  check('a legacy session carrying custom colors drops them on the way in',
+    (()=>{ const sess=JSON.parse(JSON.stringify(T.buildSessionJSON()));
+      sess.areas[1].color='#123456';
+      T.loadSession(sess);
+      return S.areas.every(a=>a.color===undefined) &&
+        doc.documentElement.style.getPropertyValue('--area-hv')==='var(--sig-hv)'; })());
   // deleting an area sends its blocks back to the default area
   S.sel=null; T.render();
   doc.getElementById('btnIsoBar').onclick();
@@ -347,8 +360,7 @@ const key=e=>T.groupEdgeRouteKey(e.source,e.target);
   T.undo();
   check('the deletion is one undoable step', S.areas.length===3 && T.nodeArea('HVB')===S.areas[2].id);
   T.undo();
-  check('…and the create/rename/recolor save is another', S.areas.length===2 && S.areas[1].name==='HV' &&
-    S.areas[1].color==='');
+  check('…and the create/rename save is another', S.areas.length===2 && S.areas[1].name==='HV');
 }
 
 /* ============ Mixed blocks: an IC/external can straddle TWO areas ============ */
@@ -734,7 +746,7 @@ const key=e=>T.groupEdgeRouteKey(e.source,e.target);
     T.AREA_CHAIN.length===20 && T.AREA_CHAIN.slice(2).every(c=>/^#[0-9A-Fa-f]{6}$/.test(c) &&
       c.toLowerCase()!=='#000000'));
   // create two areas twice over: the same positions always get the same colors
-  const mk=()=>{ S.areas=[...T.defaultAreas(), {id:'a1',name:'A3',color:''}, {id:'a2',name:'A4',color:''}];
+  const mk=()=>{ S.areas=[...T.defaultAreas(), {id:'a1',name:'A3'}, {id:'a2',name:'A4'}];
     T.applyAreaColors();
     return [T.areaDefaultColor('a1'), T.areaDefaultColor('a2')]; };
   const first=mk();
